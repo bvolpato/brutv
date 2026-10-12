@@ -1,0 +1,7 @@
+node_modules/
+build/
+build-domain/
+bundle/
+kepler-build/
+generated/
+src/media/shaka/
