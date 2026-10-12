@@ -257,6 +257,18 @@ fi
 
 cd "$SCRIPT_DIR"
 
+# App Store Connect rejects the upload (error 91111) when the 1024 icon is
+# missing, has the wrong size, or has an alpha channel. Check before archiving.
+ICON_1024="BruTV/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png"
+[[ -f "$ICON_1024" ]] || { echo "error: missing $ICON_1024" >&2; exit 1; }
+ICON_INFO=$(sips -g pixelWidth -g pixelHeight -g hasAlpha "$ICON_1024")
+if ! grep -q "pixelWidth: 1024" <<<"$ICON_INFO" || ! grep -q "pixelHeight: 1024" <<<"$ICON_INFO" \
+  || grep -q "hasAlpha: yes" <<<"$ICON_INFO"; then
+  echo "error: $ICON_1024 must be 1024x1024 with no alpha. Run: swift tools/make-app-icon.swift" >&2
+  echo "$ICON_INFO" >&2
+  exit 1
+fi
+
 if [[ "$SKIP_SIM_BUILD" = false ]]; then
   SIM_DESTINATION="${IOS_SIM_DESTINATION:-platform=iOS Simulator,name=iPhone 17e}"
   xcodebuild clean build \

@@ -122,6 +122,10 @@ If the export fails with `Copy failed` and an `rsync` error, a Homebrew `rsync` 
 
 Release builds contain no test account. The demo credentials are inside `#if DEBUG` blocks.
 
+`tools/make-app-icon.swift` draws the app icon and writes every size in `AppIcon.appiconset`. App Store Connect rejects the upload with error 91111 if `AppIcon1024.png` is not exactly 1024 x 1024 or has an alpha channel. `release.sh` checks this before it archives. To regenerate the icons, run `swift tools/make-app-icon.swift` from the repo root.
+
+Each upload needs a new build number. Raise `CURRENT_PROJECT_VERSION` in the project, or set `IOS_BUILD_NUMBER`.
+
 ---
 
 ## 5. Upload to TestFlight / App Store
