@@ -11,7 +11,7 @@ SDK and the checked-in Gradle wrapper:
 
 ```bash
 export ANDROID_HOME="$HOME/android-sdk" # Use your Android SDK directory.
-./build.sh
+./gradlew :app:assembleDebug :app:assemblePreview
 ./test.sh
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -24,17 +24,46 @@ versions are pinned in the Gradle files.
 The debug APK is signed with the local Android debug key. An optimized family
 preview uses the same development key and is available at
 `app/build/outputs/apk/preview/app-preview.apk`. It includes release shrinking
-without a production signing key. The release APK and
-App Bundle are optimized but unsigned until you configure your own signing
-key. Keep that key outside Git and retain it for future updates. The release
-outputs are under `app/build/outputs/apk/release/` and
-`app/build/outputs/bundle/release/`. Do not distribute a debug build as a store
-release.
+without a production signing key. Release package tasks require the production
+signing configuration described below. `./build.sh` also builds release
+packages, so configure signing before using it. Do not distribute a debug or
+preview build as a store release.
 
 A different computer normally has a different debug key. An installed preview
 cannot update to an APK signed by another key. Keep a consistent testing key,
-or uninstall the preview before changing signers; uninstalling removes saved
-profiles. Configure production signing before distributing a lasting release.
+or use a separate device for production builds. Uninstalling removes saved
+profiles.
+
+## Production release signing
+
+Keep the upload keystore and its Gradle properties outside Git. By default,
+Gradle reads `~/.config/brutv/android/keystore.properties`; set
+`BRUTV_ANDROID_SIGNING_PROPERTIES` to use a different properties file. The file
+must contain an absolute keystore path and all four properties:
+
+```properties
+storeFile=/absolute/path/to/release.jks
+storePassword=stored-locally
+keyAlias=brutv-upload
+keyPassword=stored-locally
+```
+
+Restrict access to the directory, properties file, and keystore. Back up the
+keystore securely and retain it for every future update. Losing or replacing it
+can prevent direct APK updates and may block store submissions. Never commit
+the keystore or its passwords. Release package tasks fail when the properties
+or keystore are missing.
+
+Build and verify a signed APK and App Bundle with:
+
+```bash
+./release.sh
+```
+
+The script verifies both signatures and copies versioned artifacts into
+`build/distributions/`. The APK and AAB are also left in Gradle's release output
+directories. Google Play may require the configured upload certificate to
+match the app's existing Play Console setup.
 
 For family testing on Android/Fire OS, Downloader can download an APK from a
 direct HTTPS URL and open the system installer. The APK must first be hosted
@@ -136,8 +165,8 @@ in 239 seconds. Try **High stability** for this Example provider stream. This re
 short emulator sample; longer sessions and physical-device measurements are
 required before promising consistent family-device performance.
 
-Production signing, public APK hosting, and store submission are not configured.
-The build outputs are local artifacts; no CI or deployment result is implied.
+Public APK hosting and store submission are separate from this local build. The
+build outputs are local artifacts; no CI or deployment result is implied.
 
 ## Fire TV scope
 
