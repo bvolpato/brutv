@@ -156,6 +156,11 @@ public struct AuthResponse: Codable, Equatable, Sendable {
     }
 }
 
+public enum SourceKind: String, Codable, Sendable {
+    case xtream
+    case m3u
+}
+
 public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public let id: UUID
     public var name: String
@@ -164,6 +169,8 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public var password: String
     public var lastConnected: Date?
     public var isActive: Bool
+    public var kind: SourceKind
+    public var playlistURL: String?
 
     public init(
         id: UUID = UUID(),
@@ -172,7 +179,9 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
         username: String,
         password: String,
         lastConnected: Date? = nil,
-        isActive: Bool = true
+        isActive: Bool = true,
+        kind: SourceKind = .xtream,
+        playlistURL: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -181,8 +190,58 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
         self.password = password
         self.lastConnected = lastConnected
         self.isActive = isActive
+        self.kind = kind
+        self.playlistURL = playlistURL
     }
 
+    public static func playlist(url: String, lastConnected: Date? = Date()) -> ServerProfile {
+        let host = URL(string: url)?.host ?? "M3U Playlist"
+        return ServerProfile(
+            name: host,
+            serverURL: url,
+            username: "",
+            password: "",
+            lastConnected: lastConnected,
+            kind: .m3u,
+            playlistURL: url
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, serverURL, username, password, lastConnected, isActive, kind, playlistURL
+    }
+
+    // Profiles saved before M3U support have no `kind`; treat them as Xtream.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? "My IPTV"
+        self.serverURL = try c.decodeIfPresent(String.self, forKey: .serverURL) ?? ""
+        self.username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        self.password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
+        self.lastConnected = try c.decodeIfPresent(Date.self, forKey: .lastConnected)
+        self.isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
+        self.kind = try c.decodeIfPresent(SourceKind.self, forKey: .kind) ?? .xtream
+        self.playlistURL = try c.decodeIfPresent(String.self, forKey: .playlistURL)
+    }
+
+    /// The sign-in link for this profile, used for QR codes.
+    public var loginLink: LoginLink {
+        switch kind {
+        case .xtream:
+            return .xtream(server: serverURL, username: username, password: password)
+        case .m3u:
+            return .m3u(url: playlistURL ?? serverURL)
+        }
+    }
+
+    /// Two profiles point at the same source.
+    public func sameSource(as other: ServerProfile) -> Bool {
+        loginLink == other.loginLink
+    }
+
+    #if DEBUG
+    /// Test account for Debug builds and UI tests only. Release builds hold no credentials.
     public static let demo = ServerProfile(
         name: "Demo Account",
         serverURL: "http://example.invalid",
@@ -191,4 +250,5 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
         lastConnected: Date(),
         isActive: true
     )
+    #endif
 }

@@ -76,22 +76,86 @@ final class BruTVUITests: XCTestCase {
 
     // MARK: - Login
 
-    func testAppLaunchAndLoginScreen() throws {
+    private func launchLoggedOut() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments = ["--reset-session"]
         app.launch()
+        XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 10), "Login screen not shown")
+        return app
+    }
 
-        XCTAssertTrue(app.staticTexts["BruTV"].exists || app.buttons["Connect Server"].exists)
+    func testAppLaunchAndLoginScreen() throws {
+        let app = launchLoggedOut()
+        XCTAssertTrue(app.staticTexts["BruTV"].exists)
     }
 
     func testDemoLoginButton() throws {
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchLoggedOut()
 
         let demoButton = app.buttons["Fill Demo Credentials (example.invalid)"]
-        if demoButton.waitForExistence(timeout: 4.0) {
-            demoButton.tap()
-            XCTAssertTrue(app.buttons["Connect Server"].isEnabled)
-        }
+        XCTAssertTrue(demoButton.waitForExistence(timeout: 4.0))
+        XCTAssertFalse(app.buttons["connectButton"].isEnabled, "Connect must be disabled with empty fields")
+        demoButton.tap()
+        XCTAssertTrue(app.buttons["connectButton"].isEnabled)
+    }
+
+    func testSessionPersistsAcrossLaunches() throws {
+        let app = launchLoggedIn()
+        firstChannel(app)
+        app.terminate()
+
+        // Relaunch without --demo-login: the saved session must skip the login screen.
+        let relaunched = XCUIApplication()
+        relaunched.launch()
+        firstChannel(relaunched)
+        XCTAssertFalse(relaunched.buttons["connectButton"].exists)
+    }
+
+    // MARK: - QR code and M3U sign-in
+
+    func testLoginLinkSignsInAutomatically() throws {
+        let app = launchLoggedOut()
+
+        // This is the URL a sign-in QR code carries.
+        let link = "brutv://login?server=http%3A%2F%2Fexample.invalid&username=REDACTED_USERNAMEp2&password=REDACTED_PASSWORD"
+        app.open(URL(string: link)!)
+
+        firstChannel(app)
+        XCTAssertFalse(app.buttons["connectButton"].exists)
+    }
+
+    func testShareSignInQRCodeFromSettings() throws {
+        let app = launchLoggedIn()
+        firstChannel(app)
+
+        navigate(app, to: "Settings")
+        let share = app.buttons["shareLoginQRButton"]
+        XCTAssertTrue(share.waitForExistence(timeout: 5))
+        share.tap()
+
+        XCTAssertTrue(app.images["loginQRCode"].waitForExistence(timeout: 5), "QR code not rendered")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.images["loginQRCode"].waitForNonExistence(timeout: 5))
+    }
+
+    func testM3UPlaylistLogin() throws {
+        let app = launchLoggedOut()
+
+        app.buttons["M3U Playlist"].tap()
+        let field = app.textFields["playlistField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("https://iptv-org.github.io/iptv/countries/br.m3u")
+        app.buttons["connectButton"].tap()
+
+        let card = firstChannel(app)
+        // Groups from the playlist become category chips.
+        XCTAssertTrue(app.buttons["General"].waitForExistence(timeout: 5), "Playlist groups not shown")
+
+        card.tap()
+        revealControls(app)
+        app.buttons["playerBackButton"].tap()
+        assertOnChannelList(app)
     }
 
     // MARK: - Player exits
@@ -209,5 +273,64 @@ final class BruTVUITests: XCTestCase {
         confirm.tap()
 
         XCTAssertTrue(app.buttons["Connect Server"].waitForExistence(timeout: 10), "Login screen not shown after logout")
+    }
+
+    // MARK: - App Store screenshots
+
+    /// Captures App Store screenshots. It runs only when `BRUTV_SCREENSHOT_DIR` is set
+    /// (pass `TEST_RUNNER_BRUTV_SCREENSHOT_DIR` to xcodebuild). It uses a public playlist,
+    /// so the images show no private account data.
+    func testCaptureStoreScreenshots() throws {
+        guard let dir = ProcessInfo.processInfo.environment["BRUTV_SCREENSHOT_DIR"], !dir.isEmpty else {
+            throw XCTSkip("Set TEST_RUNNER_BRUTV_SCREENSHOT_DIR to capture store screenshots")
+        }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        func shot(_ name: String) {
+            let data = XCUIScreen.main.screenshot().pngRepresentation
+            try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+        }
+
+        let app = XCUIApplication()
+        app.launchArguments = ["--reset-session", "--store-screenshots"]
+        app.launch()
+        XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 10))
+        sleep(1)
+        shot("01_login")
+
+        let env = ProcessInfo.processInfo.environment
+        let playlist = env["BRUTV_SCREENSHOT_PLAYLIST"] ?? "https://iptv-org.github.io/iptv/countries/br.m3u"
+        let encoded = playlist.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? playlist
+        app.open(URL(string: "brutv://login?m3u=\(encoded)")!)
+        firstChannel(app)
+
+        let category = app.buttons[env["BRUTV_SCREENSHOT_CATEGORY"] ?? "Education"]
+        if category.waitForExistence(timeout: 5) {
+            category.tap()
+        }
+        firstChannel(app)
+        sleep(5) // let logos load
+        shot("02_channels")
+
+        let wanted = env["BRUTV_SCREENSHOT_CHANNEL"] ?? "Canal Futura"
+        let target = app.buttons.matching(
+            NSPredicate(format: "identifier == 'channelCard' AND label CONTAINS[c] %@", wanted)
+        ).firstMatch
+        (target.waitForExistence(timeout: 5) ? target : firstChannel(app)).tap()
+        sleep(12) // let the stream start and the buffer fill
+        revealControls(app)
+        shot("03_player")
+
+        app.buttons["playerGuideButton"].tap()
+        XCTAssertTrue(app.buttons["guideCloseButton"].waitForExistence(timeout: 5))
+        sleep(3)
+        shot("04_guide")
+        app.buttons["guideCloseButton"].tap()
+
+        revealControls(app)
+        app.buttons["playerBackButton"].tap()
+        assertOnChannelList(app)
+        navigate(app, to: "Settings")
+        sleep(2)
+        shot("05_settings")
     }
 }

@@ -8,8 +8,15 @@ BruTV is an IPTV player built natively with Swift and SwiftUI, specifically targ
 
 - **Real-Time Buffer Engine:**
   - Configurable buffer duration: **Ultra Low Latency (1.5s)** for near-live broadcast sports timing, **Balanced (4.0s)**, and **High Stability (10.0s)**.
-  - Automatic stream recovery with intelligent protocol fallback (HLS `.m3u8` to MPEG-TS `.ts`).
+  - Automatic stream recovery with a 10-second connection watchdog and up to 2 retries. Live channels always play as HLS (`.m3u8`).
   - In-player **Stream Telemetry HUD** displaying real-time buffer seconds ahead of playhead, observed network bitrate (Mbps), native resolution, frame rate, dropped frames, and stall counters.
+- **Two Ways to Sign In:**
+  - Xtream Codes: server URL, username, and password.
+  - M3U playlist: paste the playlist URL. If the URL is an Xtream `get.php` link, BruTV signs in with the Xtream API instead, because it is much faster than a large playlist.
+- **QR Code Sign-In:**
+  - Settings > **Share Sign-In QR Code** shows a QR code and a `brutv://login` link for the current source.
+  - Scan the code with the Camera app, or open the link, and BruTV signs in automatically.
+  - On the login screen, the **Paste** button reads a copied `brutv://` link.
 - **Channels First:**
   - Fast channel switching and swipe gestures to flip stations directly on the video canvas.
   - In-player **Channel Guide Drawer** overlay with logos to surf without exiting full screen.
@@ -82,22 +89,37 @@ brutv/
 
 ### 4. Build Signed App Store IPA
 
-```bash
-export IOS_TEAM_ID="83BXSDT7QC"
-export IOS_PROFILE_NAME="BruTV AppStore Distribution"
-export IOS_P12_PASSWORD="<password>"
-export IOS_CERTIFICATE_PATH="$PWD/signing/ios_distribution.p12"
-export IOS_PROVISIONING_PROFILE_PATH="$PWD/signing/BruTV_App_Store_Distribution.mobileprovision"
+Put the `.p12` certificate and the App Store `.mobileprovision` in `mobile/ios/BruTV/signing/`. Git ignores both files.
 
-./release.sh
+```bash
+IOS_P12_PASSWORD='<password>' ./release.sh --skip-simulator-build
 ```
+
+See [RELEASE.md](mobile/ios/RELEASE.md) for details.
+
+---
+
+## Make a Sign-In QR Code on a Laptop
+
+The `tools/brutv-login-qr.py` script writes a PNG with a `brutv://login` QR code.
+
+```bash
+uv run tools/brutv-login-qr.py --server http://example.com:8080 --username USER --password PASS -o login.png
+uv run tools/brutv-login-qr.py --m3u "https://example.com/playlist.m3u" -o login.png
+```
+
+> [!WARNING]
+> The QR code and the link contain the password in plain text. Share them only with people you trust.
+
+If BruTV is not installed, the `brutv://` link does nothing. The person must install BruTV first.
 
 ---
 
 ## Test Credentials
 
-For quick testing, a demo server account is pre-configured:
+Debug builds have a **"Fill Demo Credentials (example.invalid)"** button on the login screen. UI tests use the same account:
 - **Server:** `http://example.invalid`
 - **Username:** `REDACTED_USERNAMEp2`
 - **Password:** `REDACTED_PASSWORD`
-Tap **"Fill Demo Credentials (example.invalid)"** on the login screen to connect instantly.
+
+Release builds do not contain this account. The code is inside `#if DEBUG` blocks. App Review and store screenshots use the public playlist `https://iptv-org.github.io/iptv/countries/br.m3u`.

@@ -60,50 +60,41 @@ Run the full unit and UI test suite:
 
 ## 3. Capturing App Store Screenshots
 
-BruTV includes an automated capture script that boots the iPhone and iPad simulators, exercises the routes, and formats the output into required App Store Connect dimensions:
+The capture script runs the `testCaptureStoreScreenshots` UI test on an iPhone 18 Pro Max and an iPad Pro 13-inch (M5) simulator. The test signs in with the public iptv-org playlist, so the images contain no private account data. It sets the status bar to 9:41 with full battery.
 
 ```bash
 ./mobile/ios/BruTV/capture-screenshots.sh
 ```
 
-Generated directories:
-- `screenshots/6.7-inch/` (1290 x 2796)
-- `screenshots/6.5-inch/` (1242 x 2688)
-- `screenshots/ipad-13-inch/` (2048 x 2732)
+Output, at native resolution with no resizing:
+- `screenshots/iphone-6.9-inch/` (1320 x 2868)
+- `screenshots/ipad-13-inch/` (2064 x 2752)
+
+Each folder has `01_login`, `02_channels`, `03_player`, `04_guide`, and `05_settings`. To change the category chip or the channel that plays, set `BRUTV_SCREENSHOT_CATEGORY` or `BRUTV_SCREENSHOT_CHANNEL`.
 
 ---
 
 ## 4. Building the Signed App Store IPA
 
-Set up the required release environment variables:
+Put the distribution certificate and the App Store provisioning profile in `mobile/ios/BruTV/signing/`. Git ignores `.p12` and `.mobileprovision` files. The script reads the profile name and team ID from the profile.
 
 ```bash
-export IOS_TEAM_ID="83BXSDT7QC"
-export IOS_PROFILE_NAME="BruTV AppStore Distribution"
-export IOS_P12_PASSWORD="<password>"
-
-# Provide signing assets either as base64:
-export IOS_CERTIFICATE_BASE64="$(base64 -i path/to/distribution.p12)"
-export IOS_PROVISIONING_PROFILE_BASE64="$(base64 -i path/to/profile.mobileprovision)"
-
-# Or as file paths:
-export IOS_CERTIFICATE_PATH="$PWD/signing/ios_distribution.p12"
-export IOS_PROVISIONING_PROFILE_PATH="$PWD/signing/BruTV_App_Store_Distribution.mobileprovision"
+IOS_P12_PASSWORD='<password>' ./mobile/ios/BruTV/release.sh --skip-simulator-build
 ```
 
-Execute release:
+In CI, set `IOS_CERTIFICATE_BASE64` and `IOS_PROVISIONING_PROFILE_BASE64` instead. `IOS_TEAM_ID`, `IOS_PROFILE_NAME`, `IOS_BUILD_NUMBER`, and `IOS_MARKETING_VERSION` override the defaults.
 
-```bash
-./mobile/ios/BruTV/release.sh
-```
+The script archives the project, signs with the Apple Distribution identity in a temporary keychain, and exports the `.ipa` to `mobile/ios/BruTV/build/release/export/`.
 
-The script archives the project, validates entitlements, codesigns with Apple Distribution identity, and exports the signed `.ipa` under `mobile/ios/BruTV/build/release/export/`.
+Release builds contain no test account. The demo credentials are inside `#if DEBUG` blocks.
 
 ---
 
 ## 5. Upload to TestFlight / App Store
 
-Upload the IPA using `xcrun altool` or `xcrun notarytool`:
+Use one of these options:
+- Transporter app: drag `BruTV.ipa` into the window, then click Deliver.
+- Command line with an App Store Connect API key:
 
 ```bash
 xcrun altool --upload-app -f "mobile/ios/BruTV/build/release/export/BruTV.ipa" -t ios --apiKey <KEY_ID> --apiIssuer <ISSUER_ID>

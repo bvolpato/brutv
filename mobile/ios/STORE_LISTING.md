@@ -1,6 +1,6 @@
 # App Store Listing Metadata - BruTV
 
-This document contains all copy, keywords, categories, and reviewer notes required for submitting BruTV to the Apple App Store.
+This document contains the copy, keywords, categories, URLs, and reviewer notes for the BruTV App Store submission.
 
 ---
 
@@ -10,83 +10,120 @@ This document contains all copy, keywords, categories, and reviewer notes requir
 `BruTV - IPTV Player & Streams`
 
 ### Subtitle (Max 30 characters)
-`Fast Live TV, Movies & Series`
+`IPTV that just works`
 
 ### Promotional Text (Max 170 characters)
-`State-of-the-art IPTV player for iPad & iPhone. Ultra-low latency buffering, instant channel zapping, telemetry HUD, 4K/FHD playback, and Picture-in-Picture.`
+`A fast, free IPTV player for iPhone, iPad, and Mac. Low-latency buffering, instant channel zapping, Picture-in-Picture, and QR code sign-in for the whole family.`
+
+### Price
+Free. No in-app purchases, no ads, no tracking.
 
 ---
 
 ## App Description (Max 4,000 characters)
 
-BruTV is a next-generation IPTV streaming player built from the ground up for iPadOS and iOS. Engineered with an obsession for real-time broadcast quality and state-of-the-art buffer management, BruTV delivers instantaneous channel switching and zero-stutter playback.
+BruTV is a free IPTV player for iPhone, iPad, and Mac. It is built for live channels: they start fast, stay in sync with the broadcast, and keep playing when the network changes.
 
-Whether you're following live sports on your iPad with Picture-in-Picture or channel surfing on your iPhone, BruTV provides an unmatched native streaming experience.
+BruTV does not include any channels, video content, or subscriptions. To watch, connect the Xtream Codes account or M3U playlist that your TV provider gives you. Only connect to services that you are authorized to use.
 
-### Key Features:
+### Key Features
 
-- **State-of-the-Art Buffering Engine:**
-  - **Ultra Low Latency Mode (1.5s buffer):** Keeps live sports and breaking news synchronized to real-time broadcast timing.
-  - **Balanced Mode (4.0s buffer):** Optimal default balancing instant channel zapping with continuous jitter protection.
-  - **High Stability Mode (10.0s buffer):** Deep caching to eliminate dropouts on fluctuating cellular connections.
+- **Low-Latency Buffering:**
+  - **Ultra Low Latency (1.5s buffer):** keeps live sports and news close to real time.
+  - **Balanced (4.0s buffer):** the default. Fast channel changes with protection against network jitter.
+  - **High Stability (10.0s buffer):** a deeper buffer for weak or cellular connections.
+  - Automatic stream recovery when a connection stalls.
 
 - **Instant Channel Zapping:**
-  - Flip between channels seamlessly without black screen lag.
-  - Swipe left or right directly on the video canvas to switch channels.
-  - In-player **Channel Guide Drawer** lets you browse other channels with logos while your stream continues playing in the background.
+  - Swipe left or right on the video to change channels.
+  - The in-player channel guide shows logos while the stream keeps playing.
 
-- **Real-Time Stream Telemetry HUD:**
-  - High-precision telemetry overlay displaying buffer duration ahead of the playhead, observed network bitrate (Mbps), native resolution, frame rate, dropped frames, and stall counts.
+- **Stream Telemetry HUD:**
+  - See the buffer ahead of the playhead, network bitrate, resolution, frame rate, dropped frames, and stalls.
 
-- **Designed for iPad & iPhone:**
-  - Full iPadOS **NavigationSplitView** sidebar layout taking advantage of large Retina screens.
-  - Seamless **Picture-in-Picture (PiP)** so you can multitask while watching live TV.
-  - Background audio playback and Control Center / Now Playing integration.
+- **Designed for iPhone, iPad, and Mac:**
+  - Sidebar layout on iPad and Mac. Tab bar on iPhone.
+  - Picture-in-Picture and background audio.
+  - Keyboard shortcuts on Mac and iPad.
 
-- **Rich Channel Browsing:**
-  - High-resolution channel logos with intelligent caching.
-  - Quality badges automatically parsed from stream titles (4K UHD, 1080p FHD, 720p HD, SD).
-  - Quick filtering by categories (Globo Sudeste, SBT, Record, Band, News, Sports, Premiere, Movies).
-  - Real-time search with instant results.
+- **Channel Browsing:**
+  - Channel logos with memory and disk caching.
+  - Quality badges read from stream names (4K, FHD, HD, SD).
+  - Filter by your provider's categories and search by name.
+  - Favorites and watch history.
 
-- **Favorites & Watch History:**
-  - Star your favorite channels for one-tap access.
-  - Automatic watch history allows jumping straight back to recent broadcasts.
+- **Movies and Series:**
+  - Browse your provider's on-demand catalog with posters, ratings, and episode lists (Xtream Codes accounts).
 
-- **Movies (VOD) & Series:**
-  - Integrated on-demand catalog with poster art, ratings, director/cast info, plot overviews, and season/episode playback.
+- **Two Ways to Sign In:**
+  - Xtream Codes: server, username, and password.
+  - M3U playlist: paste the playlist URL.
+  - Save several profiles and switch between them.
 
-- **Universal Xtream Codes Support:**
-  - Connect easily with any standard Xtream Codes IPTV provider.
-  - Multi-profile management to switch between servers.
-  - Instant session diagnosis showing account status and expiration date.
+- **QR Code Sign-In:**
+  - Share your sign-in as a QR code from Settings. Family members scan it with the Camera, and BruTV signs in automatically. Nobody has to type a server, username, or password.
 
 ---
 
 ## Metadata & Keywords
 
 ### Keywords (Max 100 characters, comma-separated)
-`iptv,player,live tv,m3u8,hls,streaming,xtream,channels,globo,sbt,record,movies,series,pip,telemetry`
+`iptv,player,live tv,m3u,m3u8,hls,xtream,playlist,channels,streaming,pip,epg,tv player,qr`
+
+> [!NOTE]
+> The keywords contain no channel or broadcaster names. Apple can reject third-party trademarks in keywords (guideline 2.3.7).
 
 ### Categories
 - **Primary:** `Entertainment`
 - **Secondary:** `Utilities`
 
+### Age Rating
+Answer "None" to all content questions. BruTV ships with no content. Apple may still ask about unrestricted web access. Answer "No", because BruTV has no web browser.
+
 ### App URLs
-- **Support URL:** `https://github.com/bvolpato/brutv`
-- **Marketing URL:** `https://github.com/bvolpato/brutv`
-- **Privacy Policy URL:** `https://github.com/bvolpato/brutv/blob/main/PRIVACY.md`
+- **Support URL:** `https://brunovolpato.com/brutv/`
+- **Marketing URL:** `https://brunovolpato.com/brutv/`
+- **Privacy Policy URL:** `https://brunovolpato.com/brutv/privacy/`
+
+### App Privacy (Nutrition Label)
+Data Not Collected. BruTV has no backend, analytics, or ads. Credentials stay on the device.
+
+### Copyright
+`2026 Bruno Volpato`
+
+---
+
+## Screenshots
+
+Upload these files in this order. They are at native resolution, so App Store Connect accepts them as they are. To make them again, run `mobile/ios/BruTV/capture-screenshots.sh`.
+
+| App Store Connect slot | Folder | Size |
+| --- | --- | --- |
+| iPhone 6.9" Display | `mobile/ios/BruTV/screenshots/iphone-6.9-inch/` | 1320 x 2868 |
+| iPad 13" Display | `mobile/ios/BruTV/screenshots/ipad-13-inch/` | 2064 x 2752 |
+
+Order: `02_channels`, `03_player`, `04_guide`, `05_settings`, `01_login`. The images use the public iptv-org playlist and the Education category, so they show no private account and no commercial channel brands.
 
 ---
 
 ## Notes for App Review
 
-- **Demo Account / Immediate Reviewer Access:**
-  - A dedicated "Fill Demo Credentials" button is available directly on the login screen.
-  - Tapping this button fills the credentials and connects immediately:
-    - **Server:** `http://example.invalid`
-    - **Username:** `REDACTED_USERNAMEp2`
-    - **Password:** `REDACTED_PASSWORD`
-  - All channels (Globo Sudeste, SBT, Record, etc.), categories, movies, and series are immediately loaded and playable.
-- **Privacy & Security:**
-  - BruTV does not track users, inject ads, or collect personally identifiable information. All credentials and favorite bookmarks are stored locally on the user's device.
+Paste this text into App Store Connect > App Review Information > Notes. Leave "Sign-in required" unchecked, because the reviewer can use the public playlist below with no account.
+
+```
+BruTV is a player only. It ships with no channels, content, or accounts. Users connect the Xtream Codes account or M3U playlist that their own provider gives them.
+
+To test without an account, use a public, legal playlist of free-to-air channels from the iptv-org project (https://github.com/iptv-org/iptv):
+
+1. Launch BruTV.
+2. Select "M3U Playlist".
+3. Enter: https://iptv-org.github.io/iptv/countries/br.m3u
+4. Tap "Load Playlist". About 400 channels load in a few seconds.
+5. Tap any channel to play it. Use the "Channels" button, Close, Minimize, or swipe down to go back.
+
+QR code sign-in: Settings > Share Sign-In QR Code. Scanning the code with the Camera opens a brutv://login link, and BruTV signs in automatically.
+
+Some public channels can be offline at any time. If one does not play, try another.
+
+The app does not track users, show ads, or collect data. Credentials and favorites stay on the device.
+```

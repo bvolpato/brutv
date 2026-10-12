@@ -10,7 +10,7 @@ BruTV is an IPTV streaming player designed for iPadOS and iOS, built with a focu
   - Ultra Low Latency Profile (1.5s forward buffer) tailored for live sports.
   - Balanced Profile (4.0s forward buffer) for consistent broadband playback.
   - High Stability Profile (10.0s forward buffer) for fluctuating cellular networks.
-  - Automatic stream recovery and seamless format fallback (HLS `.m3u8` to MPEG-TS `.ts`).
+  - Automatic stream recovery with a connection watchdog and automatic retries.
 
 - **Instant Channel Zapping:**
   - Swipe gestures on the player to switch between channels without delay.
@@ -21,7 +21,7 @@ BruTV is an IPTV streaming player designed for iPadOS and iOS, built with a focu
   - Observed network throughput (Mbps / kbps).
   - Video resolution, frame rate, dropped frame counter, and stall diagnostics.
 
-- **Designed for iPad & iPhone:**
+- **Designed for iPad, iPhone & Mac:**
   - Native iPad `NavigationSplitView` sidebar layout taking advantage of large screens.
   - Picture-in-Picture (PiP) multitasking and background audio support.
   - Dark mode glassmorphic UI.
@@ -36,3 +36,7 @@ BruTV is an IPTV streaming player designed for iPadOS and iOS, built with a focu
   - Live TV, Movies (VOD), and TV Series catalogs with TMDb artwork and ratings.
   - Multi-account / server profile switching.
   - Pre-configured demo login for rapid testing.
+
+- **M3U Playlists and QR Code Sign-In:**
+  - Sign in with an M3U playlist URL. M3U sources show live channels only.
+  - Share a sign-in QR code from Settings. Scanning it opens BruTV and signs in automatically.

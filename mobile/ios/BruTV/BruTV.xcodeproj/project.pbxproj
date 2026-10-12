@@ -32,9 +32,13 @@
 		APPBF023 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC023; };
 		APPBF024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
 		APPBF025 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
+		APPBF030 /* LoginLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC030; };
+		APPBF031 /* M3UPlaylistParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC031; };
+		APPBF032 /* LoginQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC032; };
 		TESTBF001 /* XtreamCodesClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC001; };
 		TESTBF002 /* BufferEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC002; };
 		TESTBF003 /* FavoritesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC003; };
+		TESTBF010 /* SourceLoginTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC010; };
 		UIBF001 /* BruTVUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UISRC001; };
 /* End PBXBuildFile section */
 
@@ -82,6 +86,9 @@
 		APPSRC021 /* FavoritesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesView.swift; sourceTree = "<group>"; };
 		APPSRC022 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		APPSRC023 /* MainContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainContentView.swift; sourceTree = "<group>"; };
+		APPSRC030 /* LoginLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginLink.swift; sourceTree = "<group>"; };
+		APPSRC031 /* M3UPlaylistParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UPlaylistParser.swift; sourceTree = "<group>"; };
+		APPSRC032 /* LoginQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginQRCodeView.swift; sourceTree = "<group>"; };
 		APPRES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		APPRES002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		APPINFO001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -89,6 +96,7 @@
 		TESTSRC001 /* XtreamCodesClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XtreamCodesClientTests.swift; sourceTree = "<group>"; };
 		TESTSRC002 /* BufferEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferEngineTests.swift; sourceTree = "<group>"; };
 		TESTSRC003 /* FavoritesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStoreTests.swift; sourceTree = "<group>"; };
+		TESTSRC010 /* SourceLoginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLoginTests.swift; sourceTree = "<group>"; };
 		UISRC001 /* BruTVUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BruTVUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -171,6 +179,8 @@
 				APPSRC009 /* FavoritesStore.swift */,
 				APPSRC010 /* HLSBufferEngine.swift */,
 				APPSRC011 /* PlaybackManager.swift */,
+				APPSRC030 /* LoginLink.swift */,
+				APPSRC031 /* M3UPlaylistParser.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -188,6 +198,7 @@
 				APPSRC021 /* FavoritesView.swift */,
 				APPSRC022 /* SettingsView.swift */,
 				APPSRC023 /* MainContentView.swift */,
+				APPSRC032 /* LoginQRCodeView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -217,6 +228,7 @@
 				TESTSRC001 /* XtreamCodesClientTests.swift */,
 				TESTSRC002 /* BufferEngineTests.swift */,
 				TESTSRC003 /* FavoritesStoreTests.swift */,
+				TESTSRC010 /* SourceLoginTests.swift */,
 			);
 			path = BruTVTests;
 			sourceTree = "<group>";
@@ -382,6 +394,9 @@
 				APPBF021 /* FavoritesView.swift in Sources */,
 				APPBF022 /* SettingsView.swift in Sources */,
 				APPBF023 /* MainContentView.swift in Sources */,
+				APPBF030 /* LoginLink.swift in Sources */,
+				APPBF031 /* M3UPlaylistParser.swift in Sources */,
+				APPBF032 /* LoginQRCodeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -392,6 +407,7 @@
 				TESTBF001 /* XtreamCodesClientTests.swift in Sources */,
 				TESTBF002 /* BufferEngineTests.swift in Sources */,
 				TESTBF003 /* FavoritesStoreTests.swift in Sources */,
+				TESTBF010 /* SourceLoginTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
