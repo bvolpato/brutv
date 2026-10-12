@@ -1,0 +1,38 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Xcode
+build/
+DerivedData/
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.xcbkptlist
+*.xcuserstate
+xcuserdata/
+*.xcarchive
+
+# BruTV build outputs
+mobile/ios/**/build/
+mobile/ios/**/artifact/
+mobile/ios/BruTV/build/
+mobile/ios/BruTV/screenshots/
+screenshots/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Signing secrets (never commit certificates or profiles)
+*.p12
+*.cer
+*.mobileprovision
+*.keychain-db
+mobile/ios/**/signing/*.p12
+mobile/ios/**/signing/*.mobileprovision
+!mobile/ios/**/signing/README.md
+
+# Review & temp logs
+*.log
+.review-logs/
