@@ -107,17 +107,36 @@ Each folder has `01_login`, `02_channels`, `03_player`, `04_guide`, and `05_sett
 
 ## 4. Building the Signed App Store IPA
 
-Put the distribution certificate and the App Store provisioning profile in `mobile/ios/BruTV/signing/`. Git ignores `.p12` and `.mobileprovision` files. The script reads the profile name and team ID from the profile.
+The script has two signing modes.
+
+**Automatic (default on this Mac).** Use it when `signing/` has no signing files. You need two things:
+
+- The Apple ID is signed in to Xcode (Settings > Accounts).
+- The login keychain has an Apple Distribution certificate for team `83BXSDT7QC`. To create one, go to Accounts > Manage Certificates > + > Apple Distribution.
+
+Xcode creates the App Store profile.
+
+```bash
+./mobile/ios/BruTV/release.sh --skip-simulator-build
+```
+
+**Manual.** Put the distribution certificate (`.p12`) and the App Store provisioning profile in `mobile/ios/BruTV/signing/`. Git ignores `.p12` and `.mobileprovision` files. The script reads the profile name and team ID from the profile.
 
 ```bash
 IOS_P12_PASSWORD='<password>' ./mobile/ios/BruTV/release.sh --skip-simulator-build
 ```
 
-In CI, set `IOS_CERTIFICATE_BASE64` and `IOS_PROVISIONING_PROFILE_BASE64` instead. `IOS_TEAM_ID`, `IOS_PROFILE_NAME`, `IOS_BUILD_NUMBER`, and `IOS_MARKETING_VERSION` override the defaults.
+In CI, set `IOS_CERTIFICATE_BASE64` and `IOS_PROVISIONING_PROFILE_BASE64` instead. `IOS_SIGNING`, `IOS_TEAM_ID`, `IOS_PROFILE_NAME`, `IOS_BUILD_NUMBER`, and `IOS_MARKETING_VERSION` override the defaults.
 
-The script archives the project, signs with the Apple Distribution identity in a temporary keychain, and exports the `.ipa` to `mobile/ios/BruTV/build/release/export/`.
+The script exports the `.ipa` to `mobile/ios/BruTV/build/release/export/`. In manual mode, it signs in a temporary keychain.
+
+If the export fails with `Copy failed` and an `rsync` error, a Homebrew `rsync` is first on `PATH`. The script puts `/usr/bin` first to avoid this.
 
 Release builds contain no test account. The demo credentials are inside `#if DEBUG` blocks.
+
+`tools/make-app-icon.swift` draws the app icon and writes every size in `AppIcon.appiconset`. App Store Connect rejects the upload with error 91111 if `AppIcon1024.png` is not exactly 1024 x 1024 or has an alpha channel. `release.sh` checks this before it archives. To regenerate the icons, run `swift tools/make-app-icon.swift` from the repo root.
+
+Each upload needs a new build number. Raise `CURRENT_PROJECT_VERSION` in the project, or set `IOS_BUILD_NUMBER`.
 
 ---
 

@@ -8,6 +8,8 @@ public struct PlayerView: View {
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
     @State private var controlsTimer: Timer?
+    /// True when a double-click in the player put the Mac window in full screen.
+    @State private var enteredMacFullScreen: Bool = false
 
     public init(isPresented: Binding<Bool> = .constant(true)) {
         self._isPresented = isPresented
@@ -16,11 +18,46 @@ public struct PlayerView: View {
     private func dismissPlayer(stop: Bool = true) {
         controlsTimer?.invalidate()
         controlsTimer = nil
+        exitMacFullScreenIfEntered()
         if stop {
             playback.stop()
         }
         isPresented = false
         dismiss()
+    }
+
+    /// Esc leaves full screen first. When the window is not full screen, it goes back to the channels.
+    private func handleEscape() {
+        #if targetEnvironment(macCatalyst)
+        if MacWindowFullScreen.isActive {
+            toggleMacFullScreen()
+            return
+        }
+        #endif
+        dismissPlayer(stop: true)
+    }
+
+    private func toggleMacFullScreen() {
+        #if targetEnvironment(macCatalyst)
+        let entering = !MacWindowFullScreen.isActive
+        MacWindowFullScreen.toggle()
+        enteredMacFullScreen = entering
+        if entering && playback.playbackState == .playing {
+            controlsTimer?.invalidate()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showControls = false
+            }
+        }
+        #endif
+    }
+
+    private func exitMacFullScreenIfEntered() {
+        #if targetEnvironment(macCatalyst)
+        if enteredMacFullScreen && MacWindowFullScreen.isActive {
+            MacWindowFullScreen.toggle()
+        }
+        enteredMacFullScreen = false
+        #endif
     }
 
     private var streamName: String {
@@ -47,6 +84,12 @@ public struct PlayerView: View {
                 showsNativeControls: false
             )
             .ignoresSafeArea()
+            #if targetEnvironment(macCatalyst)
+            // Declared before the single tap so a double-click is not read as two clicks.
+            .onTapGesture(count: 2) {
+                toggleMacFullScreen()
+            }
+            #endif
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showControls.toggle()
@@ -181,7 +224,7 @@ public struct PlayerView: View {
         .background(
             Group {
                 Button("") {
-                    dismissPlayer(stop: true)
+                    handleEscape()
                 }
                 .keyboardShortcut(.escape, modifiers: [])
 
@@ -207,6 +250,7 @@ public struct PlayerView: View {
         }
         .onDisappear {
             controlsTimer?.invalidate()
+            exitMacFullScreenIfEntered()
         }
     }
 
@@ -606,3 +650,38 @@ struct MediaControlButtonStyle: ButtonStyle {
             .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
+
+#if targetEnvironment(macCatalyst)
+/// Controls macOS window full screen from Mac Catalyst.
+///
+/// UIKit has no API for this, so it reaches the AppKit window through the
+/// Objective-C runtime and sends the public `toggleFullScreen:` action, the
+/// same action as the green window button and View > Enter Full Screen.
+enum MacWindowFullScreen {
+    /// `NSWindowStyleMaskFullScreen`.
+    private static let fullScreenStyleMask: UInt = 1 << 14
+
+    private static var window: NSObject? {
+        guard let appClass = NSClassFromString("NSApplication") as AnyObject?,
+              let app = appClass.perform(NSSelectorFromString("sharedApplication"))?
+                .takeUnretainedValue() as? NSObject
+        else { return nil }
+        if let key = app.value(forKey: "keyWindow") as? NSObject { return key }
+        if let main = app.value(forKey: "mainWindow") as? NSObject { return main }
+        return (app.value(forKey: "windows") as? [NSObject])?
+            .first { ($0.value(forKey: "isVisible") as? Bool) == true }
+    }
+
+    static var isActive: Bool {
+        guard let mask = window?.value(forKey: "styleMask") as? UInt else { return false }
+        return mask & fullScreenStyleMask != 0
+    }
+
+    static func toggle() {
+        guard let window else { return }
+        let selector = NSSelectorFromString("toggleFullScreen:")
+        guard window.responds(to: selector) else { return }
+        window.perform(selector, with: nil)
+    }
+}
+#endif
