@@ -1,4 +1,22 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.File
+import java.util.Properties
+
+val releaseSigningPropertiesPath = providers.environmentVariable("BRUTV_ANDROID_SIGNING_PROPERTIES").orNull
+    ?: "${System.getProperty("user.home")}/.config/brutv/android/keystore.properties"
+val releaseSigningPropertiesFile = file(releaseSigningPropertiesPath)
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+val releaseSigningValues = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .associateWith { releaseSigningProperties.getProperty(it)?.trim().orEmpty() }
+val releaseStoreFile = releaseSigningValues["storeFile"]
+    ?.takeIf(String::isNotEmpty)
+    ?.let(::File)
+val productionSigningConfigured = releaseSigningValues.values.all(String::isNotBlank) &&
+    releaseStoreFile?.isFile == true
 
 plugins {
     id("com.android.application")
@@ -13,9 +31,20 @@ android {
         applicationId = "com.bvolpato.brutv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (productionSigningConfigured) {
+            create("production") {
+                storeFile = releaseStoreFile!!
+                storePassword = releaseSigningValues.getValue("storePassword")
+                keyAlias = releaseSigningValues.getValue("keyAlias")
+                keyPassword = releaseSigningValues.getValue("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +52,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (productionSigningConfigured) {
+                signingConfig = signingConfigs.getByName("production")
+            }
         }
         create("preview") {
             initWith(getByName("release"))
@@ -38,6 +70,24 @@ android {
     buildFeatures { compose = true }
     testOptions { unitTests.isReturnDefaultValues = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+
+gradle.taskGraph.whenReady {
+    val releasePackagingTasks = setOf(
+        "assembleRelease",
+        "bundleRelease",
+        "installRelease",
+        "packageRelease",
+        "signReleaseBundle",
+    )
+    if (allTasks.any { it.path.startsWith(":app:") && it.name in releasePackagingTasks } &&
+        !productionSigningConfigured
+    ) {
+        throw GradleException(
+            "Production signing is required for Android release packages. Configure " +
+                "BRUTV_ANDROID_SIGNING_PROPERTIES or ~/.config/brutv/android/keystore.properties.",
+        )
+    }
 }
 
 kotlin {
