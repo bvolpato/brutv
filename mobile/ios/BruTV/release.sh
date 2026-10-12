@@ -28,15 +28,17 @@ Usage: mobile/ios/BruTV/release.sh [--skip-simulator-build]
 
 Builds signed App Store IPA. Must run on macOS with Xcode.
 
-Required env:
-  IOS_P12_PASSWORD
-
-Certificate/profile input:
-  Provide IOS_CERTIFICATE_BASE64 and IOS_PROVISIONING_PROFILE_BASE64,
-  or IOS_CERTIFICATE_PATH and IOS_PROVISIONING_PROFILE_PATH,
-  or put one .p12 and one .mobileprovision in mobile/ios/BruTV/signing/.
+Signing modes:
+  manual     Used when a .p12 and a .mobileprovision are given. Needs IOS_P12_PASSWORD.
+             Provide IOS_CERTIFICATE_BASE64 and IOS_PROVISIONING_PROFILE_BASE64,
+             or IOS_CERTIFICATE_PATH and IOS_PROVISIONING_PROFILE_PATH,
+             or put one .p12 and one .mobileprovision in mobile/ios/BruTV/signing/.
+  automatic  Used when no signing files are given. Needs an Apple Distribution
+             certificate in the login keychain and the Apple ID signed in to Xcode
+             (Settings > Accounts). Xcode creates the App Store profile.
 
 Optional env:
+  IOS_SIGNING              manual or automatic. Default: picked from the inputs above.
   IOS_TEAM_ID              default: TeamIdentifier from the profile
   IOS_PROFILE_NAME         default: Name from the profile
   IOS_BUNDLE_ID            default: com.bvolpato.brutv
@@ -107,8 +109,8 @@ require_cmd xcodebuild
 require_cmd security
 require_cmd xcrun
 require_cmd /usr/libexec/PlistBuddy
-require_env IOS_P12_PASSWORD
 
+# Put system tools first. Homebrew rsync breaks the IPA copy step of -exportArchive.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH"
 
 mkdir -p "$BUILD_DIR" "$SIGNING_DIR" "$EXPORT_PATH" "$PROFILE_DIR"
@@ -131,6 +133,49 @@ fi
 if [[ -z "$PROFILE_PATH" ]]; then
   PROFILE_PATH=$(find "$LOCAL_SIGNING_DIR" -maxdepth 1 -name '*.mobileprovision' -type f 2>/dev/null | sort | head -n 1 || true)
 fi
+
+SIGNING_MODE="${IOS_SIGNING:-}"
+if [[ -z "$SIGNING_MODE" ]]; then
+  if [[ -n "$CERT_PATH" || -n "$PROFILE_PATH" ]]; then
+    SIGNING_MODE=manual
+  else
+    SIGNING_MODE=automatic
+  fi
+fi
+echo "signing: $SIGNING_MODE"
+
+if [[ "$SIGNING_MODE" = automatic ]]; then
+  IOS_TEAM_ID="${IOS_TEAM_ID:-83BXSDT7QC}"
+  security find-identity -v -p codesigning | grep -q "Apple Distribution: .*($IOS_TEAM_ID)" || {
+    echo "error: no valid Apple Distribution certificate for team $IOS_TEAM_ID in the keychain." >&2
+    echo "Create one in Xcode > Settings > Accounts > Manage Certificates, or use manual mode." >&2
+    exit 1
+  }
+  cat > "$EXPORT_OPTIONS_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>$EXPORT_METHOD</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>teamID</key>
+    <string>$IOS_TEAM_ID</string>
+    <key>manageAppVersionAndBuildNumber</key>
+    <false/>
+</dict>
+</plist>
+PLIST
+  SIGNING_ARGS=(
+    -allowProvisioningUpdates
+    CODE_SIGN_STYLE=Automatic
+    DEVELOPMENT_TEAM="$IOS_TEAM_ID"
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+  )
+  EXPORT_ARGS=(-allowProvisioningUpdates)
+else
+require_env IOS_P12_PASSWORD
 
 [[ -n "$CERT_PATH" && -f "$CERT_PATH" ]] || {
   echo "error: missing signing certificate. Set IOS_CERTIFICATE_BASE64 or IOS_CERTIFICATE_PATH, or put a .p12 in $LOCAL_SIGNING_DIR" >&2
@@ -185,6 +230,16 @@ cat > "$EXPORT_OPTIONS_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+  SIGNING_ARGS=(
+    CODE_SIGNING_ALLOWED=YES
+    CODE_SIGN_STYLE=Manual
+    PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"
+    CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY"
+    DEVELOPMENT_TEAM="$IOS_TEAM_ID"
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+  )
+  EXPORT_ARGS=()
+fi
 
 XCODE_COMMON_ARGS=(
   -project "$PROJECT"
@@ -208,25 +263,21 @@ if [[ "$SKIP_SIM_BUILD" = false ]]; then
     "${XCODE_COMMON_ARGS[@]}" \
     -destination "$SIM_DESTINATION" \
     CODE_SIGNING_ALLOWED=NO \
-    "${VERSION_ARGS[@]}"
+    ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
 fi
 
 xcodebuild archive \
   "${XCODE_COMMON_ARGS[@]}" \
-  -sdk iphoneos \
+  -destination "generic/platform=iOS" \
   -archivePath "$ARCHIVE_PATH" \
-  CODE_SIGNING_ALLOWED=YES \
-  CODE_SIGN_STYLE=Manual \
-  PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME" \
-  CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
-  DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
-  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-  "${VERSION_ARGS[@]}"
+  "${SIGNING_ARGS[@]}" \
+  ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
 
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
-  -exportPath "$EXPORT_PATH"
+  -exportPath "$EXPORT_PATH" \
+  ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
 
 IPA_PATH=$(find "$EXPORT_PATH" -name '*.ipa' -type f | sort | head -n 1 || true)
 [[ -n "$IPA_PATH" ]] || {
