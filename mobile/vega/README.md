@@ -61,7 +61,7 @@ vega run-app <path-to-built-package.vpkg>
 
 See [run on Vega Virtual Device or Fire TV](https://developer.amazon.com/docs/vega/0.23/run-apps.html) for developer mode, device setup and remote keyboard mappings. The file name is produced by the SDK; do not rename an APK to `.vpkg`.
 
-SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-access React Native 0.83 track. [Amazon's release notes](https://developer.amazon.com/docs/vega/0.24/vega-release-notes.html) explain this compatibility boundary. This starter has not been migrated to or tested with that track. An SDK 0.24 build needs its matching template/dependencies and OS manifest settings, rather than an unreviewed version bump. The 0.23 source track does not establish an OS 1.1 compatibility guarantee: package generation and testing on each claimed device/OS version are still required. There is no validated minimum device OS for this source-only starter.
+SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-access React Native 0.83 track. [Amazon's release notes](https://developer.amazon.com/docs/vega/0.24/vega-release-notes.html) explain this compatibility boundary. This starter has not been migrated to or tested with that track. An SDK 0.24 build needs its matching template/dependencies and OS manifest settings, rather than an unreviewed version bump. The 0.23 source track does not establish an OS 1.1 compatibility guarantee: package generation and testing on each claimed device/OS version are still required. There is no validated minimum device OS for this target.
 
 ## Sign-in and parity boundaries
 
