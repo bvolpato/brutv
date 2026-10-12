@@ -8,8 +8,8 @@ Decisions confirmed on October 12, 2026:
 
 - BruTV will be free, with the positioning **"IPTV that just works."**
 - The intended release supports iPhone, iPad, and Mac through Mac Catalyst.
-- The intended release will not bundle provider credentials, demo accounts, or reviewer streams. The current prototype still contains legacy demo code; it was left unchanged at the owner's request and must be removed before release.
-- `.m3u` playlist import from a file or URL and a catalog of public streams are planned. Neither feature nor a generated public playlist has been implemented. App changes are paused at the owner's request.
+- The intended release will not bundle provider credentials, demo accounts, or reviewer streams. Status: the demo account code is inside `#if DEBUG` blocks, so Release builds do not contain it. A check of the Release binary found no server URL and no demo symbols. The App Review notes point to the public iptv-org playlist. The app does not bundle it.
+- `.m3u` playlist import from a URL is implemented. Import from a file and a catalog of public streams are still planned. No generated public playlist exists.
 - Any future public catalog must retain source attribution and distinguish accessible streams from permission to distribute or display them. Content-rights and age-rating declarations remain pending.
 
 The Apple Developer identifier is `com.bvolpato.brutv` under team `83BXSDT7QC`. App Store Connect record `6821989154` has iOS and macOS `1.0.0` drafts, English (U.S.) metadata, Entertainment / Utilities categories, and manual release selected on both platforms. The approved **Data Not Collected** privacy response is published. Free pricing is the product decision; the App Store price schedule has not yet been configured.
