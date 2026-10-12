@@ -2,6 +2,9 @@ import SwiftUI
 import AVKit
 
 public struct PlayerView: View {
+    @Binding public var isPresented: Bool
+    @Environment(\.dismiss) private var dismiss
+
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var favorites = FavoritesStore.shared
 
@@ -9,7 +12,19 @@ public struct PlayerView: View {
     @State private var showGuideDrawer: Bool = false
     @State private var controlsTimer: Timer?
 
-    public init() {}
+    public init(isPresented: Binding<Bool> = .constant(true)) {
+        self._isPresented = isPresented
+    }
+
+    private func dismissPlayer(stop: Bool = true) {
+        controlsTimer?.invalidate()
+        controlsTimer = nil
+        if stop {
+            playback.stop()
+        }
+        isPresented = false
+        dismiss()
+    }
 
     private var streamName: String {
         if let live = playback.currentStream {
@@ -39,41 +54,66 @@ public struct PlayerView: View {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showControls.toggle()
                 }
-                if showControls {
+                if showControls && playback.playbackState == .playing {
                     scheduleControlsAutoHide()
                 }
             }
             .gesture(
-                DragGesture(minimumDistance: 40)
+                DragGesture(minimumDistance: 30)
                     .onEnded { value in
-                        if value.translation.width < -50 {
+                        if value.translation.height > 80 {
+                            // Swipe Down -> Return to channels
+                            dismissPlayer(stop: false)
+                        } else if value.translation.width < -50 {
                             // Swipe Left -> Next Channel
                             playback.nextChannel()
-                            scheduleControlsAutoHide()
+                            if playback.playbackState == .playing {
+                                scheduleControlsAutoHide()
+                            }
                         } else if value.translation.width > 50 {
                             // Swipe Right -> Previous Channel
                             playback.previousChannel()
-                            scheduleControlsAutoHide()
+                            if playback.playbackState == .playing {
+                                scheduleControlsAutoHide()
+                            }
                         }
                     }
             )
 
-            // Buffering Indicator
+            // Buffering Indicator with Cancel Button
             if playback.playbackState == .buffering || playback.playbackState == .loading {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     ProgressView()
                         .tint(.cyan)
                         .scaleEffect(1.4)
                     Text(playback.playbackState == .loading ? "Connecting to stream..." : "Buffering live broadcast...")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.white.opacity(0.85))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+
+                    Button {
+                        dismissPlayer(stop: true)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 12, weight: .bold))
+                            Text("Back to Channels")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(Capsule().fill(Color.black.opacity(0.7)))
+                        .background(Capsule().fill(Color.white.opacity(0.2)))
+                    }
+                    .accessibilityIdentifier("playerLoadingBackButton")
                 }
+                .padding(22)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.black.opacity(0.85))
+                )
             }
 
-            // Error Overlay
+            // Error Overlay with direct Return to Channels
             if case .failed(let msg) = playback.playbackState {
                 VStack(spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -89,16 +129,23 @@ public struct PlayerView: View {
                         .padding(.horizontal, 32)
 
                     HStack(spacing: 12) {
+                        Button {
+                            dismissPlayer(stop: true)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.left")
+                                Text("Back to Channels")
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                        }
+                        .accessibilityIdentifier("playerErrorBackButton")
+                        .buttonStyle(.borderedProminent)
+                        .tint(.cyan)
+
                         Button("Retry") {
                             if let s = playback.currentStream {
                                 playback.play(stream: s)
                             }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
-
-                        Button("Close") {
-                            playback.stop()
                         }
                         .buttonStyle(.bordered)
                         .tint(.white)
@@ -107,7 +154,7 @@ public struct PlayerView: View {
                 .padding(24)
                 .background(
                     RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.black.opacity(0.88))
+                        .fill(Color.black.opacity(0.92))
                 )
             }
 
@@ -139,8 +186,32 @@ public struct PlayerView: View {
                 quickChannelDrawer
             }
         }
+        .background(
+            Group {
+                Button("") {
+                    dismissPlayer(stop: true)
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+
+                Button("") {
+                    dismissPlayer(stop: true)
+                }
+                .keyboardShortcut("w", modifiers: [.command])
+            }
+            .opacity(0)
+        )
         .onAppear {
-            scheduleControlsAutoHide()
+            if playback.playbackState == .playing {
+                scheduleControlsAutoHide()
+            }
+        }
+        .onChange(of: playback.playbackState) { _, newState in
+            if newState == .playing {
+                scheduleControlsAutoHide()
+            } else {
+                controlsTimer?.invalidate()
+                showControls = true
+            }
         }
         .onDisappear {
             controlsTimer?.invalidate()
@@ -149,13 +220,36 @@ public struct PlayerView: View {
 
     private var topControlsBar: some View {
         HStack(spacing: 12) {
+            // Prominent Back to Channels button
             Button {
-                playback.stop()
+                dismissPlayer(stop: true)
             } label: {
-                Image(systemName: "chevron.down.circle.fill")
-                    .font(.system(size: 26))
-                    .foregroundColor(.white.opacity(0.85))
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Channels")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(Color.black.opacity(0.65)))
+                .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
             }
+            .accessibilityIdentifier("playerBackButton")
+
+            // Minimize to Mini-Player bar button
+            Button {
+                dismissPlayer(stop: false)
+            } label: {
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(Color.black.opacity(0.5)))
+            }
+            .accessibilityLabel("Minimize")
+            .accessibilityIdentifier("playerMinimizeButton")
 
             // Channel Logo & Title
             if let stream = playback.currentStream {
@@ -223,6 +317,19 @@ public struct PlayerView: View {
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(Color.black.opacity(0.5)))
             }
+
+            // Close Button
+            Button {
+                dismissPlayer(stop: true)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(Color.black.opacity(0.5)))
+            }
+            .accessibilityLabel("Close Player")
+            .accessibilityIdentifier("playerCloseButton")
         }
         .padding(.horizontal, 18)
         .padding(.top, 16)
@@ -276,6 +383,7 @@ public struct PlayerView: View {
                     }
                     .foregroundColor(.white)
                 }
+                .accessibilityIdentifier("playerGuideButton")
 
                 Spacer()
 
@@ -288,6 +396,8 @@ public struct PlayerView: View {
                         .font(.system(size: 24))
                         .foregroundColor(.white)
                 }
+                .accessibilityLabel("Previous Channel")
+                .accessibilityIdentifier("playerPrevButton")
 
                 // Play / Pause
                 Button {
@@ -298,6 +408,8 @@ public struct PlayerView: View {
                         .font(.system(size: 48))
                         .foregroundColor(.cyan)
                 }
+                .accessibilityLabel("Play or Pause")
+                .accessibilityIdentifier("playerPlayPauseButton")
 
                 // Next Channel
                 Button {
@@ -308,6 +420,8 @@ public struct PlayerView: View {
                         .font(.system(size: 24))
                         .foregroundColor(.white)
                 }
+                .accessibilityLabel("Next Channel")
+                .accessibilityIdentifier("playerNextButton")
 
                 Spacer()
 
@@ -320,6 +434,8 @@ public struct PlayerView: View {
                         .font(.system(size: 20))
                         .foregroundColor(.white)
                 }
+                .accessibilityLabel("Mute")
+                .accessibilityIdentifier("playerMuteButton")
             }
             .padding(.horizontal, 28)
             .padding(.bottom, 20)
@@ -349,6 +465,8 @@ public struct PlayerView: View {
                             .font(.system(size: 20))
                             .foregroundColor(.gray)
                     }
+                    .accessibilityLabel("Close Guide")
+                    .accessibilityIdentifier("guideCloseButton")
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
@@ -388,9 +506,13 @@ public struct PlayerView: View {
 
     private func scheduleControlsAutoHide() {
         controlsTimer?.invalidate()
+        guard playback.playbackState == .playing else {
+            showControls = true
+            return
+        }
         controlsTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { _ in
             Task { @MainActor in
-                if !showGuideDrawer {
+                if !showGuideDrawer && playback.playbackState == .playing {
                     withAnimation {
                         showControls = false
                     }

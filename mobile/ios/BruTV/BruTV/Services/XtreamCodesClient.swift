@@ -145,10 +145,16 @@ public final class XtreamCodesClient: @unchecked Sendable {
 
     // MARK: - API Calls
 
+    private func createRequest(url: URL, timeout: TimeInterval = 15.0) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        request.setValue("IPTVSmartersPro/1.1.1", forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
     public func authenticate() async throws -> AuthResponse {
         let url = try apiEndpointURL()
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15.0
+        let request = createRequest(url: url, timeout: 15.0)
 
         let (data, response) = try await session.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
@@ -174,8 +180,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
         }
 
         let url = try apiEndpointURL(action: "get_live_categories")
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15.0
+        let request = createRequest(url: url, timeout: 15.0)
 
         let (data, response) = try await session.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
@@ -205,8 +210,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
         }
 
         let url = try apiEndpointURL(action: "get_live_streams", queryParams: params)
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 25.0
+        let request = createRequest(url: url, timeout: 25.0)
 
         let (data, response) = try await session.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
@@ -231,7 +235,8 @@ public final class XtreamCodesClient: @unchecked Sendable {
             return cached
         }
         let url = try apiEndpointURL(action: "get_vod_categories")
-        let (data, _) = try await session.data(from: url)
+        let request = createRequest(url: url, timeout: 15.0)
+        let (data, _) = try await session.data(for: request)
         let categories = try JSONDecoder().decode([VODCategory].self, from: data)
         self.cachedVODCategories = categories
         return categories
@@ -243,7 +248,8 @@ public final class XtreamCodesClient: @unchecked Sendable {
             params["category_id"] = categoryID
         }
         let url = try apiEndpointURL(action: "get_vod_streams", queryParams: params)
-        let (data, _) = try await session.data(from: url)
+        let request = createRequest(url: url, timeout: 20.0)
+        let (data, _) = try await session.data(for: request)
         let streams = try JSONDecoder().decode([VODStream].self, from: data)
         return streams
     }
@@ -253,7 +259,8 @@ public final class XtreamCodesClient: @unchecked Sendable {
             return cached
         }
         let url = try apiEndpointURL(action: "get_series_categories")
-        let (data, _) = try await session.data(from: url)
+        let request = createRequest(url: url, timeout: 15.0)
+        let (data, _) = try await session.data(for: request)
         let categories = try JSONDecoder().decode([SeriesCategory].self, from: data)
         self.cachedSeriesCategories = categories
         return categories
@@ -265,7 +272,8 @@ public final class XtreamCodesClient: @unchecked Sendable {
             params["category_id"] = categoryID
         }
         let url = try apiEndpointURL(action: "get_series", queryParams: params)
-        let (data, _) = try await session.data(from: url)
+        let request = createRequest(url: url, timeout: 20.0)
+        let (data, _) = try await session.data(for: request)
         let series = try JSONDecoder().decode([SeriesItem].self, from: data)
         return series
     }
