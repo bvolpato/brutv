@@ -55,6 +55,7 @@ public struct MainContentView: View {
                 }
             }
         }
+        .tint(.cyan)
         .fullScreenCover(isPresented: $isPlayerFullScreen) {
             PlayerView(isPresented: $isPlayerFullScreen)
         }
@@ -159,84 +160,86 @@ public struct MainContentView: View {
 
     // Mini Player bar
     private var miniPlayerBar: some View {
-        Button {
-            isPlayerFullScreen = true
-        } label: {
-            HStack(spacing: 12) {
-                if let stream = playback.currentStream {
-                    CachedAsyncImage(url: stream.iconURL) {
-                        Image(systemName: "tv")
-                            .foregroundColor(.cyan)
-                    }
-                    .frame(width: 40, height: 40)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(8)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(stream.cleanName)
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        Text("Live • \(playback.telemetry.bufferDurationFormatted) buffered")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.cyan)
-                    }
-                } else if let vod = playback.currentVOD {
-                    Image(systemName: "film")
-                        .foregroundColor(.cyan)
+        HStack(spacing: 10) {
+            Button {
+                isPlayerFullScreen = true
+            } label: {
+                HStack(spacing: 12) {
+                    if let stream = playback.currentStream {
+                        CachedAsyncImage(url: stream.iconURL) {
+                            Image(systemName: "tv")
+                                .foregroundColor(.cyan)
+                        }
                         .frame(width: 40, height: 40)
                         .background(Color.white.opacity(0.1))
                         .cornerRadius(8)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(vod.name)
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        Text("Movie Playing")
-                            .font(.system(size: 11))
-                            .foregroundColor(.gray)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stream.cleanName)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text("Live • \(playback.telemetry.bufferDurationFormatted) buffered")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.cyan)
+                        }
+                    } else if let vod = playback.currentVOD {
+                        Image(systemName: "film")
+                            .foregroundColor(.cyan)
+                            .frame(width: 40, height: 40)
+                            .background(Color.white.opacity(0.1))
+                            .cornerRadius(8)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(vod.name)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Text(playback.isPlaybackRequested ? "Movie Playing" : "Paused")
+                                .font(.system(size: 11))
+                                .foregroundColor(.gray)
+                        }
                     }
-                }
 
-                Spacer()
-
-                Button {
-                    playback.togglePlayPause()
-                } label: {
-                    Image(systemName: playback.isPlaybackRequested ? "pause.fill" : "play.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(.white)
-                        .padding(8)
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Play or Pause")
-                .accessibilityIdentifier("miniPlayerPlayPause")
-
-                Button {
-                    playback.stop()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 14))
-                        .foregroundColor(.gray)
-                        .padding(8)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Stop")
-                .accessibilityIdentifier("miniPlayerClose")
+                .contentShape(Rectangle())
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(hex: "#101624").opacity(0.96))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.cyan.opacity(0.3), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.5), radius: 12, x: 0, y: 6)
-            )
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the full screen player")
+            .accessibilityIdentifier("miniPlayer")
+
+            Button {
+                playback.togglePlayPause()
+            } label: {
+                Image(systemName: playback.isPlaybackRequested ? "pause.fill" : "play.fill")
+                    .font(.system(size: 18, weight: .semibold))
+            }
+            .buttonStyle(MediaControlButtonStyle(isPrimary: true))
+            .accessibilityLabel(playback.isPlaybackRequested ? "Pause" : "Play")
+            .help(playback.isPlaybackRequested ? "Pause playback" : "Resume playback")
+            .accessibilityIdentifier("miniPlayerPlayPause")
+
+            Button {
+                playback.stop()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .buttonStyle(MediaControlButtonStyle())
+            .accessibilityLabel("Stop")
+            .help("Stop playback")
+            .accessibilityIdentifier("miniPlayerClose")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("miniPlayer")
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(hex: "#101624").opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.cyan.opacity(0.3), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.5), radius: 12, x: 0, y: 6)
+        )
     }
 }

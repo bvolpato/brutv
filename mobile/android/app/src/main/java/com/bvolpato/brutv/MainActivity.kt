@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> if (player.playWhenReady) player.pause() else playFromRemote(player)
                 KeyEvent.KEYCODE_MEDIA_PLAY -> playFromRemote(player)
                 KeyEvent.KEYCODE_MEDIA_PAUSE -> player.pause()
-                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (player.isCurrentMediaItemLive) player.seekToDefaultPosition() else player.seekForward()
+                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> player.seekForward()
                 KeyEvent.KEYCODE_MEDIA_REWIND -> player.seekBack()
                 else -> return super.onKeyDown(keyCode, event)
             }

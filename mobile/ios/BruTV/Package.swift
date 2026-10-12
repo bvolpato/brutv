@@ -10,17 +10,17 @@ let package = Package(
             name: "BruTV",
             path: "BruTV",
             exclude: [
-                "AppRootView.swift", "BruTVApp.swift", "BruTV.entitlements",
+                "AppRootView.swift", "BruTVApp.swift", "BruTV.entitlements", "BruTVCatalyst.entitlements",
                 "Info.plist", "Resources", "Views",
                 "Services/AccountStore.swift", "Services/FavoritesStore.swift",
-                "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift",
+                "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift", "Services/LiveTimeshiftServer.swift",
             ],
             sources: [
                 "Models/AccountModels.swift", "Models/ChannelModels.swift",
                 "Models/EPGModels.swift", "Models/PlayerSettings.swift",
                 "Services/LoginLink.swift", "Services/M3UPlaylistParser.swift",
                 "Services/XtreamCodesClient.swift",
-                "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift",
+                "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift", "Services/LiveTimeshift.swift",
             ]
         ),
         .testTarget(
@@ -33,7 +33,7 @@ let package = Package(
             sources: [
                 "SourceLoginTests.swift", "XtreamCodesClientTests.swift",
                 "SourceRegressionTests.swift",
-                "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift",
+                "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift", "LiveTimeshiftTests.swift",
             ]
         ),
     ],

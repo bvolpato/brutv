@@ -18,84 +18,96 @@ public struct ChannelCardView: View {
     }
 
     public var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                // Channel Logo
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color(white: 0.12))
-                        .frame(width: 58, height: 58)
+        HStack(spacing: 0) {
+            Button(action: onSelect) {
+                HStack(spacing: 12) {
+                    // Channel Logo
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color(white: 0.12))
+                            .frame(width: 58, height: 58)
 
-                    CachedAsyncImage(url: stream.iconURL) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.cyan.opacity(0.15))
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "tv")
-                                .font(.system(size: 18))
-                                .foregroundColor(.cyan)
+                        CachedAsyncImage(url: stream.iconURL) {
+                            ZStack {
+                                Circle()
+                                    .fill(Color.cyan.opacity(0.15))
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "tv")
+                                    .font(.system(size: 18))
+                                    .foregroundColor(.cyan)
+                            }
                         }
-                    }
-                    .frame(width: 48, height: 48)
-                }
-
-                // Channel Info
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        if stream.num > 0 {
-                            Text("\(stream.num)")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.gray)
-                        }
-
-                        Text(stream.cleanName)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-
-                        Spacer()
-
-                        // Quality Badge
-                        Text(stream.quality.rawValue)
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(Color(hex: stream.quality.badgeColorHex))
-                            )
+                        .frame(width: 48, height: 48)
                     }
 
-                    Text("Live Broadcast")
-                        .font(.system(size: 12))
-                        .foregroundColor(.gray)
-                }
+                    // Channel Info
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            if stream.num > 0 {
+                                Text("\(stream.num)")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.gray)
+                            }
 
-                // Favorite Toggle Button
-                Button {
-                    favorites.toggleFavorite(channelID: stream.id)
-                } label: {
-                    Image(systemName: isFav ? "heart.fill" : "heart")
-                        .font(.system(size: 16))
-                        .foregroundColor(isFav ? .red : .gray.opacity(0.6))
-                        .frame(width: 32, height: 32)
+                            Text(stream.cleanName)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+
+                            Spacer()
+
+                            // Quality Badge
+                            Text(stream.quality.rawValue)
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(Color(hex: stream.quality.badgeColorHex))
+                                )
+                        }
+
+                        Text("Live Broadcast")
+                            .font(.system(size: 12))
+                            .foregroundColor(.gray)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("favoriteButton")
+                .padding(10)
+                .contentShape(Rectangle())
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(isSelected ? Color.cyan.opacity(0.2) : Color(white: 0.08))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(isSelected ? Color.cyan : Color.white.opacity(0.06), lineWidth: isSelected ? 1.5 : 1)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Play \(stream.cleanName)")
+            .accessibilityValue(stream.num > 0 ? "Channel \(stream.num), \(stream.quality.rawValue)" : stream.quality.rawValue)
+            .accessibilityIdentifier("channelCard")
+
+            Button {
+                favorites.toggleFavorite(channelID: stream.id)
+            } label: {
+                Image(systemName: isFav ? "heart.fill" : "heart")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(isFav ? .red : .white.opacity(0.7))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(isFav ? Color.red.opacity(0.12) : Color.white.opacity(0.06))
                     )
-            )
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 10)
+            .accessibilityLabel(isFav ? "Remove \(stream.cleanName) from Favorites" : "Add \(stream.cleanName) to Favorites")
+            .help(isFav ? "Remove favorite" : "Add favorite")
+            .accessibilityIdentifier("favoriteButton")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("channelCard")
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(isSelected ? Color.cyan.opacity(0.2) : Color(white: 0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isSelected ? Color.cyan : Color.white.opacity(0.08), lineWidth: isSelected ? 1.5 : 1)
+                )
+        )
     }
 }
 

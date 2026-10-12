@@ -24,6 +24,18 @@ Before submission, install a stable Xcode version that meets Apple's current SDK
 
 ---
 
+## Live pause and rewind validation
+
+Live playback now records clear, muxed MPEG-TS HLS into a per-channel temporary ring independently of AVPlayer. Pause stops presentation while capture continues while the app is active. The retained window is at most 10 minutes, with a **256 MiB total on-disk cap**. Recently advertised HLS segments remain leased for in-flight playback and count against the same cap; half the budget is reserved for those leases, so high-bitrate rewind windows can be shorter. Manifests are capped at 1 MiB and segments at 32 MiB during receipt. Parsed playlists and retained session files are limited to 2,000 segments, with a minimum segment duration of 0.25 seconds. Open HTTP readers hold counted file leases until they close. Changing channels, stopping playback, or logging out removes the session; stale owned sessions are removed on next startup.
+
+The player shows retained time and temporary bytes, rewind/forward controls, and a seek slider. Go Live appears after pause or rewind moves playback behind the normal live point. It also appears when ordinary playback falls more than 15 seconds behind. It seeks to a three-segment holdback before resuming. When paused content ages out, playback clamps to the oldest retained point. Missing capture intervals are marked as discontinuities with a visible notice.
+
+Encrypted/DRM HLS, external audio/subtitle renditions, fragmented MP4 initialization maps, byte-range segments, and unsupported playlist types fall back to direct playback with a visible rewind-unavailable reason. Supported master playlists use one muxed variant, preferring the highest bitrate at or below 8 Mbps. This initial recorder does not provide adaptive variant switching. A native decoder or unsupported-format failure in the recorded variant triggers one attempt to play the original provider URL directly, with a visible rewind-unavailable reason. The recorder closes before direct playback starts, and playback intent is preserved.
+
+On iPhone and iPad, paused capture is **not guaranteed when the app is backgrounded or the device is locked**. The operating system can suspend the app. Active background audio playback uses the existing audio mode. Capture resumes when the app becomes active; content missed during suspension cannot be recovered from an expired upstream window. Mac Catalyst can capture while its process remains active, excluding sleep or termination. The Catalyst-only entitlement file enables sandbox network client/server access for the loopback server; iOS uses its original entitlements.
+
+Before release, build on Xcode and run the controlled moving HLS fixture described in the repository README. Confirm on iPhone, iPad, and Mac Catalyst: pause for longer than the provider's playlist window; manually retry the player while delayed and verify the playhead stays on the same recorded content; verify saved bytes increase while the picture remains paused; resume and rewind into content already expired upstream; seek forward and use Go Live; run past the retention and storage caps; change channels and log out; background/lock and resume; reject unsupported streams without losing ordinary playback. Confirm the Catalyst network entitlements with the signed app. Portable Swift tests and syntax parsing do not validate AVPlayer or Network.framework runtime behavior.
+
 ## Prerequisites
 
 - **macOS** with a stable **Xcode 26+** version and the required platform SDKs.

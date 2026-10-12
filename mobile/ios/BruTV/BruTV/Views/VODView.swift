@@ -33,8 +33,14 @@ public struct VODView: View {
                         .foregroundColor(.white)
                     if !searchText.isEmpty {
                         Button { searchText = "" } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.gray)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
+                        .accessibilityHint("Removes the movie search text.")
                     }
                 }
                 .padding(.horizontal, 14)

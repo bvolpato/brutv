@@ -6,6 +6,26 @@ See [the Android guide](mobile/android/README.md) for builds, APK installation, 
 
 The separate [Vega OS starter](mobile/vega/README.md) has source and JavaScript validation. It still requires Amazon SDK packaging and device validation.
 
+## Live pause and rewind
+
+Supported HLS channels use a temporary recorder that keeps fetching completed video segments independently of the paused player. Rewind and forward move through the retained window; **Go Live** returns to the stream's normal live position and resumes playback. The recorder retains up to **10 minutes or 256 MiB**, whichever limit is reached first. High-bitrate channels can reach the storage limit sooner. The window is shown in the player, and an expired pause is explained rather than presented as a complete recording.
+
+Temporary video stays on the device and is removed when playback closes or changes channels. Stale session files are cleaned on a subsequent start. This is a rolling buffer, not a recording library. Vega stores encoded segment files and counts their full encoded size against the same storage cap.
+
+The first supported format is clear, muxed HLS. Unsupported encryption, separate renditions, byte-range playlists, and other formats fall back to ordinary playback with a timeshift availability message. No tracks are silently discarded to enable recording. See each platform guide for its exact supported formats and validation results.
+
+Fetching continues during an in-app pause. Android and Vega clear the buffer when the player leaves the foreground, except Android Picture in Picture. iPhone and iPad can suspend an inactive or locked app, interrupting capture. Mac capture requires an active process. Resume, storage limits, and provider gaps must be tested on physical devices before release.
+
+### Reproduce a pause longer than the provider window
+
+With Node.js and FFmpeg available, run:
+
+```sh
+node tools/timeshift-fixture.mjs
+```
+
+Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2.2:8765/playlist.m3u` in an Android emulator. The source exposes only six seconds of HLS history and deletes older segments. Pause BruTV for at least 30 seconds, confirm downloads and temporary files continue growing, resume the saved video, rewind and forward, then return to live. The `/stats` endpoint counts downloads. Closing playback must remove the app's temporary session. Stop the fixture with Ctrl+C.
+
 ---
 
 ## Apple App Features

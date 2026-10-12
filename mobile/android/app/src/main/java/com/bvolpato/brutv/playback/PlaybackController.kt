@@ -7,11 +7,13 @@ import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
@@ -33,9 +35,11 @@ import com.bvolpato.brutv.data.MediaKind
 import java.net.SocketTimeoutException
 import java.net.SocketException
 import java.net.UnknownHostException
+import java.io.File
 import java.util.UUID
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -56,6 +60,7 @@ internal data class PlaybackSnapshot(
     val durationMs: Long = 0,
     val bufferMs: Long = 0,
     val liveOffsetMs: Long = 0,
+    val behindLiveDefaultPositionMs: Long = 0,
     val bitrate: Int = 0,
     val bandwidthEstimate: Long = 0,
     val width: Int = 0,
@@ -67,6 +72,13 @@ internal data class PlaybackSnapshot(
     val recovering: Boolean = false,
     val tracks: Tracks = Tracks.EMPTY,
     val error: String? = null,
+    val liveSeekable: Boolean = false,
+    val timeShiftAvailable: Boolean = false,
+    val timeShiftRecording: Boolean = false,
+    val timeShiftDurationMs: Long = 0,
+    val timeShiftBytes: Long = 0,
+    val timeShiftNotice: String? = null,
+    val canGoLive: Boolean = false,
 )
 
 @OptIn(UnstableApi::class)
@@ -82,6 +94,17 @@ internal class PlaybackController(context: Context, private val profile: BufferP
     private var lastPlaybackState = Player.STATE_IDLE
     private var resumeAfterBackground = false
     private var disposed = false
+    private var timeShift: HlsTimeShiftSession? = null
+    private var timeShiftAttempted = false
+    private var timeShiftNotice: String? = null
+    private var prepareJob: Job? = null
+    private var backgroundSourceReleased = false
+    private var intendedPlay = false
+    private var expiredRecoveryAttempts = 0
+    private var manuallyBehindLive = false
+    private var localSource: LocalTimeShiftSource? = null
+    private var pendingLiveAnchorMs: Long? = null
+    private var pendingLivePlay = false
     private val mutableState = MutableStateFlow(PlaybackSnapshot())
     val state = mutableState.asStateFlow()
 
@@ -114,7 +137,23 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         .setSeekBackIncrementMs(10_000)
         .setSeekForwardIncrementMs(10_000)
         .build()
-    private val mediaSession = MediaSession.Builder(appContext, player)
+    val controlPlayer: Player = object : ForwardingPlayer(player) {
+        override fun getPlayWhenReady(): Boolean = requestedPlay()
+        override fun setPlayWhenReady(playWhenReady: Boolean) {
+            if (playWhenReady) this@PlaybackController.play() else this@PlaybackController.pause()
+        }
+        override fun play() = this@PlaybackController.play()
+        override fun pause() = this@PlaybackController.pause()
+        override fun prepare() {
+            if (prepareJob?.isActive != true && pendingLiveAnchorMs == null && player.playbackState == Player.STATE_IDLE) {
+                retry(play = requestedPlay())
+            }
+        }
+        override fun stop() = this@PlaybackController.stop()
+        override fun seekBack() = seekBy(-10_000)
+        override fun seekForward() = seekBy(10_000)
+    }
+    private val mediaSession = MediaSession.Builder(appContext, controlPlayer)
         .setId("BruTV-${UUID.randomUUID()}")
         .setCallback(object : MediaSession.Callback {
             override fun onPlayerInteractionFinished(
@@ -123,6 +162,13 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                 playerCommands: Player.Commands,
             ) {
                 if (disposed) return
+                if (playerCommands.contains(Player.COMMAND_PLAY_PAUSE) &&
+                    (prepareJob?.isActive == true || pendingLiveAnchorMs != null)) {
+                    intendedPlay = controlPlayer.playWhenReady
+                    pendingLivePlay = intendedPlay
+                    if (!intendedPlay) cancelRecovery()
+                    refresh()
+                }
                 if (playerCommands.contains(Player.COMMAND_STOP) && player.playbackState == Player.STATE_IDLE) stop()
             }
         })
@@ -140,6 +186,11 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                 mutableState.value = mutableState.value.copy(error = null)
             }
             if (playbackState == Player.STATE_ENDED && mutableState.value.entry?.kind == MediaKind.LIVE && player.playWhenReady) {
+                if (timeShift?.snapshot()?.recording == false) {
+                    player.pause()
+                    refresh()
+                    return
+                }
                 recover(FailureKind.NETWORK)
                 return
             }
@@ -169,6 +220,10 @@ internal class PlaybackController(context: Context, private val profile: BufferP
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (disposed) return
+            if (playWhenReady && player.mediaItemCount == 0 && prepareJob?.isActive != true && mutableState.value.entry != null) {
+                retry(play = true)
+                return
+            }
             if (playWhenReady && mutableState.value.error != null) {
                 mutableState.value = mutableState.value.copy(error = null)
                 generation = recovery.startEntry()
@@ -180,11 +235,51 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (!disposed) recover(classify(error))
+            if (disposed) return
+            val kind = classify(error)
+            if (timeShift != null && kind == FailureKind.UNSUPPORTED) {
+                val entry = mutableState.value.entry ?: return
+                val play = if (pendingLiveAnchorMs != null) pendingLivePlay else player.playWhenReady
+                cancelRecovery()
+                closeTimeShift()
+                // One native fallback can choose a different master rendition for this device.
+                timeShiftAttempted = true
+                timeShiftNotice = "The recording rendition is unsupported on this device. Using direct live playback."
+                generation = recovery.startEntry()
+                mutableState.value = mutableState.value.copy(error = null, recovering = false)
+                player.stop()
+                prepare(entry, 0, play)
+                return
+            }
+            val response = generateSequence<Throwable>(error) { it.cause }.take(12)
+                .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
+            if (timeShift != null && expiredRecoveryAttempts < 2 &&
+                (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW || response == 410)) {
+                // A bounded ring can expire an old paused position or cached native manifest.
+                timeShiftNotice = "Older buffered footage expired. Playback moved to the oldest saved footage."
+                expiredRecoveryAttempts++
+                val play = player.playWhenReady
+                player.seekTo(0)
+                player.prepare()
+                player.playWhenReady = play
+                refresh()
+            } else recover(kind)
         }
 
         override fun onTracksChanged(tracks: Tracks) {
             mutableState.value = mutableState.value.copy(tracks = tracks)
+            refresh()
+        }
+
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                manuallyBehindLive = (liveDistanceFromDefaultMs() ?: 0) > 1_000
+            }
+            refresh()
+        }
+
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            applyPendingLiveAnchor()
             refresh()
         }
 
@@ -209,6 +304,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                 refresh()
                 if (healthySince != 0L && SystemClock.elapsedRealtime() - healthySince >= 30_000) {
                     recovery.healthy()
+                    expiredRecoveryAttempts = 0
                 }
                 delay(500)
             }
@@ -219,6 +315,10 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         checkMainThread()
         if (disposed || (mutableState.value.entry == entry && player.mediaItemCount > 0)) return
         cancelRecovery()
+        closeTimeShift()
+        timeShiftNotice = null
+        backgroundSourceReleased = false
+        expiredRecoveryAttempts = 0
         generation = recovery.startEntry()
         healthySince = 0
         hasPlayed = false
@@ -230,55 +330,107 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         prepare(entry, resumePositionMs, true)
     }
 
-    fun retry() {
+    fun retry(play: Boolean = player.playWhenReady || timeShift == null) {
         checkMainThread()
         val entry = mutableState.value.entry ?: return
-        val position = if (entry.kind == MediaKind.LIVE) 0 else player.currentPosition
+        val position = if (entry.kind == MediaKind.LIVE && timeShift == null) 0 else player.currentPosition
+        val anchor = liveContentAnchorMs()
         cancelRecovery()
         generation = recovery.startEntry()
+        expiredRecoveryAttempts = 0
         mutableState.value = mutableState.value.copy(error = null, recovering = false)
-        prepare(entry, position, true)
+        prepare(entry, position, play, liveAnchorMs = anchor)
     }
 
     fun togglePlayPause() {
         checkMainThread()
-        if (player.playWhenReady) {
-            cancelRecovery()
-            player.pause()
-        } else if (mutableState.value.error != null || player.playbackState == Player.STATE_IDLE) {
-            retry()
-        } else {
-            player.play()
-        }
+        if (requestedPlay()) pause() else play()
+    }
+
+    private fun requestedPlay(): Boolean = when {
+        prepareJob?.isActive == true -> intendedPlay
+        pendingLiveAnchorMs != null -> pendingLivePlay
+        else -> player.playWhenReady
+    }
+
+    fun play() {
+        checkMainThread()
+        intendedPlay = true
+        pendingLivePlay = true
+        if (prepareJob?.isActive == true || pendingLiveAnchorMs != null) refresh()
+        else if (mutableState.value.error != null || player.playbackState == Player.STATE_IDLE) retry(play = true)
+        else player.play()
+    }
+
+    fun pause() {
+        checkMainThread()
+        intendedPlay = false
+        pendingLivePlay = false
+        cancelRecovery()
+        player.pause()
+        refresh()
     }
 
     fun pauseForBackground() {
         checkMainThread()
-        resumeAfterBackground = player.playWhenReady || mutableState.value.recovering
+        resumeAfterBackground = requestedPlay() || mutableState.value.recovering
         cancelRecovery()
         player.pause()
+        if (timeShift != null || prepareJob?.isActive == true) {
+            closeTimeShift()
+            player.stop()
+            player.clearMediaItems()
+            backgroundSourceReleased = true
+            timeShiftNotice = "The temporary live buffer was cleared when BruTV left the foreground."
+            refresh()
+        }
     }
 
     fun resumeForeground() {
         checkMainThread()
         if (!resumeAfterBackground) return
         resumeAfterBackground = false
+        if (backgroundSourceReleased) {
+            backgroundSourceReleased = false
+            retry(play = true)
+            return
+        }
         if (player.playbackState == Player.STATE_IDLE && mutableState.value.error == null) retry()
         else player.play()
     }
 
     fun goLive() {
         checkMainThread()
-        if (player.isCurrentMediaItemLive) player.seekToDefaultPosition()
-        else if (mutableState.value.entry?.kind == MediaKind.LIVE) retry()
+        if (timeShift?.snapshot()?.recording == false) {
+            closeTimeShift()
+            timeShiftNotice = null
+            retry(play = true)
+            return
+        }
+        if (behindLiveDefaultPositionMs() == null && !(manuallyBehindLive && (liveDistanceFromDefaultMs() ?: 0) > 1_000)) return
+        expiredRecoveryAttempts = 0
+        manuallyBehindLive = false
+        timeShiftNotice = null
+        player.seekToDefaultPosition()
+        player.play()
+    }
+
+    fun seekBy(offsetMs: Long) {
+        checkMainThread()
+        if (!player.isCurrentMediaItemSeekable) return
+        expiredRecoveryAttempts = 0
+        val duration = player.duration.takeUnless { it == C.TIME_UNSET } ?: return
+        player.seekTo((player.currentPosition + offsetMs).coerceIn(0, duration.coerceAtLeast(0)))
     }
 
     fun stop() {
         checkMainThread()
         cancelRecovery()
         recovery.stop()
+        closeTimeShift()
         player.pause()
         player.stop()
+        player.clearMediaItems()
         mutableState.value = mutableState.value.copy(error = null)
         refresh()
     }
@@ -291,6 +443,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         disposed = true
         cancelRecovery()
         recovery.stop()
+        closeTimeShift()
         scope.cancel()
         player.removeListener(listener)
         player.removeAnalyticsListener(analytics)
@@ -298,8 +451,52 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         player.release()
     }
 
-    private fun prepare(entry: MediaEntry, positionMs: Long, play: Boolean) {
-        val uri = Uri.parse(entry.streamUrl)
+    private fun closeTimeShift() {
+        prepareJob?.cancel()
+        prepareJob = null
+        timeShift?.close()
+        timeShift = null
+        timeShiftAttempted = false
+        manuallyBehindLive = false
+        localSource = null
+        pendingLiveAnchorMs = null
+    }
+
+    private fun prepare(entry: MediaEntry, positionMs: Long, play: Boolean, liveAnchorMs: Long? = null) {
+        prepareJob?.cancel()
+        intendedPlay = play
+        mutableState.value = mutableState.value.copy(buffering = play)
+        prepareJob = scope.launch {
+            if (entry.kind == MediaKind.LIVE && !timeShiftAttempted) {
+                timeShiftAttempted = true
+                val url = Uri.parse(entry.streamUrl)
+                if (url.path?.endsWith(".ts", true) == true || url.path?.endsWith(".mpd", true) == true) {
+                    timeShiftNotice = "Local live recording is available for supported HLS sources. This stream plays directly."
+                } else {
+                    try {
+                        timeShift = HlsTimeShiftSession.open(File(appContext.cacheDir, "brutv_timeshift"), entry.streamUrl, entry.requestHeaders)
+                        timeShiftNotice = null
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: UnsupportedTimeShift) {
+                        timeShiftNotice = error.message
+                    } catch (_: Exception) {
+                        timeShiftNotice = "The temporary live recorder could not start. This stream plays directly."
+                    }
+                }
+            }
+            if (!disposed && mutableState.value.entry == entry) {
+                prepareResolved(entry, positionMs, intendedPlay, liveAnchorMs)
+            }
+            prepareJob = null
+        }
+    }
+
+    private fun prepareResolved(entry: MediaEntry, positionMs: Long, play: Boolean, liveAnchorMs: Long?) {
+        localSource = timeShift?.createPlaybackSource()
+        pendingLiveAnchorMs = liveAnchorMs
+        pendingLivePlay = play
+        val uri = Uri.parse(localSource?.url ?: entry.streamUrl)
         if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
             recovery.stop()
             player.pause()
@@ -310,7 +507,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             .setUserAgent("BruTV Android/1.0")
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(15_000)
-            .setDefaultRequestProperties(entry.requestHeaders)
+            .setDefaultRequestProperties(if (timeShift == null) entry.requestHeaders else emptyMap())
         val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(appContext, http))
             .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(0) {
                 override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long = C.TIME_UNSET
@@ -323,7 +520,12 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             .setMediaId(entry.id)
             .setUri(uri)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(entry.name).build())
-        when (entry.containerExtension.lowercase().removePrefix(".")) {
+        val extension = when {
+            timeShift != null || uri.path?.endsWith(".m3u8", true) == true -> "m3u8"
+            uri.path?.endsWith(".mpd", true) == true -> "mpd"
+            else -> entry.containerExtension.lowercase().removePrefix(".")
+        }
+        when (extension) {
             "m3u8" -> item.setMimeType(MimeTypes.APPLICATION_M3U8)
             "mpd" -> item.setMimeType(MimeTypes.APPLICATION_MPD)
             "ts" -> item.setMimeType(MimeTypes.VIDEO_MP2T)
@@ -340,7 +542,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             )
         }
         player.setMediaSource(sources.createMediaSource(item.build()), if (entry.kind == MediaKind.LIVE) C.TIME_UNSET else positionMs.coerceAtLeast(0))
-        player.playWhenReady = play
+        player.playWhenReady = play && liveAnchorMs == null
         player.prepare()
         if (play) startWatchdog()
     }
@@ -363,7 +565,8 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             mutableState.value = mutableState.value.copy(error = message(kind), recovering = false, buffering = false)
             return
         }
-        val position = if (entry.kind == MediaKind.LIVE) 0 else position()
+        val position = if (entry.kind == MediaKind.LIVE && timeShift == null) 0 else position()
+        val anchor = liveContentAnchorMs()
         player.stop()
         mutableState.value = mutableState.value.copy(recovering = true, error = null)
         retryJob = scope.launch {
@@ -371,7 +574,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             if (!recovery.isCurrent(ticket.generation) || disposed) return@launch
             retryJob = null
             mutableState.value = mutableState.value.copy(recovering = false, retries = mutableState.value.retries + 1)
-            prepare(entry, position, true)
+            prepare(entry, position, true, liveAnchorMs = anchor)
         }
     }
 
@@ -398,19 +601,86 @@ internal class PlaybackController(context: Context, private val profile: BufferP
     private fun refresh() {
         if (disposed) return
         val format = player.videoFormat
+        val recording = timeShift?.snapshot()
         mutableState.value = mutableState.value.copy(
             isPlaying = player.isPlaying,
-            playWhenReady = player.playWhenReady,
-            buffering = player.playbackState == Player.STATE_BUFFERING && player.playWhenReady,
+            playWhenReady = if (prepareJob?.isActive == true) intendedPlay else player.playWhenReady,
+            buffering = if (prepareJob?.isActive == true) intendedPlay else player.playbackState == Player.STATE_BUFFERING && player.playWhenReady,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
             bufferMs = player.totalBufferedDuration.coerceAtLeast(0),
             liveOffsetMs = player.currentLiveOffset.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0,
+            behindLiveDefaultPositionMs = behindLiveDefaultPositionMs() ?: 0,
             bitrate = format?.bitrate?.coerceAtLeast(0) ?: 0,
             width = player.videoSize.width,
             height = player.videoSize.height,
             frameRate = format?.frameRate?.coerceAtLeast(0f) ?: 0f,
+            liveSeekable = player.isCurrentMediaItemSeekable,
+            timeShiftAvailable = recording != null,
+            timeShiftRecording = recording?.recording == true,
+            timeShiftDurationMs = recording?.durationMs ?: 0,
+            timeShiftBytes = recording?.bytes ?: 0,
+            timeShiftNotice = recording?.notice ?: timeShiftNotice,
+            canGoLive = behindLiveDefaultPositionMs() != null ||
+                (manuallyBehindLive && (liveDistanceFromDefaultMs() ?: 0) > 1_000) ||
+                (recording != null && !recording.recording),
         )
+    }
+
+    private fun behindLiveDefaultPositionMs(): Long? {
+        if (!player.isCommandAvailable(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)) return null
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty) return null
+        val windowIndex = player.currentMediaItemIndex
+        if (windowIndex !in 0 until timeline.windowCount) return null
+        val window = timeline.getWindow(windowIndex, Timeline.Window())
+        return LivePlaybackPolicy.behindDefaultPositionMs(
+            currentPositionMs = player.currentPosition,
+            defaultPositionMs = window.defaultPositionMs.takeUnless { it == C.TIME_UNSET },
+            isLive = window.isLive,
+            isDynamic = window.isDynamic,
+            isSeekable = window.isSeekable,
+            isPlaceholder = window.isPlaceholder,
+            canSeekToDefaultPosition = player.isCommandAvailable(
+                Player.COMMAND_SEEK_TO_DEFAULT_POSITION,
+            ),
+        )
+    }
+
+    private fun liveDistanceFromDefaultMs(): Long? {
+        if (!player.isCommandAvailable(Player.COMMAND_GET_CURRENT_MEDIA_ITEM)) return null
+        val timeline = player.currentTimeline
+        val index = player.currentMediaItemIndex
+        if (timeline.isEmpty || index !in 0 until timeline.windowCount) return null
+        val window = timeline.getWindow(index, Timeline.Window())
+        if (!window.isLive || !window.isDynamic || !window.isSeekable || window.isPlaceholder || window.defaultPositionMs == C.TIME_UNSET) return null
+        return (window.defaultPositionMs - player.currentPosition).coerceAtLeast(0)
+    }
+
+    private fun liveContentAnchorMs(): Long? {
+        pendingLiveAnchorMs?.let { return it }
+        val origin = localSource?.windowStartOffsetMs ?: return null
+        val timeline = player.currentTimeline
+        val index = player.currentMediaItemIndex
+        if (timeline.isEmpty || index !in 0 until timeline.windowCount) return null
+        val window = timeline.getWindow(index, Timeline.Window())
+        if (window.isPlaceholder) return null
+        return origin + window.positionInFirstPeriodMs + player.currentPosition
+    }
+
+    private fun applyPendingLiveAnchor() {
+        val anchor = pendingLiveAnchorMs ?: return
+        val origin = localSource?.windowStartOffsetMs ?: return
+        val timeline = player.currentTimeline
+        val index = player.currentMediaItemIndex
+        if (timeline.isEmpty || index !in 0 until timeline.windowCount) return
+        val window = timeline.getWindow(index, Timeline.Window())
+        if (window.isPlaceholder || window.durationMs == C.TIME_UNSET) return
+        val earliest = origin + window.positionInFirstPeriodMs
+        if (anchor < earliest) timeShiftNotice = "Older buffered footage expired. Playback moved to the oldest saved footage."
+        pendingLiveAnchorMs = null
+        player.seekTo((anchor - earliest).coerceIn(0, window.durationMs.coerceAtLeast(0)))
+        player.playWhenReady = pendingLivePlay
     }
 
     private fun checkMainThread() = check(Looper.myLooper() == Looper.getMainLooper())

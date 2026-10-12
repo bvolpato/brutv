@@ -1,6 +1,6 @@
 {
   "name": "brutv-vega",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "engines": {
     "node": ">=18 <23"
@@ -14,10 +14,11 @@
     "build:app": "npm run build:release && npm run build:debug"
   },
   "dependencies": {
+    "@amazon-devices/kepler-file-system": "0.0.4",
     "@amazon-devices/react-native-kepler": "2.0.9000000000",
     "@amazon-devices/react-native-w3cmedia": "2.1.99",
-    "@xmldom/xmldom": "0.9.12",
     "@babel/runtime": "7.29.10",
+    "@xmldom/xmldom": "0.9.12",
     "base-64": "1.0.0",
     "fastestsmallesttextencoderdecoder": "1.0.22",
     "react": "18.2.0",
@@ -44,5 +45,12 @@
       "vega"
     ],
     "api": 0.1
+  },
+  "overrides": {
+    "@amazon-devices/react-native-w3cmedia": {
+      "react-native-tscodegen-types": {
+        "react-native": "$react-native"
+      }
+    }
   }
 }

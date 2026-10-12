@@ -94,14 +94,22 @@ public struct SettingsView: View {
                 Toggle("Hardware Acceleration", isOn: $playback.settings.hardwareAcceleration)
             }
 
+            Section(header: Text("LIVE REWIND"), footer: Text("Pause keeps capturing supported HLS streams while BruTV is active. Up to 10 minutes is retained within a 256 MiB total temporary-file limit, including recently served segments. The retained window can be shorter for high-bitrate streams. iPhone and iPad may suspend capture when paused in the background or when locked. Closing playback or changing channels deletes the buffer.")) {
+                Label("10 minutes / 256 MiB maximum", systemImage: "clock.arrow.circlepath")
+            }
+
             // Cache & Maintenance
             Section(header: Text("CACHE & DATA")) {
-                Button("Clear Logo & Poster Cache") {
+                Button {
                     showingClearCacheAlert = true
+                } label: {
+                    Label("Clear Logo & Poster Cache", systemImage: "trash")
                 }
 
-                Button("Refresh Channel Listings") {
+                Button {
                     account.client.clearCache()
+                } label: {
+                    Label("Refresh Channel Listings", systemImage: "arrow.clockwise")
                 }
             }
 
@@ -112,7 +120,7 @@ public struct SettingsView: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Text("Log Out & Switch Server")
+                        Label("Log Out & Switch Server", systemImage: "rectangle.portrait.and.arrow.right")
                             .fontWeight(.semibold)
                         Spacer()
                     }

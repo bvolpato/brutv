@@ -4,5 +4,5 @@
     "moduleResolution": "node", "strict": true, "esModuleInterop": true,
     "skipLibCheck": true, "rootDir": ".", "outDir": "build-domain"
   },
-  "include": ["src/domain/**/*.ts", "src/media/PlaybackSession.ts", "test/**/*.ts"]
+  "include": ["src/domain/**/*.ts", "src/media/PlaybackSession.ts", "src/media/HlsRecorder.ts", "src/media/RecordingFallback.ts", "test/**/*.ts"]
 }

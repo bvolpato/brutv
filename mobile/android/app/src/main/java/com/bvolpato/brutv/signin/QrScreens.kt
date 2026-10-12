@@ -21,13 +21,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -151,9 +159,17 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
             Button(onClick = {
                 error = null
                 if (granted) attempt++ else permission.launch(Manifest.permission.CAMERA)
-            }) { Text(if (granted) "Try again" else "Allow camera") }
+            }) {
+                Icon(if (granted) Icons.Outlined.Replay else Icons.Outlined.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (granted) "Try again" else "Allow camera")
+            }
         }
-        TextButton(onClick = onCancel) { Text("Cancel") }
+        TextButton(onClick = onCancel) {
+            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Cancel")
+        }
     }
 }
 
@@ -172,7 +188,11 @@ fun LoginQrScreen(source: SourceConfig, onClose: () -> Unit) {
         else if (source.type == SourceType.M3U && !source.playlistUrl.startsWith("http://", true) && !source.playlistUrl.startsWith("https://", true)) Text("An imported playlist file cannot be shared as a sign-in code. Import the file on the other device or use a playlist URL.")
         else Text("This profile is too large for a QR code. Use manual sign-in on the other device.")
         Text("Open BruTV’s QR scanner on another phone or tablet. An iPhone can also open this code with its camera.")
-        Button(onClick = onClose) { Text("Close") }
+        Button(onClick = onClose) {
+            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Close")
+        }
     }
 }
 

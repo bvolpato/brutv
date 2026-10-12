@@ -102,10 +102,13 @@ public struct LoginQRCodeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button { dismiss() } label: {
+                        Label("Done", systemImage: "checkmark")
+                    }
                 }
             }
         }
+        .tint(.cyan)
         .preferredColorScheme(.dark)
     }
 

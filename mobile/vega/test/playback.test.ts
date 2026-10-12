@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {MediaAdapter, MediaElement, PlaybackSession, PlaybackStatus} from '../src/media/PlaybackSession';
+import {MediaAdapter, MediaElement, PlaybackPosition, PlaybackSession, PlaybackStatus, PlaybackTimeline} from '../src/media/PlaybackSession';
+import {RecordingFallback} from '../src/media/RecordingFallback';
 
 class FakeMedia implements MediaElement {
   currentTime = 0; duration = 100; paused = true;
@@ -72,5 +73,90 @@ test('seek clamps VOD range and skips live infinite-duration streams', async () 
   session.seek(-10); assert.equal(media.currentTime, 0);
   session.seek(150); assert.equal(media.currentTime, 100);
   media.duration = Infinity; session.seek(-10); assert.equal(media.currentTime, 100);
+  await session.close();
+});
+
+test('live seek uses the finite adapter range, preserves pause and Go live resumes at normal holdback', async () => {
+  const media = new FakeMedia(); media.duration = Infinity;
+  const range: PlaybackTimeline = {start: 40, end: 100, live: true, liveTarget: 96, recording: true};
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}, timeline: () => range}), () => {});
+  session.surfaceCreated('screen'); await session.start('https://provider.test/live.m3u8');
+  media.currentTime = 80;
+  await session.toggle(); assert.equal(media.paused, true);
+  session.seek(-100); assert.equal(media.currentTime, 40); assert.equal(media.paused, true);
+  session.seek(100); assert.equal(media.currentTime, 100); assert.equal(media.paused, true);
+  await session.goLive(); assert.equal(media.currentTime, 96); assert.equal(media.paused, false);
+  await session.close();
+});
+
+test('a paused retry reloads content without resuming playback', async () => {
+  const media = new FakeMedia(); media.duration = Infinity;
+  let loads = 0;
+  const session = new PlaybackSession(media, () => ({load: async () => {loads++;}, destroy: async () => {},
+    timeline: () => ({start: 20, end: 100, live: true, liveTarget: 95})}), () => {});
+  session.surfaceCreated('screen'); await session.start('https://provider.test/live.m3u8');
+  media.currentTime = 70; await session.toggle();
+  const plays = media.plays; media.emit('error');
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(loads, 2); assert.equal(media.plays, plays); assert.equal(media.paused, true); assert.equal(media.currentTime, 70);
+  await session.close();
+});
+
+test('expired pause moves to the saved window start with visible feedback and stays paused', async () => {
+  const media = new FakeMedia(); media.duration = Infinity;
+  const range: PlaybackTimeline = {start: 20, end: 100, live: true, liveTarget: 95};
+  let reported: PlaybackPosition | undefined;
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}, timeline: () => range}),
+    () => {}, value => {reported = value;});
+  session.surfaceCreated('screen'); await session.start('https://provider.test/live.m3u8');
+  media.currentTime = 30; await session.toggle();
+  range.start = 45; media.emit('timeupdate');
+  assert.equal(media.currentTime, 45); assert.equal(media.paused, true); assert.equal(reported?.expired, true);
+  await session.toggle(); assert.equal(media.currentTime, 45); assert.equal(media.paused, false);
+  await session.close();
+});
+
+test('retry remaps a paused content anchor when loading the retained manifest rebases player time', async () => {
+  const media = new FakeMedia(); media.duration = Infinity;
+  let loads = 0;
+  let origin = 100;
+  const session = new PlaybackSession(media, () => ({load: async () => {if (++loads > 1) origin = 120;},
+    destroy: async () => {}, timeline: () => ({start: 0, end: 60, live: true, liveTarget: 56, recordingOrigin: origin})}), () => {});
+  session.surfaceCreated('screen'); await session.start('https://provider.test/live.m3u8');
+  media.currentTime = 40; await session.toggle(); media.emit('error');
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(origin + media.currentTime, 140);
+  assert.equal(media.currentTime, 20); assert.equal(media.paused, true);
+  await session.close();
+});
+
+test('an incompatible recording closes before loading the original source and never reopens on retry', async () => {
+  const fallback = new RecordingFallback();
+  const calls: string[] = [];
+  let directAttempts = 0;
+  const recorded = async () => {calls.push('recorded'); throw new Error('Unsupported rendition codec');};
+  const release = async () => {calls.push('closed');};
+  const original = async () => {calls.push('original'); if (++directAttempts === 1) throw new Error('Provider connection failed');};
+  await assert.rejects(fallback.load(recorded, release, original), /Provider connection failed/);
+  await fallback.load(recorded, release, original);
+  assert.deepEqual(calls, ['recorded', 'closed', 'original', 'original']);
+  assert.equal(fallback.disabled, true); assert.equal(fallback.request(), false);
+});
+
+test('a critical recorded-media failure falls back once while keeping a paused viewer paused', async () => {
+  const media = new FakeMedia(); media.duration = Infinity;
+  const fallback = new RecordingFallback();
+  let recordedLoads = 0; let directLoads = 0; let closed = 0; let failure!: () => void;
+  const session = new PlaybackSession(media, onError => {
+    failure = onError;
+    return {load: () => fallback.load(async () => {recordedLoads++;}, async () => {closed++;}, async () => {directLoads++;}),
+      destroy: async () => {}, timeline: () => ({start: 0, end: 100, live: true, liveTarget: 95})};
+  }, () => {});
+  session.surfaceCreated('screen'); await session.start('https://provider.test/master.m3u8');
+  media.currentTime = 40; await session.toggle(); const plays = media.plays;
+  assert.equal(fallback.request(), true); failure();
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(recordedLoads, 1); assert.equal(directLoads, 1); assert.equal(closed, 1);
+  assert.equal(media.plays, plays); assert.equal(media.paused, true); assert.equal(media.currentTime, 40);
   await session.close();
 });
