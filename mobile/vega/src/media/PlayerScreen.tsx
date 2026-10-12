@@ -1,5 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {AppState, BackHandler, StyleSheet, Text, View} from 'react-native';
+import {useTVEventHandler} from '@amazon-devices/react-native-kepler';
 import {KeplerVideoSurfaceView, VideoPlayer} from '@amazon-devices/react-native-w3cmedia';
 import {ContentItem} from '../domain/catalog';
 import {PlaybackPosition, PlaybackSession, PlaybackStatus} from './PlaybackSession';
@@ -14,6 +15,11 @@ export function PlayerScreen({item, onClose}: {item: ContentItem; onClose: () =>
   const session = useRef<PlaybackSession>();
   const surface = useRef<string>();
   const released = useRef<Promise<void>>(Promise.resolve());
+  useTVEventHandler(({eventType, eventKeyAction}) => {
+    if (eventType === 'playpause' && eventKeyAction === 1) {
+      void session.current?.toggle().catch(() => setStatus('error'));
+    }
+  });
   useEffect(() => {
     const video = new VideoPlayer();
     setPosition(undefined); setRecordingMessage(undefined);
