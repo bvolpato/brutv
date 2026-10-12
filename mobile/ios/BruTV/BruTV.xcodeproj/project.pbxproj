@@ -150,10 +150,6 @@
 		PRODUCTSGROUP /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				TESTSRC014 /* PlaybackPolicyTests.swift */,
-				TESTSRC013 /* AccountFlowTests.swift */,
-				TESTSRC012 /* SourceLibraryStateTests.swift */,
-				TESTSRC011 /* SourceRegressionTests.swift */,
 				APPPROD001 /* BruTV.app */,
 				TESTPROD001 /* BruTVTests.xctest */,
 				UIPROD001 /* BruTVUITests.xctest */,
@@ -179,8 +175,6 @@
 		MODELSGROUP /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				APPSRC034 /* SourceLibraryState.swift */,
-				APPSRC033 /* PlaybackPolicy.swift */,
 				APPSRC003 /* AccountModels.swift */,
 				APPSRC004 /* ChannelModels.swift */,
 				APPSRC005 /* EPGModels.swift */,
@@ -192,6 +186,8 @@
 		SERVICESGROUP /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				APPSRC034 /* SourceLibraryState.swift */,
+				APPSRC033 /* PlaybackPolicy.swift */,
 				APPSRC007 /* XtreamCodesClient.swift */,
 				APPSRC008 /* AccountStore.swift */,
 				APPSRC009 /* FavoritesStore.swift */,
@@ -243,6 +239,10 @@
 		TESTGROUP /* BruTVTests */ = {
 			isa = PBXGroup;
 			children = (
+				TESTSRC014 /* PlaybackPolicyTests.swift */,
+				TESTSRC013 /* AccountFlowTests.swift */,
+				TESTSRC012 /* SourceLibraryStateTests.swift */,
+				TESTSRC011 /* SourceRegressionTests.swift */,
 				TESTSRC001 /* XtreamCodesClientTests.swift */,
 				TESTSRC002 /* BufferEngineTests.swift */,
 				TESTSRC003 /* FavoritesStoreTests.swift */,
