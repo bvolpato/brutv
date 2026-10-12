@@ -10,7 +10,7 @@ HLS and DASH use Amazon-patched Shaka with adaptive bitrate enabled. MP4 uses th
 
 On Linux, the public npm dependencies install without a Vega SDK. `npm test` validates sign-in encoding, nested URL decoding, M3U metadata and identity, filtering, provider catalogs/episodes, playback initialization ordering, retry cancellation and teardown using fake media elements. `npm run setup:shaka` compiles the actual Amazon-patched Shaka source, and `npm run typecheck` checks BruTV's UI and adapter against the real npm API declarations. A production-mode Metro JavaScript bundle for platform `kepler` also succeeds. Vendor polyfills retain the sample's `@ts-nocheck` boundary and are not covered by the TypeScript claim.
 
-No Vega SDK, VPKG, emulator or physical device was used. TV focus, native decoding, secure storage, system media keys and Appstore certification remain unverified. Do not publish this starter as a tested Vega app.
+SDK 0.23.9221 now produces validated armv7 and x86_64 VPKGs for version 1.0.0, build 2. The release candidate was built from a frozen local source snapshot while other playback work continued in the checkout. Package generation, source tests, type checking, and VPT validation pass. Physical-device playback, temporary-file IO, Shaka custom-scheme playback, remote navigation, secure storage, system media keys, and Appstore certification remain unverified. A package build does not establish a finished or hardware-tested Vega release.
 
 ## Local source checks
 
@@ -28,7 +28,7 @@ npm run typecheck
 
 ## Native build and run
 
-Install and activate [Vega Developer Tools](https://developer.amazon.com/docs/vega/0.23/install-vega-sdk.html) on a supported Mac or Linux workstation. Activate SDK 0.23 and check `vega --version`. This starter intentionally follows the [official v0.23.0 video sample](https://github.com/AmazonAppDev/vega-video-sample/tree/v0.23.0), whose release build command is `react-native build-kepler --build-type Release`. The SDK must resolve its system distributed libraries and generated manifest entries before packaging. The SDK and platform installer were not run here.
+Install and activate [Vega Developer Tools](https://developer.amazon.com/docs/vega/0.23/install-vega-sdk.html) on a supported Mac or Linux workstation. Activate SDK 0.23 and check `vega --version`. This target follows the [official v0.23.0 video sample](https://github.com/AmazonAppDev/vega-video-sample/tree/v0.23.0). The SDK must resolve its system distributed libraries and generated manifest entries before packaging. Local packaging was validated with SDK 0.23.9221 on Linux.
 
 ```sh
 npm ci
@@ -39,6 +39,8 @@ npm run build:app
 vega virtual-device start
 ```
 
+For a versioned release candidate, run `./release.sh` with SDK 0.23 active. It installs the locked npm dependencies, runs source checks, regenerates patched Shaka, builds the native package, validates it with VPT, and verifies its package ID, version, and build number. It writes `build/distributions/BruTV-vega-armv7-1.0.0-2.vpkg`. Set `BRUTV_VEGA_TARGET=x86_64` for a Linux virtual device or `BRUTV_VEGA_BUILD_NUMBER` for a later build. Device testing and Appstore submission are separate gates.
+
 The sample generates architecture-specific files under `build`. Use `armv7` for a Vega Fire TV Stick, `x86_64` for an Intel/Linux virtual device, or `aarch64` for a Mac Apple Silicon virtual device. After finding the generated package, run Amazon's documented command with its actual path:
 
 ```sh
@@ -47,7 +49,7 @@ vega run-app <path-to-built-package.vpkg>
 
 See [run on Vega Virtual Device or Fire TV](https://developer.amazon.com/docs/vega/0.23/run-apps.html) for developer mode, device setup and remote keyboard mappings. The file name is produced by the SDK; do not rename an APK to `.vpkg`.
 
-SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-access React Native 0.83 track. [Amazon's release notes](https://developer.amazon.com/docs/vega/0.24/vega-release-notes.html) explain this compatibility boundary. This starter has not been migrated to or tested with that track. An SDK 0.24 build needs its matching template/dependencies and OS manifest settings, rather than an unreviewed version bump. The 0.23 source track does not establish an OS 1.1 compatibility guarantee: package generation and testing on each claimed device/OS version are still required. There is no validated minimum device OS for this source-only starter.
+SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-access React Native 0.83 track. [Amazon's release notes](https://developer.amazon.com/docs/vega/0.24/vega-release-notes.html) explain this compatibility boundary. This starter has not been migrated to or tested with that track. An SDK 0.24 build needs its matching template/dependencies and OS manifest settings, rather than an unreviewed version bump. The 0.23 source track does not establish an OS 1.1 compatibility guarantee: package generation and testing on each claimed device/OS version are still required. There is no validated minimum device OS for this target.
 
 ## Sign-in and parity boundaries
 
@@ -62,15 +64,15 @@ SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-a
 
 Run a native build and emulator smoke test, then test real hardware before distribution. Verify remote navigation across long catalogs, input/keyboard behavior, media keys, pause/seek/live behavior, app suspend/resume, decoder release, subtitle/audio tracks, network drops, adaptive rendition switching and low-memory behavior. Add platform media-controls integration and confirmed secure credential storage before promising parity with the finished Android/iOS apps. Measure startup-to-first-frame, rebuffers, JS-frame latency and memory on the actual stick.
 
-The SDK 0.23 / RN 0.72 dependency graph fails the release security gate. `npm audit --omit=dev` reports 64 dependency findings, including 35 high and 5 critical. That command audits the entire declared production dependency tree, which includes code-generation and CLI tools; it does not identify only code emitted into the app.
+The SDK 0.23 / RN 0.72 dependency security gate remains open. After the scoped codegen override, `npm audit --omit=dev` reports 37 findings: 26 high and 11 moderate, with no critical findings. That command audits the entire declared production dependency tree, which includes code-generation and CLI tools; it does not identify only code emitted into the app.
 
-The critical chain is `@amazon-devices/react-native-w3cmedia@2.1.99` → `react-native-tscodegen-types@0.66.0` → nested `react-native@0.60.6` → `@react-native-community/cli@2.10.0` → `cli-platform-android@2.9.0` → `logkitty@0.6.1`, with a nested `shell-quote@1.6.1`. The direct critical advisories cover [logkitty shell execution](https://github.com/advisories/GHSA-v8v8-6859-qxm4) and [shell-quote command injection](https://github.com/advisories/GHSA-w7jw-789q-3m8p); React Native and CLI receive propagated critical labels. The nested old React Native also has a direct high ReDoS advisory.
+The removed critical chain ran through `@amazon-devices/react-native-w3cmedia@2.1.99` and `react-native-tscodegen-types@0.66.0` into an obsolete nested React Native 0.60.6 and CLI tree. A scoped npm override now resolves that codegen helper to the app's existing React Native 0.72.0. Source checks and native packaging pass with the override; the media runtime package remains unchanged.
 
-The production-mode Metro source map contains 621 source modules. None of the critical CLI/logkitty/shell-quote paths, or the nested `react-native-tscodegen-types` tree, appear in that JavaScript bundle. It uses Amazon's `react-native-kepler` runtime namespace. The five Amazon packages with propagated high labels in the source map inherit those labels through codegen/CLI dependencies, with no direct advisory leaf package present in the bundle's source list. This is a bounded JavaScript bundle finding; it does not audit the SDK's native/system-distributed binaries, exercise exploitability, or approve release.
+The final split JavaScript source map contains none of the eight direct advisory leaf packages in the remaining audit. The VPKG contains JavaScript/Hermes bundles, resources, and metadata, with no embedded ELF libraries. SDK stability analysis reports no unstable or unresolved libraries. These are dependency-layout checks; they do not audit system-distributed native binaries, exercise exploitability, establish playback correctness, or approve release.
 
 The source uses maintained `@xmldom/xmldom` instead of the old sample's deprecated `xmldom` parser, with no audit entry for the maintained parser. Before release, address the build-chain advisories, inspect the final VPKG/native dependencies, and evaluate the official SDK 0.24 / RN 0.83 migration with its OS 1.2 device restriction. A newer track is the recommended follow-up, but its security result must be measured rather than assumed. `npm audit fix --force` would cross platform compatibility boundaries and was not applied.
 
-For Appstore distribution, follow [Amazon's Vega submission guide](https://developer.amazon.com/docs/vega/0.23/app-submission.html). Set increasing package version/build numbers using the selected SDK's documented build flags, inspect them with `vega exec vpt info <path-to-vpkg> --json`, supply app icon/screenshots/support/privacy details and complete certification. There is no Appstore record, signing configuration or release package prepared by this source-only work.
+For Appstore distribution, follow [Amazon's Vega submission guide](https://developer.amazon.com/docs/vega/0.23/app-submission.html). Set increasing package version/build numbers, inspect them with `vega exec vpt info <path-to-vpkg> --json`, supply app icon/screenshots/support/privacy details, and complete certification. Amazon requires testing on a physical Fire TV Stick before submission. The current account returns `User not authorized` and requires the MARKETER or ADMINISTRATOR role. No Amazon submission or approval has been completed.
 
 ## Source provenance
 
