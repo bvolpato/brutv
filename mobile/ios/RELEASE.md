@@ -2,11 +2,31 @@
 
 This guide documents the procedures for building, testing, taking screenshots, and releasing BruTV for iOS and iPadOS.
 
+## Product and release decisions
+
+Decisions confirmed on October 12, 2026:
+
+- BruTV will be free, with the positioning **"IPTV that just works."**
+- The intended release supports iPhone, iPad, and Mac through Mac Catalyst.
+- The intended release will not bundle provider credentials, demo accounts, or reviewer streams. The current prototype still contains legacy demo code; it was left unchanged at the owner's request and must be removed before release.
+- `.m3u` playlist import from a file or URL and a catalog of public streams are planned. Neither feature nor a generated public playlist has been implemented. App changes are paused at the owner's request.
+- Any future public catalog must retain source attribution and distinguish accessible streams from permission to distribute or display them. Content-rights and age-rating declarations remain pending.
+
+The Apple Developer identifier is `com.bvolpato.brutv` under team `83BXSDT7QC`. App Store Connect record `6821989154` has iOS and macOS `1.0.0` drafts, English (U.S.) metadata, Entertainment / Utilities categories, and manual release selected on both platforms. The approved **Data Not Collected** privacy response is published. Free pricing is the product decision; the App Store price schedule has not yet been configured.
+
+- App record: https://appstoreconnect.apple.com/apps/6821989154/distribution/info
+- Support and marketing: https://brunovolpato.com/brutv/
+- Privacy policy: https://brunovolpato.com/brutv/privacy/
+
+The public support and privacy pages are deployed. Native compilation, tests, signed archives, real device screenshots, and upload still require a Mac. Verify the Mac sandbox, outgoing network access, icon, and shared bundle identifier. The existing release script below exports iOS only; archive Mac Catalyst separately through Xcode Organizer. Reviewer contact and access details remain pending.
+
+Before submission, install a stable Xcode version that meets Apple's current SDK requirements. As of this decision date, uploads require Xcode 26 or later with the iOS / iPadOS 26 SDK: https://developer.apple.com/news/upcoming-requirements/?id=04282026a
+
 ---
 
 ## Prerequisites
 
-- **macOS** with **Xcode 16+** (or Xcode 27+).
+- **macOS** with a stable **Xcode 26+** version and the required platform SDKs.
 - **Apple Developer Account** with access to Team ID `83BXSDT7QC` (Bruno Candido Volpato da Cunha).
 - Command line utilities: `xcodebuild`, `xcrun`, `sips`, `security`.
 
