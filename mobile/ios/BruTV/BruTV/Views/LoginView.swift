@@ -17,6 +17,8 @@ public struct LoginView: View {
     @State private var showPassword: Bool = false
     @State private var isSubmitting: Bool = false
     @State private var errorMessage: String?
+    @State private var signInGeneration = UUID()
+    @State private var signInTask: Task<Void, Never>?
 
     public init() {}
 
@@ -363,16 +365,23 @@ public struct LoginView: View {
     }
 
     private func signIn(with link: LoginLink) {
+        signInTask?.cancel()
+        let token = UUID()
+        signInGeneration = token
         isSubmitting = true
         errorMessage = nil
 
-        Task {
+        signInTask = Task {
             do {
                 try await account.login(link: link)
+            } catch is CancellationError {
             } catch {
+                guard signInGeneration == token else { return }
                 self.errorMessage = error.localizedDescription
             }
+            guard signInGeneration == token else { return }
             self.isSubmitting = false
+            self.signInTask = nil
         }
     }
 }

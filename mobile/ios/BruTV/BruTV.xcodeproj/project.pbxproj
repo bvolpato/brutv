@@ -40,6 +40,12 @@
 		TESTBF003 /* FavoritesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC003; };
 		TESTBF010 /* SourceLoginTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC010; };
 		UIBF001 /* BruTVUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UISRC001; };
+		APPBF033 /* PlaybackPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC033; };
+		APPBF034 /* SourceLibraryState.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC034; };
+		TESTBF011 /* SourceRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC011; };
+		TESTBF012 /* SourceLibraryStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC012; };
+		TESTBF013 /* AccountFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC013; };
+		TESTBF014 /* PlaybackPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC014; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -98,6 +104,12 @@
 		TESTSRC003 /* FavoritesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStoreTests.swift; sourceTree = "<group>"; };
 		TESTSRC010 /* SourceLoginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLoginTests.swift; sourceTree = "<group>"; };
 		UISRC001 /* BruTVUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BruTVUITests.swift; sourceTree = "<group>"; };
+		APPSRC033 /* PlaybackPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPolicy.swift; sourceTree = "<group>"; };
+		APPSRC034 /* SourceLibraryState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLibraryState.swift; sourceTree = "<group>"; };
+		TESTSRC011 /* SourceRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceRegressionTests.swift; sourceTree = "<group>"; };
+		TESTSRC012 /* SourceLibraryStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLibraryStateTests.swift; sourceTree = "<group>"; };
+		TESTSRC013 /* AccountFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFlowTests.swift; sourceTree = "<group>"; };
+		TESTSRC014 /* PlaybackPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPolicyTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -138,6 +150,10 @@
 		PRODUCTSGROUP /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				TESTSRC014 /* PlaybackPolicyTests.swift */,
+				TESTSRC013 /* AccountFlowTests.swift */,
+				TESTSRC012 /* SourceLibraryStateTests.swift */,
+				TESTSRC011 /* SourceRegressionTests.swift */,
 				APPPROD001 /* BruTV.app */,
 				TESTPROD001 /* BruTVTests.xctest */,
 				UIPROD001 /* BruTVUITests.xctest */,
@@ -163,6 +179,8 @@
 		MODELSGROUP /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				APPSRC034 /* SourceLibraryState.swift */,
+				APPSRC033 /* PlaybackPolicy.swift */,
 				APPSRC003 /* AccountModels.swift */,
 				APPSRC004 /* ChannelModels.swift */,
 				APPSRC005 /* EPGModels.swift */,
@@ -371,6 +389,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				APPBF034 /* SourceLibraryState.swift in Sources */,
+				APPBF033 /* PlaybackPolicy.swift in Sources */,
 				APPBF001 /* BruTVApp.swift in Sources */,
 				APPBF002 /* AppRootView.swift in Sources */,
 				APPBF003 /* AccountModels.swift in Sources */,
@@ -404,6 +424,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TESTBF014 /* PlaybackPolicyTests.swift in Sources */,
+				TESTBF013 /* AccountFlowTests.swift in Sources */,
+				TESTBF012 /* SourceLibraryStateTests.swift in Sources */,
+				TESTBF011 /* SourceRegressionTests.swift in Sources */,
 				TESTBF001 /* XtreamCodesClientTests.swift in Sources */,
 				TESTBF002 /* BufferEngineTests.swift in Sources */,
 				TESTBF003 /* FavoritesStoreTests.swift in Sources */,

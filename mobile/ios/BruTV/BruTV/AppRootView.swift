@@ -5,6 +5,8 @@ public struct AppRootView: View {
 
     @State private var isSigningInFromLink = false
     @State private var linkError: String?
+    @State private var linkGeneration = UUID()
+    @State private var linkTask: Task<Void, Never>?
 
     public init() {}
 
@@ -69,14 +71,22 @@ public struct AppRootView: View {
             return
         }
         PlaybackManager.shared.stop()
+        linkTask?.cancel()
+        let token = UUID()
+        linkGeneration = token
+        linkError = nil
         isSigningInFromLink = true
-        Task {
+        linkTask = Task {
             do {
                 try await account.login(link: link)
+            } catch is CancellationError {
             } catch {
+                guard linkGeneration == token else { return }
                 linkError = error.localizedDescription
             }
+            guard linkGeneration == token else { return }
             isSigningInFromLink = false
+            linkTask = nil
         }
     }
 }

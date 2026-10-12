@@ -1,5 +1,16 @@
 import Foundation
 
+public enum M3UPlaylistError: LocalizedError, Sendable {
+    case hlsMediaManifest
+
+    public var errorDescription: String? {
+        switch self {
+        case .hlsMediaManifest:
+            return "This is an HLS media manifest, not an IPTV channel playlist. Use the provider's playlist URL instead."
+        }
+    }
+}
+
 /// One channel entry from an M3U / M3U8 playlist.
 public struct M3UEntry: Equatable, Sendable {
     public let name: String
@@ -30,16 +41,34 @@ public enum M3UPlaylistParser {
     }
 
     public static func parse(_ data: Data) -> [M3UEntry] {
-        data.withUnsafeBytes { raw -> [M3UEntry] in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return [] }
+        parseResult(data).entries
+    }
+
+    /// Parses an IPTV channel playlist and rejects HLS media manifests, whose segment URLs are
+    /// not channels and should not appear as browseable content.
+    public static func parseValidated(_ data: Data) throws -> [M3UEntry] {
+        let result = parseResult(data)
+        guard !result.containsHLSMediaTags else { throw M3UPlaylistError.hlsMediaManifest }
+        return result.entries
+    }
+
+    private static func parseResult(_ data: Data) -> ParseResult {
+        data.withUnsafeBytes { raw -> ParseResult in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return ParseResult(entries: [], containsHLSMediaTags: false) }
             return parse(UnsafeBufferPointer(start: base, count: raw.count))
         }
     }
 
-    private static func parse(_ buf: UnsafeBufferPointer<UInt8>) -> [M3UEntry] {
+    private struct ParseResult {
+        let entries: [M3UEntry]
+        let containsHLSMediaTags: Bool
+    }
+
+    private static func parse(_ buf: UnsafeBufferPointer<UInt8>) -> ParseResult {
         var entries: [M3UEntry] = []
         var pendingInfo: Range<Int>?
         var pendingGroup: String?
+        var containsHLSMediaTags = false
 
         let count = buf.count
         var lineStart = 0
@@ -55,7 +84,9 @@ public enum M3UPlaylistParser {
             while e > s && isSpace(buf[e - 1]) { e -= 1 }
 
             if s < e {
-                if hasPrefix(buf, s, e, Prefix.extinf) {
+                if matchesPrefix(buf, s, e, Prefix.extX) {
+                    containsHLSMediaTags = true
+                } else if hasPrefix(buf, s, e, Prefix.extinf) {
                     pendingInfo = s..<e
                     pendingGroup = nil
                 } else if hasPrefix(buf, s, e, Prefix.extgrp) {
@@ -72,7 +103,7 @@ public enum M3UPlaylistParser {
             }
             lineStart = next
         }
-        return entries
+        return ParseResult(entries: entries, containsHLSMediaTags: containsHLSMediaTags)
     }
 
     private struct InfoFields {
@@ -171,6 +202,7 @@ public enum M3UPlaylistParser {
     private enum Prefix {
         static let extinf = Array("#EXTINF".utf8)
         static let extgrp = Array("#EXTGRP:".utf8)
+        static let extX = Array("#ext-x-".utf8)
     }
 
     private enum Key {
@@ -189,6 +221,17 @@ public enum M3UPlaylistParser {
     private static func hasPrefix(_ buf: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int, _ prefix: [UInt8]) -> Bool {
         guard e - s >= prefix.count else { return false }
         for k in 0..<prefix.count where buf[s + k] != prefix[k] { return false }
+        return true
+    }
+
+    @inline(__always)
+    private static func matchesPrefix(_ buf: UnsafeBufferPointer<UInt8>, _ s: Int, _ e: Int, _ prefix: [UInt8]) -> Bool {
+        guard e - s >= prefix.count else { return false }
+        for k in 0..<prefix.count {
+            var byte = buf[s + k]
+            if byte >= 0x41 && byte <= 0x5A { byte += 0x20 }
+            if byte != prefix[k] { return false }
+        }
         return true
     }
 

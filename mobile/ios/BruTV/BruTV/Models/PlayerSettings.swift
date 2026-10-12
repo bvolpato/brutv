@@ -18,11 +18,11 @@ public enum BufferProfile: String, Codable, CaseIterable, Identifiable, Sendable
     public var description: String {
         switch self {
         case .ultraLowLatency:
-            return "Fastest channel zapping and closest to live broadcast. Best for strong Wi-Fi."
+            return "Requests a small buffer for faster starts on a stable connection. Actual live delay depends on the stream."
         case .balanced:
-            return "Optimal balance between fast startup and stall protection."
+            return "Balances startup speed and stall protection. The player adapts buffering to the stream."
         case .highStability:
-            return "Deep buffer to prevent stuttering on fluctuating connections."
+            return "Requests more data ahead of playback to reduce stalls on fluctuating connections. Provider and network quality still matter."
         }
     }
 

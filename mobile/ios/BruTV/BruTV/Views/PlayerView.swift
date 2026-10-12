@@ -147,9 +147,7 @@ public struct PlayerView: View {
                         .tint(.cyan)
 
                         Button("Retry") {
-                            if let s = playback.currentStream {
-                                playback.play(stream: s)
-                            }
+                            playback.retryCurrentPlayback()
                         }
                         .buttonStyle(.bordered)
                         .tint(.white)
@@ -430,7 +428,7 @@ public struct PlayerView: View {
                     playback.togglePlayPause()
                     scheduleControlsAutoHide()
                 } label: {
-                    Image(systemName: playback.playbackState == .playing ? "pause.circle.fill" : "play.circle.fill")
+                    Image(systemName: playback.isPlaybackRequested ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 48))
                         .foregroundColor(.cyan)
                 }

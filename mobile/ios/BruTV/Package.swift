@@ -1,0 +1,41 @@
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "BruTVCore",
+    platforms: [.macOS(.v13), .iOS(.v17)],
+    products: [.library(name: "BruTVCore", targets: ["BruTV"])],
+    targets: [
+        .target(
+            name: "BruTV",
+            path: "BruTV",
+            exclude: [
+                "AppRootView.swift", "BruTVApp.swift", "BruTV.entitlements",
+                "Info.plist", "Resources", "Views",
+                "Services/AccountStore.swift", "Services/FavoritesStore.swift",
+                "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift",
+            ],
+            sources: [
+                "Models/AccountModels.swift", "Models/ChannelModels.swift",
+                "Models/EPGModels.swift", "Models/PlayerSettings.swift",
+                "Services/LoginLink.swift", "Services/M3UPlaylistParser.swift",
+                "Services/XtreamCodesClient.swift",
+                "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift",
+            ]
+        ),
+        .testTarget(
+            name: "BruTVCoreTests",
+            dependencies: ["BruTV"],
+            path: "BruTVTests",
+            exclude: [
+                "BufferEngineTests.swift", "FavoritesStoreTests.swift", "AccountFlowTests.swift",
+            ],
+            sources: [
+                "SourceLoginTests.swift", "XtreamCodesClientTests.swift",
+                "SourceRegressionTests.swift",
+                "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift",
+            ]
+        ),
+    ],
+    swiftLanguageVersions: [.v5]
+)

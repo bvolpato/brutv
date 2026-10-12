@@ -18,6 +18,8 @@ xcuserdata/
 mobile/ios/**/build/
 mobile/ios/**/artifact/
 mobile/ios/BruTV/build/
+mobile/ios/BruTV/.build/
+mobile/ios/BruTV/.swiftpm/
 *.ipa
 *.dSYM.zip
 *.dSYM
@@ -34,3 +36,12 @@ mobile/ios/**/signing/*.mobileprovision
 # Review & temp logs
 *.log
 .review-logs/
+
+# Android build outputs and local signing configuration
+mobile/android/.gradle/
+mobile/android/.kotlin/
+mobile/android/**/build/
+mobile/android/local.properties
+mobile/android/keystore.properties
+*.jks
+*.keystore
