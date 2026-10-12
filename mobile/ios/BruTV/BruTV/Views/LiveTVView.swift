@@ -49,7 +49,12 @@ public struct LiveTVView: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.gray)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search")
+                        .accessibilityHint("Removes the channel search text.")
                     }
                 }
                 .padding(.horizontal, 14)
@@ -125,8 +130,11 @@ public struct LiveTVView: View {
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 32)
-                        Button("Retry") {
+                        Button {
                             loadChannels(categoryID: selectedCategoryID)
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.cyan)

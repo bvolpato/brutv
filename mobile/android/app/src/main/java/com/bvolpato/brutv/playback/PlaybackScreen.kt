@@ -8,10 +8,12 @@ import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,14 +21,38 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.AspectRatio
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Equalizer
+import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Forward10
+import androidx.compose.material.icons.outlined.LiveTv
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Replay
+import androidx.compose.material.icons.outlined.Replay10
+import androidx.compose.material.icons.outlined.SkipNext
+import androidx.compose.material.icons.outlined.SkipPrevious
+import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,8 +69,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -131,7 +159,7 @@ fun PlaybackScreen(
     }
 
     DisposableEffect(controller) {
-        playerCallback(controller.player)
+        playerCallback(controller.controlPlayer)
         onDispose {
             controller.state.value.entry?.let { positionCallback(it, controller.position()) }
             playerCallback(null)
@@ -191,7 +219,7 @@ fun PlaybackScreen(
                         if (!snapshot.playWhenReady) controller.togglePlayPause()
                         true
                     }
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> { controller.player.pause(); true }
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> { controller.pause(); true }
                     KeyEvent.KEYCODE_MEDIA_STOP -> { controller.stop(); true }
                     else -> false
                 }
@@ -203,7 +231,7 @@ fun PlaybackScreen(
                         Modifier.fillMaxWidth().background(Color(0xE61A1D24)).padding(horizontal = if (isTv) 32.dp else 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        TextButton(onClick = { close() }) { Text("Back", color = Color.White) }
+                        PlayerButton("Back", Icons.AutoMirrored.Outlined.ArrowBack) { close() }
                         Text(
                             current.name,
                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -212,8 +240,8 @@ fun PlaybackScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (current.kind == MediaKind.LIVE) {
-                            TextButton(onClick = { controller.goLive() }) { Text("Go live", color = Color(0xFF9BD7FF)) }
+                        if (current.kind == MediaKind.LIVE && snapshot.canGoLive) {
+                            PlayerButton("Go live", Icons.Outlined.LiveTv) { controller.goLive() }
                         }
                     }
                 }
@@ -247,37 +275,54 @@ fun PlaybackScreen(
                     },
                 )
                 if (!isInPip) {
+                    if (current.kind == MediaKind.LIVE) {
+                        val message = snapshot.timeShiftNotice ?: if (snapshot.timeShiftAvailable) {
+                            "Live buffer ${snapshot.timeShiftDurationMs / 60_000}:${(snapshot.timeShiftDurationMs / 1000 % 60).toString().padStart(2, '0')} · " +
+                                "${snapshot.timeShiftBytes / (1024 * 1024)} MiB · " +
+                                if (snapshot.timeShiftRecording) "Recording${if (!snapshot.playWhenReady) " while paused" else ""}" else "Recording stopped"
+                        } else "Preparing the temporary live buffer…"
+                        Text(message, color = Color(0xFFCBD0D8), style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.fillMaxWidth().background(Color(0xE61A1D24)).padding(horizontal = if (isTv) 32.dp else 12.dp, vertical = 4.dp))
+                    }
                     Row(
                         Modifier.fillMaxWidth().background(Color(0xE61A1D24))
                             .horizontalScroll(rememberScrollState()).padding(horizontal = if (isTv) 32.dp else 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        PlayerButton(if (snapshot.playWhenReady) "Pause" else "Play") { controller.togglePlayPause() }
-                        if (queue.size > 1) {
-                            PlayerButton("Previous") { changeChannel(-1) }
-                            PlayerButton("Next") { changeChannel(1) }
+                        PlayerButton(
+                            if (snapshot.playWhenReady) "Pause" else "Play",
+                            if (snapshot.playWhenReady) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                            primary = true,
+                        ) { controller.togglePlayPause() }
+                        if (snapshot.liveSeekable) {
+                            PlayerButton("Back 10s", Icons.Outlined.Replay10) { controller.seekBy(-10_000) }
+                            PlayerButton("Forward 10s", Icons.Outlined.Forward10) { controller.seekBy(10_000) }
                         }
-                        if (queue.isNotEmpty()) PlayerButton("Guide") { guideOpen = true }
+                        if (queue.size > 1) {
+                            PlayerButton("Previous", Icons.Outlined.SkipPrevious) { changeChannel(-1) }
+                            PlayerButton("Next", Icons.Outlined.SkipNext) { changeChannel(1) }
+                        }
+                        if (queue.isNotEmpty()) PlayerButton("Guide", Icons.AutoMirrored.Outlined.ViewList) { guideOpen = true }
                         val favorite = remember(current.id, favoriteRefresh, isFavorite) { isFavorite(current.id) }
-                        PlayerButton(if (favorite) "Unfavorite" else "Favorite") {
+                        PlayerButton(if (favorite) "Unfavorite" else "Favorite", if (favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder) {
                             onToggleFavorite(current)
                             favoriteRefresh += 1
                         }
-                        PlayerButton("Aspect: ${aspectLabel(aspect)}") {
+                        PlayerButton("Aspect: ${aspectLabel(aspect)}", Icons.Outlined.AspectRatio) {
                             aspect = when (aspect) {
                                 AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                                 AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
                                 else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             }
                         }
-                        PlayerButton("Audio", enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSupported }) {
+                        PlayerButton("Audio", Icons.AutoMirrored.Outlined.VolumeUp, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSupported }) {
                             trackDialog = C.TRACK_TYPE_AUDIO
                         }
-                        PlayerButton("Subtitles", enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSupported }) {
+                        PlayerButton("Subtitles", Icons.Outlined.Subtitles, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSupported }) {
                             trackDialog = C.TRACK_TYPE_TEXT
                         }
-                        PlayerButton(if (statsVisible) "Hide stats" else "Stats") { statsVisible = !statsVisible }
+                        PlayerButton(if (statsVisible) "Hide stats" else "Stats", Icons.Outlined.Equalizer) { statsVisible = !statsVisible }
                     }
                 }
             }
@@ -301,10 +346,14 @@ fun PlaybackScreen(
                     Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Playback unavailable", style = MaterialTheme.typography.titleLarge, color = Color.White)
                         Text(snapshot.error.orEmpty(), color = Color.White)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { controller.retry() }, modifier = Modifier.focusRequester(retryFocus)) { Text("Retry") }
-                            TextButton(onClick = { close() }) { Text("Back", color = Color.White) }
-                            if (queue.size > 1) TextButton(onClick = { changeChannel(1) }) { Text("Next", color = Color.White) }
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { controller.retry() }, modifier = Modifier.focusRequester(retryFocus)) {
+                                Icon(Icons.Outlined.Replay, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Retry")
+                            }
+                            PlayerButton("Back", Icons.AutoMirrored.Outlined.ArrowBack) { close() }
+                            if (queue.size > 1) PlayerButton("Next", Icons.Outlined.SkipNext) { changeChannel(1) }
                         }
                     }
                 }
@@ -323,6 +372,8 @@ fun PlaybackScreen(
                 LazyColumn(Modifier.height(if (isTv) 360.dp else 400.dp)) {
                     items(queue, key = { it.id }) { item ->
                         TextButton(onClick = { select(item); guideOpen = false }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(if (item.id == current.id) Icons.Outlined.Check else Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text(
                                 if (item.id == current.id) "Playing · ${item.name}" else item.name,
                                 modifier = Modifier.fillMaxWidth(),
@@ -332,7 +383,13 @@ fun PlaybackScreen(
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { guideOpen = false }) { Text("Close") } },
+            confirmButton = {
+                TextButton(onClick = { guideOpen = false }) {
+                    Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Close")
+                }
+            },
         )
     }
     if (trackDialog != C.TRACK_TYPE_UNKNOWN) {
@@ -341,9 +398,38 @@ fun PlaybackScreen(
 }
 
 @Composable
-private fun PlayerButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Text(label, color = if (enabled) Color.White else Color(0xFF858B94), maxLines = 1)
+private fun PlayerButton(
+    label: String,
+    icon: ImageVector,
+    enabled: Boolean = true,
+    primary: Boolean = false,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val accent = Color(0xFF38D9CA)
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.onFocusChanged { focused = it.isFocused },
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (primary) accent else Color(0xFF1B2932),
+            contentColor = if (primary) Color(0xFF06201F) else Color.White,
+            disabledContentColor = Color(0xFF858B94),
+        ),
+        border = BorderStroke(
+            if (focused) 3.dp else 1.dp,
+            when {
+                !focused -> Color(0xFF42616B)
+                primary -> Color.White
+                else -> accent
+            },
+        ),
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(label, maxLines = 1)
     }
 }
 
@@ -369,6 +455,8 @@ private fun TrackDialog(player: Player, tracks: Tracks, type: Int, onDismiss: ()
             LazyColumn(Modifier.height(280.dp)) {
                 item {
                     TextButton(onClick = { choose(null) }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
                         Text(if (type == C.TRACK_TYPE_AUDIO) "Automatic" else "Off", modifier = Modifier.fillMaxWidth())
                     }
                 }
@@ -377,12 +465,20 @@ private fun TrackDialog(player: Player, tracks: Tracks, type: Int, onDismiss: ()
                     val language = format.language?.takeUnless { it == "und" }?.let { Locale.forLanguageTag(it).displayLanguage }
                     val label = format.label ?: language ?: "Track ${choice.index + 1}"
                     TextButton(onClick = { choose(choice) }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(if (choice.group.isTrackSelected(choice.index)) Icons.Outlined.Check else if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
                         Text(if (choice.group.isTrackSelected(choice.index)) "Selected · $label" else label, modifier = Modifier.fillMaxWidth())
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Close")
+            }
+        },
     )
 }
 
@@ -401,7 +497,12 @@ private fun Statistics(state: PlaybackSnapshot, profile: BufferProfile, modifier
         Stat("Format FPS", if (state.frameRate > 0) decimal(state.frameRate.toDouble()) else "Unknown")
         Stat("Dropped", state.droppedFrames.toString())
         Stat("Stalls / retries", "${state.stalls} / ${state.retries}")
-        if (state.entry?.kind == MediaKind.LIVE && state.liveOffsetMs > 0) Stat("Behind live", "${decimal(state.liveOffsetMs / 1_000.0)} s")
+        if (state.entry?.kind == MediaKind.LIVE && state.liveOffsetMs > 0) Stat("Live offset", "${decimal(state.liveOffsetMs / 1_000.0)} s")
+        if (state.timeShiftAvailable) {
+            Stat("Saved history", "${decimal(state.timeShiftDurationMs / 1_000.0)} s")
+            Stat("Temp storage", "${decimal(state.timeShiftBytes / 1_048_576.0)} MiB")
+            Stat("Recording", if (state.timeShiftRecording) "Active" else "Stopped")
+        }
         Spacer(Modifier.height(4.dp))
         Text(profile.title, color = Color(0xFF9BD7FF), style = MaterialTheme.typography.labelSmall)
     }

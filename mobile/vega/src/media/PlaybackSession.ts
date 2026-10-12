@@ -11,7 +11,17 @@ export interface MediaElement {
   addEventListener(event: string, listener: () => void): void;
   removeEventListener(event: string, listener: () => void): void;
 }
-export interface MediaAdapter {load(url: string): Promise<void>; destroy(): Promise<void>}
+export interface PlaybackTimeline {
+  start: number; end: number; live: boolean; liveTarget?: number;
+  recording?: boolean; message?: string; recordedBytes?: number; recordedSeconds?: number;
+  recordingOrigin?: number;
+}
+export interface PlaybackPosition extends PlaybackTimeline {position: number; paused: boolean; expired: boolean}
+export interface MediaAdapter {
+  load(url: string): Promise<void>; destroy(): Promise<void>;
+  timeline?(): PlaybackTimeline | undefined;
+  recordingMessage?(): string | undefined;
+}
 export type PlaybackStatus = 'loading' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
 export class PlaybackSession {
@@ -23,8 +33,14 @@ export class PlaybackSession {
   private retries = 0;
   private listeners: [string, () => void][] = [];
   private adapter?: MediaAdapter;
+  private wantsPlayback = true;
+  private positionTimer?: ReturnType<typeof setInterval>;
+  private heldPosition?: number;
+  private expired = false;
 
-  constructor(private media: MediaElement, private createAdapter: (onError: () => void) => MediaAdapter, private report: (status: PlaybackStatus) => void) {}
+  constructor(private media: MediaElement, private createAdapter: (onError: () => void) => MediaAdapter,
+    private report: (status: PlaybackStatus) => void,
+    private reportPosition: (position: PlaybackPosition | undefined, message?: string) => void = () => {}) {}
 
   async start(url: string): Promise<void> {
     if (this.closed) return;
@@ -33,16 +49,25 @@ export class PlaybackSession {
       await this.media.initialize();
       this.initialized = true;
       if (this.closed) { await this.media.deinitialize(); return; }
-      this.bind('waiting', () => this.report('buffering'));
-      this.bind('playing', () => { this.retries = 0; this.report('playing'); });
+      this.bind('waiting', () => this.report(this.wantsPlayback ? 'buffering' : 'paused'));
+      this.bind('playing', () => {
+        if (!this.wantsPlayback) {this.media.pause(); this.report('paused'); return;}
+        this.retries = 0; this.report('playing');
+      });
       this.bind('pause', () => this.report('paused'));
       this.bind('ended', () => this.report('ended'));
       this.bind('error', () => this.retry(url));
+      this.bind('timeupdate', () => this.updatePosition());
       this.adapter = this.createAdapter(() => this.retry(url));
       await this.adapter.load(url);
       if (this.closed) return;
       this.ready = true;
-      if (this.surface) { this.media.setSurfaceHandle(this.surface); await this.media.play(); }
+      this.positionTimer = setInterval(() => this.updatePosition(), 1000);
+      this.updatePosition();
+      if (this.surface) {
+        this.media.setSurfaceHandle(this.surface);
+        if (this.wantsPlayback) await this.media.play(); else {this.media.pause(); this.report('paused');}
+      }
     } catch { if (!this.closed) this.report('error'); }
   }
 
@@ -60,12 +85,22 @@ export class PlaybackSession {
     this.retryTimer = setTimeout(async () => {
       this.retryTimer = undefined;
       if (this.closed) return;
-      const position = this.media.currentTime;
+      const position = this.heldPosition ?? this.media.currentTime;
+      const oldOrigin = this.adapter?.timeline?.()?.recordingOrigin;
+      const anchor = oldOrigin === undefined ? undefined : oldOrigin + position;
       try {
         await this.adapter?.load(url);
         if (this.closed) return;
-        if (Number.isFinite(this.media.duration) && position > 0) this.media.currentTime = position;
-        await this.media.play();
+        const range = this.adapter?.timeline?.();
+        if (range && Number.isFinite(position)) {
+          const remapped = anchor === undefined || range.recordingOrigin === undefined ? position : anchor - range.recordingOrigin;
+          this.expired ||= remapped < range.start;
+          this.media.currentTime = Math.max(range.start, Math.min(range.end, remapped));
+        } else if (Number.isFinite(this.media.duration) && position > 0) this.media.currentTime = Math.min(this.media.duration, position);
+        if (this.wantsPlayback) await this.media.play(); else {
+          this.media.pause(); this.heldPosition = this.media.currentTime; this.report('paused');
+        }
+        this.updatePosition();
       } catch { if (!this.closed) this.retry(url); }
     }, delay);
   }
@@ -74,7 +109,8 @@ export class PlaybackSession {
     this.surface = handle;
     if (this.closed || !this.ready) return;
     this.media.setSurfaceHandle(handle);
-    void this.media.play().catch(() => { if (!this.closed) this.report('error'); });
+    if (this.wantsPlayback) void this.media.play().catch(() => { if (!this.closed) this.report('error'); });
+    else this.media.pause();
   }
 
   surfaceDestroyed(handle: string): void {
@@ -84,27 +120,64 @@ export class PlaybackSession {
 
   async toggle(): Promise<void> {
     if (this.closed || !this.initialized) return;
-    if (this.media.paused) await this.media.play(); else {
+    this.wantsPlayback = !this.wantsPlayback;
+    if (this.wantsPlayback) {
+      if (this.heldPosition !== undefined) {
+        const range = this.adapter?.timeline?.();
+        if (range) {
+          this.expired ||= this.heldPosition < range.start;
+          this.media.currentTime = Math.max(range.start, Math.min(range.end, this.heldPosition));
+        }
+      }
+      this.heldPosition = undefined;
+      if (this.ready) await this.media.play();
+    } else {
       if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
-      this.media.pause();
+      this.media.pause(); this.heldPosition = this.media.currentTime;
     }
+    this.updatePosition();
   }
 
   seek(delta: number): void {
-    if (this.closed || !Number.isFinite(this.media.duration)) return;
-    this.media.currentTime = Math.max(0, Math.min(this.media.duration, this.media.currentTime + delta));
+    if (this.closed || !Number.isFinite(delta)) return;
+    const range = this.adapter?.timeline?.();
+    if (range) this.media.currentTime = Math.max(range.start, Math.min(range.end, this.media.currentTime + delta));
+    else if (Number.isFinite(this.media.duration)) this.media.currentTime = Math.max(0, Math.min(this.media.duration, this.media.currentTime + delta));
+    else return;
+    if (!this.wantsPlayback) this.heldPosition = this.media.currentTime;
+    this.expired = false; this.updatePosition();
+  }
+
+  async goLive(): Promise<void> {
+    const range = this.adapter?.timeline?.();
+    if (this.closed || !range?.live || range.liveTarget === undefined) return;
+    this.media.currentTime = Math.max(range.start, Math.min(range.end, range.liveTarget));
+    this.wantsPlayback = true; this.heldPosition = undefined; this.expired = false;
+    await this.media.play(); this.updatePosition();
+  }
+
+  private updatePosition(): void {
+    if (this.closed || !this.ready) return;
+    const range = this.adapter?.timeline?.();
+    if (!range) {this.reportPosition(undefined, this.adapter?.recordingMessage?.()); return;}
+    if (!this.wantsPlayback && this.heldPosition !== undefined && this.heldPosition < range.start) {
+      this.expired = true;
+      this.media.currentTime = range.start;
+      this.heldPosition = range.start;
+    }
+    this.reportPosition({...range, position: this.media.currentTime, paused: !this.wantsPlayback, expired: this.expired}, this.adapter?.recordingMessage?.());
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.positionTimer) clearInterval(this.positionTimer);
     for (const [event, listener] of this.listeners) this.media.removeEventListener(event, listener);
     if (this.initialized) {
       this.media.pause();
       if (this.surface) this.media.clearSurfaceHandle(this.surface);
-      await this.adapter?.destroy();
-      await this.media.deinitialize();
+      try {await this.adapter?.destroy();} finally {await this.media.deinitialize();}
     }
   }
 }

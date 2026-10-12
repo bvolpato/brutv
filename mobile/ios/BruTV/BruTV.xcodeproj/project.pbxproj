@@ -46,6 +46,9 @@
 		TESTBF012 /* SourceLibraryStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC012; };
 		TESTBF013 /* AccountFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC013; };
 		TESTBF014 /* PlaybackPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC014; };
+		APPBF035 /* LiveTimeshift.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC035; };
+		APPBF036 /* LiveTimeshiftServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC036; };
+		TESTBF015 /* LiveTimeshiftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC015; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,6 +113,10 @@
 		TESTSRC012 /* SourceLibraryStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLibraryStateTests.swift; sourceTree = "<group>"; };
 		TESTSRC013 /* AccountFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFlowTests.swift; sourceTree = "<group>"; };
 		TESTSRC014 /* PlaybackPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPolicyTests.swift; sourceTree = "<group>"; };
+		APPSRC035 /* LiveTimeshift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshift.swift; sourceTree = "<group>"; };
+		APPSRC036 /* LiveTimeshiftServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshiftServer.swift; sourceTree = "<group>"; };
+		TESTSRC015 /* LiveTimeshiftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshiftTests.swift; sourceTree = "<group>"; };
+		APPCATENT001 /* BruTVCatalyst.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BruTVCatalyst.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -150,10 +157,6 @@
 		PRODUCTSGROUP /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				TESTSRC014 /* PlaybackPolicyTests.swift */,
-				TESTSRC013 /* AccountFlowTests.swift */,
-				TESTSRC012 /* SourceLibraryStateTests.swift */,
-				TESTSRC011 /* SourceRegressionTests.swift */,
 				APPPROD001 /* BruTV.app */,
 				TESTPROD001 /* BruTVTests.xctest */,
 				UIPROD001 /* BruTVUITests.xctest */,
@@ -168,6 +171,7 @@
 				APPSRC002 /* AppRootView.swift */,
 				APPINFO001 /* Info.plist */,
 				APPENT001 /* BruTV.entitlements */,
+				APPCATENT001 /* BruTVCatalyst.entitlements */,
 				MODELSGROUP /* Models */,
 				SERVICESGROUP /* Services */,
 				VIEWSGROUP /* Views */,
@@ -179,8 +183,6 @@
 		MODELSGROUP /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				APPSRC034 /* SourceLibraryState.swift */,
-				APPSRC033 /* PlaybackPolicy.swift */,
 				APPSRC003 /* AccountModels.swift */,
 				APPSRC004 /* ChannelModels.swift */,
 				APPSRC005 /* EPGModels.swift */,
@@ -192,6 +194,10 @@
 		SERVICESGROUP /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				APPSRC033 /* PlaybackPolicy.swift */,
+				APPSRC034 /* SourceLibraryState.swift */,
+				APPSRC035 /* LiveTimeshift.swift */,
+				APPSRC036 /* LiveTimeshiftServer.swift */,
 				APPSRC007 /* XtreamCodesClient.swift */,
 				APPSRC008 /* AccountStore.swift */,
 				APPSRC009 /* FavoritesStore.swift */,
@@ -243,6 +249,11 @@
 		TESTGROUP /* BruTVTests */ = {
 			isa = PBXGroup;
 			children = (
+				TESTSRC011 /* SourceRegressionTests.swift */,
+				TESTSRC012 /* SourceLibraryStateTests.swift */,
+				TESTSRC013 /* AccountFlowTests.swift */,
+				TESTSRC014 /* PlaybackPolicyTests.swift */,
+				TESTSRC015 /* LiveTimeshiftTests.swift */,
 				TESTSRC001 /* XtreamCodesClientTests.swift */,
 				TESTSRC002 /* BufferEngineTests.swift */,
 				TESTSRC003 /* FavoritesStoreTests.swift */,
@@ -389,6 +400,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				APPBF036 /* LiveTimeshiftServer.swift in Sources */,
+				APPBF035 /* LiveTimeshift.swift in Sources */,
 				APPBF034 /* SourceLibraryState.swift in Sources */,
 				APPBF033 /* PlaybackPolicy.swift in Sources */,
 				APPBF001 /* BruTVApp.swift in Sources */,
@@ -424,6 +437,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TESTBF015 /* LiveTimeshiftTests.swift in Sources */,
 				TESTBF014 /* PlaybackPolicyTests.swift in Sources */,
 				TESTBF013 /* AccountFlowTests.swift in Sources */,
 				TESTBF012 /* SourceLibraryStateTests.swift in Sources */,
@@ -570,6 +584,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BruTV/BruTV.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = BruTV/BruTVCatalyst.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -593,6 +608,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = BruTV/BruTV.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = BruTV/BruTVCatalyst.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";

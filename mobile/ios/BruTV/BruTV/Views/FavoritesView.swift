@@ -73,12 +73,17 @@ public struct FavoritesView: View {
                                 .foregroundColor(.white)
                             Spacer()
                             if !recentStreams.isEmpty {
-                                Button("Clear") {
+                                Button {
                                     favorites.clearRecents()
                                     recentStreams.removeAll()
+                                } label: {
+                                    Label("Clear", systemImage: "trash")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.gray)
+                                        .padding(.horizontal, 8)
+                                        .frame(minHeight: 44)
+                                        .contentShape(Rectangle())
                                 }
-                                .font(.system(size: 13))
-                                .foregroundColor(.gray)
                             }
                         }
 

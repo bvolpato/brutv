@@ -4,14 +4,7 @@ import AVKit
 public struct PlayerView: View {
     @Binding public var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    /// iPhone portrait and narrow iPad split views.
-    private var isCompact: Bool { horizontalSizeClass == .compact }
-
     @ObservedObject private var playback = PlaybackManager.shared
-    @ObservedObject private var favorites = FavoritesStore.shared
-
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
     @State private var controlsTimer: Timer?
@@ -97,17 +90,11 @@ public struct PlayerView: View {
                     Button {
                         dismissPlayer(stop: true)
                     } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 12, weight: .bold))
-                            Text("Back to Channels")
-                                .font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(Color.white.opacity(0.2)))
+                        Label("Back to Channels", systemImage: "chevron.left")
+                            .font(.system(size: 14, weight: .semibold))
+                            .padding(.horizontal, 16)
                     }
+                    .buttonStyle(MediaControlButtonStyle())
                     .accessibilityIdentifier("playerLoadingBackButton")
                 }
                 .padding(22)
@@ -146,12 +133,15 @@ public struct PlayerView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.cyan)
 
-                        Button("Retry") {
+                        Button {
                             playback.retryCurrentPlayback()
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.bordered)
                         .tint(.white)
                     }
+                    .controlSize(.large)
                 }
                 .padding(24)
                 .background(
@@ -221,21 +211,25 @@ public struct PlayerView: View {
     }
 
     private var topControlsBar: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) {
                 backToChannelsButton
+                channelTitle.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 16)
                 minimizeButton
-                if !isCompact {
-                    channelTitle
-                }
-                Spacer(minLength: 8)
-                topActionButtons
+                closeButton
             }
-            if isCompact {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    backToChannelsButton
+                    Spacer(minLength: 8)
+                    minimizeButton
+                    closeButton
+                }
                 channelTitle
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.top, 16)
         .padding(.bottom, 24)
         .background(
@@ -251,20 +245,14 @@ public struct PlayerView: View {
         Button {
             dismissPlayer(stop: true)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .bold))
-                Text("Channels")
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .fixedSize()
-            .foregroundColor(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(Capsule().fill(Color.black.opacity(0.65)))
-            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+            Label("Channels", systemImage: "chevron.left")
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 12)
         }
+        .buttonStyle(MediaControlButtonStyle())
+        .help("Stop playback and return to channels")
         .accessibilityIdentifier("playerBackButton")
     }
 
@@ -273,13 +261,25 @@ public struct PlayerView: View {
             dismissPlayer(stop: false)
         } label: {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white.opacity(0.85))
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(Color.black.opacity(0.5)))
+                .font(.system(size: 17, weight: .semibold))
         }
+        .buttonStyle(MediaControlButtonStyle())
         .accessibilityLabel("Minimize")
+        .help("Keep playing in the mini player")
         .accessibilityIdentifier("playerMinimizeButton")
+    }
+
+    private var closeButton: some View {
+        Button {
+            dismissPlayer(stop: true)
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 17, weight: .semibold))
+        }
+        .buttonStyle(MediaControlButtonStyle())
+        .accessibilityLabel("Close Player")
+        .help("Close player and stop playback")
+        .accessibilityIdentifier("playerCloseButton")
     }
 
     private var channelTitle: some View {
@@ -300,78 +300,133 @@ public struct PlayerView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            // LIVE indicator
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 6, height: 6)
-                Text("LIVE")
-                    .font(.system(size: 9, weight: .black))
-                    .foregroundColor(.white)
-            }
-            .fixedSize()
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(Color.red.opacity(0.3)))
-
-            // Quality Badge
-            Text(qualityBadgeText)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white)
+            if playback.currentStream != nil {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                    Text(playback.shouldShowGoLive ? "DELAYED" : "LIVE")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                }
                 .fixedSize()
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.cyan))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.red.opacity(0.3)))
+
+                Text(qualityBadgeText)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.black)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.cyan))
+            }
         }
     }
 
-    @ViewBuilder
-    private var topActionButtons: some View {
-            // HUD Toggle
-            Button {
-                playback.settings.showStatsHUD.toggle()
-                scheduleControlsAutoHide()
-            } label: {
-                Image(systemName: playback.settings.showStatsHUD ? "gauge.with.needle.fill" : "gauge.with.needle")
-                    .font(.system(size: 18))
-                    .foregroundColor(playback.settings.showStatsHUD ? .cyan : .white)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.black.opacity(0.5)))
-            }
-
-            // Aspect Ratio Toggle
-            Button {
-                cycleAspectRatio()
-                scheduleControlsAutoHide()
-            } label: {
-                Image(systemName: "aspectratio")
-                    .font(.system(size: 18))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.black.opacity(0.5)))
-            }
-
-            // Close Button
-            Button {
-                dismissPlayer(stop: true)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.black.opacity(0.5)))
-            }
-            .accessibilityLabel("Close Player")
-            .accessibilityIdentifier("playerCloseButton")
-    }
-
     private var bottomControlsBar: some View {
-        VStack(spacing: 12) {
-            // Buffer bar
+        VStack(spacing: 14) {
+            if playback.currentStream != nil { liveTimeshiftControls }
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation {
+                        showGuideDrawer.toggle()
+                    }
+                } label: {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 20, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle(isActive: showGuideDrawer))
+                .accessibilityLabel("Channel Guide")
+                .help("Browse channels")
+                .accessibilityIdentifier("playerGuideButton")
+
+                Spacer(minLength: 0)
+
+                Button {
+                    playback.previousChannel()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle())
+                .accessibilityLabel("Previous Channel")
+                .help("Previous channel")
+                .accessibilityIdentifier("playerPrevButton")
+
+                Button {
+                    playback.togglePlayPause()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: playback.isPlaybackRequested ? "pause.fill" : "play.fill")
+                        .font(.system(size: 26, weight: .bold))
+                        .frame(width: 64, height: 64)
+                }
+                .buttonStyle(MediaControlButtonStyle(isPrimary: true))
+                .accessibilityLabel(playback.isPlaybackRequested ? "Pause" : "Play")
+                .help(playback.isPlaybackRequested ? "Pause playback" : "Resume playback")
+                .accessibilityIdentifier("playerPlayPauseButton")
+
+                Button {
+                    playback.nextChannel()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle())
+                .accessibilityLabel("Next Channel")
+                .help("Next channel")
+                .accessibilityIdentifier("playerNextButton")
+
+                Spacer(minLength: 0)
+
+                Button {
+                    playback.isMuted.toggle()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle(isActive: playback.isMuted))
+                .accessibilityLabel(playback.isMuted ? "Unmute" : "Mute")
+                .help(playback.isMuted ? "Unmute audio" : "Mute audio")
+                .accessibilityIdentifier("playerMuteButton")
+            }
+            .frame(maxWidth: 520)
+
+            HStack(spacing: 12) {
+                Button {
+                    playback.settings.showStatsHUD.toggle()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Label("Stats", systemImage: "gauge.with.needle")
+                        .padding(.horizontal, 12)
+                }
+                .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD))
+                .accessibilityLabel(playback.settings.showStatsHUD ? "Hide Stream Stats" : "Show Stream Stats")
+                .help("Show or hide stream telemetry")
+
+                Button {
+                    cycleAspectRatio()
+                    scheduleControlsAutoHide()
+                } label: {
+                    Label("Aspect", systemImage: "aspectratio")
+                        .padding(.horizontal, 12)
+                }
+                .buttonStyle(MediaControlButtonStyle())
+                .accessibilityLabel("Change Aspect Ratio")
+                .accessibilityValue(playback.aspectRatio.displayName)
+                .help("Aspect ratio: \(playback.aspectRatio.displayName)")
+            }
+            .font(.system(size: 13, weight: .semibold))
+
             HStack(spacing: 10) {
                 Text("Buffer: \(playback.telemetry.bufferDurationFormatted)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(.gray)
+                    .foregroundColor(.white.opacity(0.7))
 
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -385,85 +440,14 @@ public struct PlayerView: View {
 
                 Text(playback.telemetry.observedBitrateFormatted)
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(.gray)
+                    .foregroundColor(.white.opacity(0.7))
             }
-            .padding(.horizontal, 20)
-
-            // Playback and Zapping controls
-            HStack(spacing: isCompact ? 20 : 32) {
-                // Channel Guide Drawer
-                Button {
-                    withAnimation {
-                        showGuideDrawer.toggle()
-                    }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: "list.bullet.rectangle")
-                            .font(.system(size: 20))
-                        Text("Channels")
-                            .font(.system(size: 10))
-                            .lineLimit(1)
-                    }
-                    .fixedSize()
-                    .foregroundColor(.white)
-                }
-                .accessibilityIdentifier("playerGuideButton")
-
-                Spacer()
-
-                // Previous Channel
-                Button {
-                    playback.previousChannel()
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: "backward.end.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.white)
-                }
-                .accessibilityLabel("Previous Channel")
-                .accessibilityIdentifier("playerPrevButton")
-
-                // Play / Pause
-                Button {
-                    playback.togglePlayPause()
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: playback.isPlaybackRequested ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.cyan)
-                }
-                .accessibilityLabel("Play or Pause")
-                .accessibilityIdentifier("playerPlayPauseButton")
-
-                // Next Channel
-                Button {
-                    playback.nextChannel()
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: "forward.end.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.white)
-                }
-                .accessibilityLabel("Next Channel")
-                .accessibilityIdentifier("playerNextButton")
-
-                Spacer()
-
-                // Mute Toggle
-                Button {
-                    playback.isMuted.toggle()
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(.white)
-                }
-                .accessibilityLabel("Mute")
-                .accessibilityIdentifier("playerMuteButton")
-            }
-            .padding(.horizontal, 28)
-            .padding(.bottom, 20)
+            .frame(maxWidth: 520)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 24)
+        .padding(.bottom, 20)
         .background(
             LinearGradient(
                 colors: [Color.clear, Color.black.opacity(0.85)],
@@ -471,6 +455,59 @@ public struct PlayerView: View {
                 endPoint: .bottom
             )
         )
+    }
+
+    private var liveTimeshiftControls: some View {
+        VStack(spacing: 8) {
+            if playback.canSeekLive {
+                Slider(value: Binding(get: { playback.livePlayhead }, set: { playback.seekLive(to: $0) }),
+                       in: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd))
+                    .tint(.cyan)
+                    .accessibilityLabel("Live rewind position")
+                    .accessibilityIdentifier("playerLiveSeekSlider")
+                HStack(spacing: 12) {
+                    Button { playback.seekLive(by: -10); scheduleControlsAutoHide() } label: {
+                        Label("10s", systemImage: "gobackward.10")
+                    }
+                    .buttonStyle(MediaControlButtonStyle())
+                    .accessibilityLabel("Rewind 10 seconds")
+                    Button { playback.seekLive(by: 10); scheduleControlsAutoHide() } label: {
+                        Label("10s", systemImage: "goforward.10")
+                    }
+                    .buttonStyle(MediaControlButtonStyle())
+                    .accessibilityLabel("Forward 10 seconds")
+                    Spacer(minLength: 0)
+                    if playback.shouldShowGoLive {
+                        Button { playback.goLive(); scheduleControlsAutoHide() } label: {
+                            Label("Go Live", systemImage: "dot.radiowaves.left.and.right")
+                        }
+                        .buttonStyle(MediaControlButtonStyle(isActive: true))
+                        .accessibilityIdentifier("playerGoLiveButton")
+                    }
+                }
+                .font(.system(size: 12, weight: .semibold))
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                if let reason = playback.liveBufferUnavailable {
+                    Text("Rewind unavailable. \(reason)")
+                } else {
+                    Text(String(format: "Saved %.0fs · %.1f MiB", playback.liveBuffer.duration,
+                                Double(playback.liveBuffer.bytes) / 1_048_576))
+                    Spacer(minLength: 0)
+                    Text(playback.liveBehindSeconds > 1 ? String(format: "%.0fs behind", playback.liveBehindSeconds) : "Live")
+                }
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(.white.opacity(0.8))
+            if let notice = playback.liveBuffer.notice {
+                Text(notice)
+                    .font(.system(size: 11))
+                    .foregroundColor(.yellow)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: 520)
     }
 
     private var quickChannelDrawer: some View {
@@ -485,10 +522,10 @@ public struct PlayerView: View {
                     Button {
                         withAnimation { showGuideDrawer = false }
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(.gray)
+                        Image(systemName: "xmark")
+                            .font(.system(size: 17, weight: .semibold))
                     }
+                    .buttonStyle(MediaControlButtonStyle())
                     .accessibilityLabel("Close Guide")
                     .accessibilityIdentifier("guideCloseButton")
                 }
@@ -543,5 +580,29 @@ public struct PlayerView: View {
                 }
             }
         }
+    }
+}
+
+struct MediaControlButtonStyle: ButtonStyle {
+    var isPrimary = false
+    var isActive = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(minWidth: 44, minHeight: 44)
+            .foregroundColor(isPrimary ? .black : (isActive ? .cyan : .white))
+            .background(
+                RoundedRectangle(cornerRadius: isPrimary ? 22 : 14, style: .continuous)
+                    .fill(isPrimary ? Color.cyan : (isActive ? Color.cyan.opacity(0.18) : Color.white.opacity(0.12)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: isPrimary ? 22 : 14, style: .continuous)
+                    .stroke(isActive ? Color.cyan.opacity(0.6) : Color.white.opacity(0.18), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: isPrimary ? 22 : 14, style: .continuous))
+            .hoverEffect(.highlight)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }

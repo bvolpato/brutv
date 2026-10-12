@@ -4,12 +4,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -128,7 +136,11 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
                         QrImage(bitmap, "Temporary TV pairing QR code")
                     } else if (error != null) {
                         Text(error.orEmpty())
-                        Button(onClick = { attempt++ }) { Text("Create new code") }
+                        Button(onClick = { attempt++ }) {
+                            Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Create new code")
+                        }
                     } else {
                         CircularProgressIndicator()
                         Text("Preparing a secure local connection…")
@@ -139,7 +151,11 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
         TextButton(onClick = {
             receiver.getAndSet(null)?.close()
             onCancel()
-        }, modifier = Modifier.focusRequester(cancelFocus)) { Text("Cancel") }
+        }, modifier = Modifier.focusRequester(cancelFocus)) {
+            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Cancel")
+        }
     }
 }
 
@@ -185,12 +201,20 @@ fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDon
                         sending = false
                     }
                 }
-            }, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text(source.name) }
+            }, enabled = !sending, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(source.name)
+            }
         }
         if (sending) {
             CircularProgressIndicator()
             Text("Sending securely…")
         }
-        TextButton(onClick = onCancel) { Text("Cancel") }
+        TextButton(onClick = onCancel) {
+            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Cancel")
+        }
     }
 }

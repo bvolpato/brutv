@@ -43,15 +43,31 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.InsertLink
 import androidx.compose.material.icons.outlined.LiveTv
+import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SwitchAccount
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -87,6 +103,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -209,6 +226,7 @@ fun BruTvApp(
                         "Enter details manually",
                         { viewModel.openSignIn() },
                         Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+                        icon = Icons.Outlined.Edit,
                         primary = true,
                         isTv = false,
                     )
@@ -228,6 +246,7 @@ fun BruTvApp(
                             title = "This profile cannot be shared",
                             body = "Imported playlist files are stored only on this device. Add a provider login or playlist URL to pair with the TV.",
                             action = "Continue",
+                            actionIcon = Icons.Outlined.Check,
                             onAction = viewModel::clearPairingInvite,
                         )
                     } else {
@@ -401,12 +420,12 @@ private fun WelcomePage(
             if (!state.initialized) {
                 CircularProgressIndicator(color = Aqua)
             } else {
-                if (isTv) ActionButton("Pair with phone", onPair, Modifier.focusRequester(pairFocus), primary = true, isTv = true)
-                ActionButton("Connect with Xtream", onAddXtream, primary = !isTv, isTv = isTv)
-                ActionButton("Add an M3U playlist URL", onAddPlaylist, isTv = isTv)
-                ActionButton("Import an M3U file", onChoosePlaylist, isTv = isTv)
-                if (!isTv) ActionButton("Scan a BruTV QR code", onScan, isTv = false)
-                ActionButton("Paste a sign-in link", onPasteLink, isTv = isTv)
+                if (isTv) ActionButton("Pair with phone", onPair, Modifier.focusRequester(pairFocus), icon = Icons.Outlined.Devices, primary = true, isTv = true)
+                ActionButton("Connect with Xtream", onAddXtream, icon = Icons.Outlined.InsertLink, primary = !isTv, isTv = isTv)
+                ActionButton("Add an M3U playlist URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = isTv)
+                ActionButton("Import an M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = isTv)
+                if (!isTv) ActionButton("Scan a BruTV QR code", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                ActionButton("Paste a sign-in link", onPasteLink, icon = Icons.Outlined.ContentPaste, isTv = isTv)
             }
             Text("Your provider login stays on this device. Use links and QR codes only with people you trust.", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
@@ -478,8 +497,13 @@ private fun SignInPage(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Add a provider", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (isTv) HeaderTextButton("Pair with phone", onPair, true)
-                TextButton(onClick = onClose) { Text("Cancel") }
+                if (isTv) HeaderTextButton("Pair with phone", Icons.Outlined.Devices, onPair, true)
+                TextButton(onClick = onClose) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Cancel")
+                    }
+                }
             }
             Text("Your sign-in details are encrypted and stored on this device.", color = Muted)
             if (isTv) Text("Select a field to edit it. Press Back to return to navigation.", color = Muted, style = MaterialTheme.typography.bodySmall)
@@ -522,15 +546,15 @@ private fun SignInPage(
             } else {
                 OutlinedTextField(value = state.draft.playlistUrl, onValueChange = { value -> viewModel.updateDraft { it.copy(playlistUrl = value) } }, label = { Text("M3U playlist URL") }, singleLine = true, readOnly = isTv && editingField != SignInField.PLAYLIST_URL, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.PLAYLIST_URL, editingField, { editingField = SignInField.PLAYLIST_URL }, playlistUrlFocus, profileNameFocus, chooseFileFocus)))
                 Text("You can import an .m3u file from this device. The file is copied into private app storage.", color = Muted, style = MaterialTheme.typography.bodySmall)
-                ActionButton("Choose .m3u file", onChoosePlaylist, Modifier.then(if (isTv) Modifier.focusRequester(chooseFileFocus) else Modifier), isTv = isTv)
+                ActionButton("Choose .m3u file", onChoosePlaylist, Modifier.then(if (isTv) Modifier.focusRequester(chooseFileFocus) else Modifier), icon = Icons.Outlined.FileOpen, isTv = isTv)
             }
             if (state.pageError != null) InlineError(state.pageError)
             if (state.pendingPairInvite != null) InfoNotice("TV code saved. Connect a profile, then choose which one to send.")
-            ActionButton(if (state.busy) "Connecting…" else "Connect", viewModel::connectDraft, Modifier.then(if (isTv) Modifier.focusRequester(connectFocus) else Modifier), primary = true, enabled = !state.busy, isTv = isTv)
+            ActionButton(if (state.busy) "Connecting…" else "Connect", viewModel::connectDraft, Modifier.then(if (isTv) Modifier.focusRequester(connectFocus) else Modifier), icon = Icons.Outlined.InsertLink, primary = true, enabled = !state.busy, isTv = isTv)
             if (state.busy) CircularProgressIndicator(color = Aqua, modifier = Modifier.align(Alignment.CenterHorizontally))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (!isTv) ActionButton("Scan QR", onScan, Modifier.weight(1f), isTv = false)
-                ActionButton("Paste sign-in link", onPasteLink, Modifier.weight(1f), isTv = isTv)
+                if (!isTv) ActionButton("Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                ActionButton("Paste sign-in link", onPasteLink, Modifier.weight(1f), icon = Icons.Outlined.ContentPaste, isTv = isTv)
             }
         }
     }
@@ -660,32 +684,61 @@ private fun AppHeader(
     onSettings: () -> Unit,
 ) {
     if (isTv) {
-        Row(
+        BoxWithConstraints(
             Modifier.fillMaxWidth().background(Color(0xFF0E1A20)).padding(horizontal = 30.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            HeaderIdentity(source, Modifier.weight(1f))
-            if (source != null && source.isShareable()) HeaderTextButton("Show login QR", onShare, true)
-            HeaderTextButton("Pair phone", onPair, true)
-            HeaderTextButton("Profiles", onProfiles, true)
-            HeaderTextButton("Settings", onSettings, true)
-            HeaderTextButton("Add", onAdd, true, primary = true)
+            val showQr = source != null && source.isShareable()
+            if (maxWidth < 1000.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        HeaderIdentity(source, Modifier.weight(1f))
+                        HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, true)
+                        HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, true)
+                        HeaderTextButton("Add", Icons.Outlined.Add, onAdd, true, primary = true)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, true)
+                        HeaderTextButton("Pair phone", Icons.Outlined.Devices, onPair, true)
+                    }
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    HeaderIdentity(source, Modifier.weight(1f))
+                    if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, true)
+                    HeaderTextButton("Pair phone", Icons.Outlined.Devices, onPair, true)
+                    HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, true)
+                    HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, true)
+                    HeaderTextButton("Add", Icons.Outlined.Add, onAdd, true, primary = true)
+                }
+            }
         }
     } else {
-        Column(
-            Modifier.fillMaxWidth().background(Color(0xFF0E1A20)).padding(horizontal = 14.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HeaderIdentity(source, Modifier.weight(1f))
-                HeaderTextButton("Profiles", onProfiles, false)
-                HeaderTextButton("Settings", onSettings, false)
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (source != null && source.isShareable()) HeaderTextButton("Show login QR", onShare, false)
-                HeaderTextButton("Pair TV", onPair, false)
-                HeaderTextButton("Add provider", onAdd, false, primary = true)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val showQr = source != null && source.isShareable()
+            val narrowWithQr = maxWidth < 440.dp && showQr
+            Column(
+                Modifier.fillMaxWidth().background(Color(0xFF0E1A20)).padding(horizontal = 14.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HeaderIdentity(source, Modifier.weight(1f))
+                    HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, false)
+                    HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, false)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, false)
+                    HeaderTextButton("Pair TV", Icons.Outlined.Devices, onPair, false)
+                    if (!narrowWithQr) HeaderTextButton("Add provider", Icons.Outlined.Add, onAdd, false, primary = true)
+                }
+                if (narrowWithQr) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        HeaderTextButton("Add provider", Icons.Outlined.Add, onAdd, false, primary = true)
+                    }
+                }
             }
         }
     }
@@ -694,7 +747,7 @@ private fun AppHeader(
 @Composable
 private fun HeaderIdentity(source: SourceConfig?, modifier: Modifier = Modifier) {
     Column(modifier) {
-        Text("BruTV", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold)
+        Text("BruTV", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(source?.name ?: "No provider selected", style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -854,7 +907,10 @@ private fun CatalogPage(
                         imageLoader = imageLoader,
                         isTv = isTv,
                         favorite = viewModel.isFavorite(entry.id),
-                        onClick = { viewModel.openEntry(entry) },
+                        onClick = {
+                            if (entry.kind == MediaKind.LIVE) viewModel.play(entry)
+                            else viewModel.openEntry(entry)
+                        },
                         onFavorite = { viewModel.toggleFavorite(entry) },
                     )
                 }
@@ -1038,10 +1094,10 @@ private fun DetailOverview(
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (entry.kind != MediaKind.SERIES) {
-                ActionButton("Play", { onPlay(entry) }, Modifier.weight(1f), primary = true, isTv = isTv)
+                ActionButton("Play", { onPlay(entry) }, Modifier.weight(1f), icon = Icons.Outlined.PlayArrow, primary = true, isTv = isTv)
             }
-            ActionButton(if (isFavorite(entry.id)) "Saved" else "Save", { onFavorite(entry) }, Modifier.weight(1f), isTv = isTv)
-            ActionButton("Back", onBack, Modifier.weight(1f), isTv = isTv)
+            ActionButton(if (isFavorite(entry.id)) "Saved" else "Save", { onFavorite(entry) }, Modifier.weight(1f), icon = if (isFavorite(entry.id)) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder, isTv = isTv)
+            ActionButton("Back", onBack, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.ArrowBack, isTv = isTv)
         }
     }
 }
@@ -1145,9 +1201,9 @@ private fun ProfilesPage(
                     Text(profile.name, color = Color.White, fontWeight = FontWeight.SemiBold)
                     Text(if (active) "Currently active" else if (profile.type == SourceType.M3U) "M3U playlist" else "Xtream provider", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
-                if (!active) ActionButton("Switch", { viewModel.switchProfile(profile.id) }, isTv = isTv)
-                if (profile.isShareable()) ActionButton("QR", { viewModel.showLoginQr(profile) }, isTv = isTv)
-                ActionButton("Remove", { removeProfileId = profile.id }, isTv = isTv)
+                if (!active) ActionButton("Switch", { viewModel.switchProfile(profile.id) }, icon = Icons.Outlined.SwitchAccount, isTv = isTv)
+                if (profile.isShareable()) ActionButton("QR", { viewModel.showLoginQr(profile) }, icon = Icons.Outlined.QrCode2, isTv = isTv)
+                ActionButton("Remove", { removeProfileId = profile.id }, icon = Icons.Outlined.DeleteOutline, isTv = isTv)
             }
         }
         if (state.profiles.isEmpty()) Text("No saved profiles yet.", color = Muted)
@@ -1157,20 +1213,20 @@ private fun ProfilesPage(
         if (isTv) {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton("Xtream login", onAddXtream, primary = true, isTv = true)
-                    ActionButton("M3U URL", onAddPlaylist, isTv = true)
+                    ActionButton("Xtream login", onAddXtream, icon = Icons.Outlined.InsertLink, primary = true, isTv = true)
+                    ActionButton("M3U URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = true)
                 }
-                ActionButton("Import M3U file", onChoosePlaylist, isTv = true)
+                ActionButton("Import M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = true)
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionButton("Xtream login", onAddXtream, Modifier.weight(1f), primary = true, isTv = false)
-                    ActionButton("M3U URL", onAddPlaylist, Modifier.weight(1f), isTv = false)
+                    ActionButton("Xtream login", onAddXtream, Modifier.weight(1f), icon = Icons.Outlined.InsertLink, primary = true, isTv = false)
+                    ActionButton("M3U URL", onAddPlaylist, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = false)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionButton("Import M3U file", onChoosePlaylist, Modifier.weight(1f), isTv = false)
-                    ActionButton("Scan QR", onScan, Modifier.weight(1f), isTv = false)
+                    ActionButton("Import M3U file", onChoosePlaylist, Modifier.weight(1f), icon = Icons.Outlined.FileOpen, isTv = false)
+                    ActionButton("Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
                 }
             }
         }
@@ -1182,8 +1238,22 @@ private fun ProfilesPage(
             onDismissRequest = { removeProfileId = null },
             title = { Text("Remove profile?") },
             text = { Text("${profile?.name ?: "This profile"} and its favorites and resume history will be removed from this device.") },
-            confirmButton = { TextButton(onClick = { viewModel.removeProfile(id); removeProfileId = null }) { Text("Remove") } },
-            dismissButton = { TextButton(onClick = { removeProfileId = null }) { Text("Cancel") } },
+            confirmButton = {
+                TextButton(onClick = { viewModel.removeProfile(id); removeProfileId = null }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Remove")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { removeProfileId = null }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Cancel")
+                    }
+                }
+            },
         )
     }
 }
@@ -1223,8 +1293,8 @@ private fun EmptyCatalog(title: String, body: String, onAdd: () -> Unit, isTv: B
         Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = Muted)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionButton("Add a provider", onAdd, primary = true, isTv = isTv)
-            if (!isTv) ActionButton("Scan QR", onScan, isTv = false)
+            ActionButton("Add a provider", onAdd, icon = Icons.Outlined.Add, primary = true, isTv = isTv)
+            if (!isTv) ActionButton("Scan QR", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
         }
     }
 }
@@ -1241,7 +1311,7 @@ private fun LoadingBlock(message: String) {
 private fun ErrorBlock(message: String, onRetry: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp).clip(RoundedCornerShape(15.dp)).background(Color(0xFF351C1E)).padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(message, color = Color(0xFFFFB7AB), modifier = Modifier.weight(1f))
-        ActionButton("Retry", onRetry, isTv = false)
+        ActionButton("Retry", onRetry, icon = Icons.Outlined.Refresh, isTv = false)
     }
 }
 
@@ -1267,7 +1337,7 @@ private fun PersistenceNotice(state: BruTvUiState, viewModel: BruTvViewModel, is
             style = MaterialTheme.typography.bodySmall,
         )
         if (state.persistenceRetryable) {
-            ActionButton("Retry save", viewModel::retryPersistence, isTv = isTv)
+            ActionButton("Retry save", viewModel::retryPersistence, icon = Icons.Outlined.Refresh, isTv = isTv)
         }
     }
 }
@@ -1283,6 +1353,7 @@ private fun LocalPlaylistShareMessage(onClose: () -> Unit) {
         title = "This playlist is on this device",
         body = "A local playlist file cannot be shared by QR or sent to a TV. Add the playlist URL on the other device, or use a provider login profile.",
         action = "Close",
+        actionIcon = Icons.Outlined.Close,
         onAction = onClose,
     )
 }
@@ -1310,27 +1381,42 @@ private fun PasteLinkDialog(
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
-                TextButton(onClick = { value = clipboard.getText()?.text.orEmpty(); error = null }) { Text("Paste from clipboard") }
+                TextButton(onClick = { value = clipboard.getText()?.text.orEmpty(); error = null }) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Paste from clipboard")
+                    }
+                }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
             TextButton(onClick = { if (value.isBlank() || !onImport(value.trim())) error = "Enter a valid BruTV login or TV pairing link." }) {
-                Text("Continue")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Continue")
+                }
             }
         },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+        dismissButton = {
+            TextButton(onClick = onCancel) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Cancel")
+                }
+            }
+        },
     )
 }
 
 @Composable
-private fun CenteredMessage(title: String, body: String, action: String, onAction: () -> Unit) {
+private fun CenteredMessage(title: String, body: String, action: String, actionIcon: ImageVector, onAction: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(30.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Text(title, style = MaterialTheme.typography.headlineSmall, color = Color.White, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(12.dp))
         Text(body, color = Muted)
         Spacer(Modifier.height(18.dp))
-        ActionButton(action, onAction, primary = true, isTv = true)
+        ActionButton(action, onAction, icon = actionIcon, primary = true, isTv = true)
     }
 }
 
@@ -1339,6 +1425,7 @@ private fun ActionButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
     primary: Boolean = false,
     enabled: Boolean = true,
     isTv: Boolean,
@@ -1355,7 +1442,7 @@ private fun ActionButton(
             colors = colors,
             border = if (focused) BorderStroke(3.dp, Color.White) else null,
             contentPadding = PaddingValues(horizontal = if (isTv) 23.dp else 17.dp, vertical = if (isTv) 14.dp else 11.dp),
-        ) { Text(label, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { ActionButtonContent(label, icon, isTv, primary = true) }
     } else {
         OutlinedButton(
             onClick = onClick,
@@ -1365,13 +1452,28 @@ private fun ActionButton(
             colors = colors,
             border = BorderStroke(if (focused) 3.dp else 1.dp, if (focused) Aqua else Color(0xFF42616B)),
             contentPadding = PaddingValues(horizontal = if (isTv) 20.dp else 14.dp, vertical = if (isTv) 13.dp else 10.dp),
-        ) { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        ) { ActionButtonContent(label, icon, isTv, primary = false) }
     }
 }
 
 @Composable
-private fun HeaderTextButton(label: String, onClick: () -> Unit, isTv: Boolean, primary: Boolean = false) {
-    ActionButton(label, onClick, primary = primary, isTv = isTv)
+private fun ActionButtonContent(label: String, icon: ImageVector?, isTv: Boolean, primary: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(if (isTv) 7.dp else 5.dp)) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(if (isTv) 20.dp else 18.dp))
+        }
+        Text(
+            label,
+            fontWeight = if (primary) FontWeight.SemiBold else null,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun HeaderTextButton(label: String, icon: ImageVector, onClick: () -> Unit, isTv: Boolean, primary: Boolean = false) {
+    ActionButton(label, onClick, icon = icon, primary = primary, isTv = isTv)
 }
 
 @Composable

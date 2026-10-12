@@ -65,6 +65,17 @@ The script verifies both signatures and copies versioned artifacts into
 directories. Google Play may require the configured upload certificate to
 match the app's existing Play Console setup.
 
+The hosted direct APK and standard App Bundle keep API 23 support for Android
+6+. Google Play automatic protection requires API 24, so build a separate
+Play-only App Bundle with:
+
+```bash
+./gradlew :app:bundleRelease -PbrutvMinSdk=24
+```
+
+This override applies to that Gradle build only. Keep the resulting API 24
+bundle for Google Play and continue hosting the API 23 APK for direct installs.
+
 For family testing on Android/Fire OS, Downloader can download an APK from a
 direct HTTPS URL and open the system installer. The APK must first be hosted
 at an accessible URL; building locally does not publish it. Allow installation
@@ -118,8 +129,49 @@ buffer. Ultra low latency explicitly targets a shorter live delay and can
 rebuffer more on conventional HLS streams. Playback includes seeking and resume
 for VOD, a channel guide, track selection, live-edge recovery, and optional
 measured telemetry.
-Recovery is capped and cancelled when switching, pausing, or closing. Live video
-is not cached to disk. Picture-in-Picture is available on supported devices.
+Recovery is capped and cancelled when switching, pausing, or closing.
+Picture-in-Picture is available on supported devices.
+
+### Temporary live buffer
+
+Supported clear HLS broadcasts now record compressed segments in private temporary
+storage while you watch. **Pause keeps recording while BruTV remains in the
+foreground**, so resume, **Back 10s**, **Forward 10s**, and the native seek bar can
+play the footage saved since opening that channel. **Go live** returns to the
+stream's normal live position and resumes playback. It appears after an explicit
+backward seek or a substantial pause, rather than at normal provider latency.
+
+Each session keeps at most **10 minutes or 256 MiB**, whichever limit is reached
+first, with an additional 2,000-segment limit. The byte limit includes initialization
+maps, downloads in progress, and a short grace period for recently evicted files.
+Individual manifests are limited to 1 MiB and media/init responses to 32 MiB.
+Older footage is evicted first. A pause exceeding the retained history resumes
+from the oldest saved footage with a visible notice. Channel changes, stopping,
+closing the player, and leaving the foreground clear the temporary buffer.
+Returning from the background starts a fresh live recording if playback was
+previously active. This is not an Android background recording service.
+
+The local manifest advertises only completely saved files and continues growing
+independently of Media3's paused decode buffer. It retains sequence numbers,
+discontinuities, declared gaps, program timestamps, and downloaded fMP4 maps.
+Retry uses an absolute saved-content position to account for a moving window.
+Only a randomly addressed loopback server can serve the session, and source URLs
+and credentials are kept in memory. Startup removes stale session directories
+left by a previous process termination.
+
+The first implementation records one muxed HLS rendition. When a compatible
+master offers variants, it chooses the highest advertised rendition up to 1080p
+and 8 Mbps, or its lowest rendition if none fit. It keeps that rendition for the
+session so older footage remains playable. If the device cannot decode that
+rendition, the recorder closes and a single direct native fallback can select
+another variant; a notice explains that local recording is unavailable. Separate audio/subtitle renditions,
+encryption/DRM, byte ranges, delta playlists, partial-only low-latency HLS, DASH,
+and raw transport streams retain direct native playback with a visible local
+recording unavailable message. External media resources and redirects do not
+receive private headers supplied for a different origin. Sources whose CDN
+requires those private headers may therefore use direct playback instead.
+Recording stops visibly if an interruption loses upstream segments; it does not
+join missing footage into a misleading continuous history.
 
 A fixed-bitrate stream cannot adapt to a slower connection, and a broken
 provider or unsupported hardware codec can still fail. 4K/HDR, camera capture,

@@ -107,14 +107,19 @@ public struct LoginView: View {
                         Button {
                             submitLogin()
                         } label: {
-                            HStack {
+                            HStack(spacing: 8) {
                                 if isSubmitting {
                                     ProgressView()
                                         .tint(.black)
-                                        .padding(.trailing, 6)
-                                }
-                                Text(isSubmitting ? "Connecting..." : (mode == .xtream ? "Connect Server" : "Load Playlist"))
+                                    Text("Connecting...")
+                                        .font(.system(size: 16, weight: .bold))
+                                } else {
+                                    Label(
+                                        mode == .xtream ? "Connect Server" : "Load Playlist",
+                                        systemImage: mode == .xtream ? "server.rack" : "square.and.arrow.down"
+                                    )
                                     .font(.system(size: 16, weight: .bold))
+                                }
                             }
                             .frame(maxWidth: .infinity)
                             .padding(16)
@@ -135,6 +140,7 @@ public struct LoginView: View {
                         .buttonBorderShape(.capsule)
                         .tint(.cyan)
                         .labelStyle(.titleAndIcon)
+                        .accessibilityHint("Paste a BruTV sign-in link or playlist URL.")
                         .accessibilityIdentifier("pasteLoginLinkButton")
 
                         Text("Got a BruTV QR code? Scan it with the Camera app. Got a link? Copy it, then tap Paste.")
@@ -289,8 +295,13 @@ public struct LoginView: View {
                         showPassword.toggle()
                     } label: {
                         Image(systemName: showPassword ? "eye.slash" : "eye")
-                            .foregroundColor(.gray)
+                            .foregroundColor(showPassword ? .cyan : .gray)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
+                    .accessibilityHint(showPassword ? "Hides your password." : "Shows your password.")
                 }
                 .padding(14)
                 .background(Color(white: 0.12))
