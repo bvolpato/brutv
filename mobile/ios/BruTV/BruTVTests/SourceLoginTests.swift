@@ -81,11 +81,24 @@ final class SourceLoginTests: XCTestCase {
         XCTAssertEqual(LoginLink(url: link.url), .m3u(url: playlist))
     }
 
+    func testLoginLinksPreserveExistingPercentEscapes() {
+        let playlist = "https://cdn.example.com/panel%20name/list.m3u?token=a%2Bb%26c"
+        let playlistLink = LoginLink.m3u(url: playlist)
+        XCTAssertEqual(LoginLink(url: playlistLink.url), playlistLink)
+
+        let accountLink = LoginLink.xtream(
+            server: "https://provider.example/panel%20name",
+            username: "user%2B+tag",
+            password: "pass%2F+word"
+        )
+        XCTAssertEqual(LoginLink(url: accountLink.url), accountLink)
+    }
+
     func testXtreamGetPhpPlaylistBecomesXtreamLogin() {
         let link = LoginLink.fromPlaylistURL(
-            "http://virello.win:80/get.php?username=Bruno081225p2&password=tv8392602653&type=m3u_plus&output=m3u8"
+            "http://provider.example.test:80/get.php?username=fixture-user&password=fixture-password&type=m3u_plus&output=m3u8"
         )
-        XCTAssertEqual(link, .xtream(server: "http://virello.win:80", username: "Bruno081225p2", password: "tv8392602653"))
+        XCTAssertEqual(link, .xtream(server: "http://provider.example.test:80", username: "fixture-user", password: "fixture-password"))
     }
 
     func testPlainPlaylistStaysM3U() {
@@ -111,6 +124,7 @@ final class SourceLoginTests: XCTestCase {
         XCTAssertEqual(profile.loginLink, .xtream(server: "http://h", username: "u", password: "p"))
     }
 
+    #if !SWIFT_PACKAGE
     func testPlaylistTsEntriesPlayAsHLS() {
         XCTAssertEqual(
             PlaybackManager.playableURL(fromPlaylistEntry: "http://host:80/live/u/p/1948.ts")?.absoluteString,
@@ -121,4 +135,5 @@ final class SourceLoginTests: XCTestCase {
             "https://cdn/stream.ts"
         )
     }
+    #endif
 }

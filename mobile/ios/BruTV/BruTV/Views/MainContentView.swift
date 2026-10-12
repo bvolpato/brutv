@@ -204,7 +204,7 @@ public struct MainContentView: View {
                 Button {
                     playback.togglePlayPause()
                 } label: {
-                    Image(systemName: playback.playbackState == .playing ? "pause.fill" : "play.fill")
+                    Image(systemName: playback.isPlaybackRequested ? "pause.fill" : "play.fill")
                         .font(.system(size: 20))
                         .foregroundColor(.white)
                         .padding(8)

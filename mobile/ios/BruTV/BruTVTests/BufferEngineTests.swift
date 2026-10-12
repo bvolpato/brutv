@@ -37,7 +37,7 @@ final class BufferEngineTests: XCTestCase {
 
     @MainActor
     func testPlaybackManagerStopResetsState() {
-        let manager = PlaybackManager.shared
+        let manager = PlaybackManager()
         let dummyStream = LiveStream(
             id: 99999,
             num: 1,
@@ -57,5 +57,145 @@ final class BufferEngineTests: XCTestCase {
         XCTAssertNil(manager.currentStream)
         XCTAssertNil(manager.currentVOD)
         XCTAssertEqual(manager.playbackState, .idle)
+        XCTAssertFalse(manager.isPlaybackRequested)
+    }
+
+    @MainActor
+    func testPausingAConnectingItemCancelsPlaybackIntent() async throws {
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        let stream = LiveStream(id: 99998, num: 1, name: "Unavailable test stream",
+                                directURLString: "http://127.0.0.1:9/test.m3u8")
+        manager.play(stream: stream)
+        XCTAssertTrue(manager.isPlaybackRequested)
+        manager.togglePlayPause()
+        XCTAssertFalse(manager.isPlaybackRequested)
+        XCTAssertEqual(manager.playbackState, .paused)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(manager.isPlaybackRequested)
+        XCTAssertEqual(manager.playbackState, .paused)
+        XCTAssertEqual(manager.player.rate, 0)
+    }
+
+    @MainActor
+    func testNativePauseWhileConnectingCancelsPlaybackIntent() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        manager.play(stream: LiveStream(id: 99997, name: "Local audio", directURLString: url.absoluteString))
+        manager.player.pause()
+        let paused = try await waitUntil { !manager.isPlaybackRequested }
+        XCTAssertTrue(paused)
+        XCTAssertEqual(manager.playbackState, .paused)
+        XCTAssertEqual(manager.player.rate, 0)
+    }
+
+    @MainActor
+    func testNativePauseAndPlaySynchronizePlaybackIntent() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        manager.play(stream: LiveStream(id: 99996, name: "Local audio", directURLString: url.absoluteString))
+        let started = try await waitUntil { manager.playbackState == .playing }
+        XCTAssertTrue(started)
+
+        manager.player.pause()
+        let paused = try await waitUntil { !manager.isPlaybackRequested && manager.playbackState == .paused }
+        XCTAssertTrue(paused)
+        manager.player.play()
+        let resumed = try await waitUntil { manager.isPlaybackRequested && manager.playbackState == .playing }
+        XCTAssertTrue(resumed)
+    }
+
+    @MainActor
+    func testCustomResumeAppliesPendingSeekAfterItemBecameReadyWhilePaused() async throws {
+        try await assertPendingSeekResumes(usingNativeControls: false)
+    }
+
+    @MainActor
+    func testNativeResumeAppliesPendingSeekAfterItemBecameReadyWhilePaused() async throws {
+        try await assertPendingSeekResumes(usingNativeControls: true)
+    }
+
+    @MainActor
+    func testNativePauseImmediatelyAfterResumeIsNotOverriddenBySeekCompletion() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        manager.play(stream: LiveStream(id: 99994, name: "Local audio", directURLString: url.absoluteString))
+        manager.prepareAndPlay(url: url, resumePosition: 3)
+        manager.togglePlayPause()
+        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready)
+        manager.togglePlayPause()
+        manager.player.pause()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(manager.isPlaybackRequested)
+        XCTAssertEqual(manager.playbackState, .paused)
+        XCTAssertEqual(manager.player.rate, 0)
+    }
+
+    @MainActor
+    private func assertPendingSeekResumes(usingNativeControls: Bool) async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        manager.play(stream: LiveStream(id: 99995, name: "Local audio", directURLString: url.absoluteString))
+        manager.prepareAndPlay(url: url, resumePosition: 3)
+        manager.togglePlayPause()
+        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready)
+        XCTAssertFalse(manager.isPlaybackRequested)
+        XCTAssertEqual(manager.playbackState, .paused)
+
+        if usingNativeControls {
+            manager.player.play()
+        } else {
+            manager.togglePlayPause()
+        }
+        let resumed = try await waitUntil { manager.playbackState == .playing }
+        XCTAssertTrue(resumed)
+        let position = CMTimeGetSeconds(manager.player.currentTime())
+        XCTAssertGreaterThanOrEqual(position, 2.9)
+        XCTAssertLessThan(position, 4.5)
+    }
+
+    @MainActor
+    private func waitUntil(_ condition: () -> Bool) async throws -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while !condition(), ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return condition()
+    }
+
+    private func makeAudioFixture() throws -> URL {
+        let samples = Data(repeating: 0, count: 16_000 * 2 * 8)
+        var data = Data()
+        func appendInteger<T: FixedWidthInteger>(_ value: T) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        data.append(contentsOf: "RIFF".utf8)
+        appendInteger(UInt32(36 + samples.count))
+        data.append(contentsOf: "WAVEfmt ".utf8)
+        appendInteger(UInt32(16))
+        appendInteger(UInt16(1))
+        appendInteger(UInt16(1))
+        appendInteger(UInt32(16_000))
+        appendInteger(UInt32(32_000))
+        appendInteger(UInt16(2))
+        appendInteger(UInt16(16))
+        data.append(contentsOf: "data".utf8)
+        appendInteger(UInt32(samples.count))
+        data.append(samples)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("brutv-playback-\(UUID().uuidString).wav")
+        try data.write(to: url, options: .atomic)
+        return url
     }
 }

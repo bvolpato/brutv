@@ -237,7 +237,19 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
 
     /// Two profiles point at the same source.
     public func sameSource(as other: ServerProfile) -> Bool {
-        loginLink == other.loginLink
+        guard kind == other.kind else { return false }
+        switch kind {
+        case .xtream:
+            return SourceEndpointIdentity.canonicalURL(serverURL, isPanel: true)
+                == SourceEndpointIdentity.canonicalURL(other.serverURL, isPanel: true)
+                && username.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == other.username.trimmingCharacters(in: .whitespacesAndNewlines)
+                && password.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == other.password.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .m3u:
+            return SourceEndpointIdentity.canonicalURL(playlistURL ?? serverURL, isPanel: false)
+                == SourceEndpointIdentity.canonicalURL(other.playlistURL ?? other.serverURL, isPanel: false)
+        }
     }
 
     #if DEBUG

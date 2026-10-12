@@ -44,11 +44,10 @@ public final class HLSBufferEngine: @unchecked Sendable {
         with profile: BufferProfile,
         hardwareAccelerated: Bool = true
     ) {
-        // State-of-the-art buffer window tuning
         playerItem.preferredForwardBufferDuration = profile.forwardBufferDuration
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
 
-        // Peak bitrate: 0 allows full native resolution (4K / 1080p FHD)
+        // Let AVPlayer adapt within the provider's available variants.
         playerItem.preferredPeakBitRate = 0
     }
 
@@ -56,19 +55,14 @@ public final class HLSBufferEngine: @unchecked Sendable {
         let currentTime = playerItem.currentTime()
         guard currentTime.isValid, !currentTime.isIndefinite else { return 0.0 }
 
-        let timeRanges = playerItem.loadedTimeRanges
-        guard let rangeValue = timeRanges.first else { return 0.0 }
-
-        let timeRange = rangeValue.timeRangeValue
-        let rangeStart = CMTimeGetSeconds(timeRange.start)
-        let rangeDuration = CMTimeGetSeconds(timeRange.duration)
-        let rangeEnd = rangeStart + rangeDuration
-        let currentSeconds = CMTimeGetSeconds(currentTime)
-
-        if rangeEnd > currentSeconds {
-            return rangeEnd - currentSeconds
+        let ranges = playerItem.loadedTimeRanges.map { value in
+            let range = value.timeRangeValue
+            return PlaybackBufferRange(
+                start: CMTimeGetSeconds(range.start),
+                duration: CMTimeGetSeconds(range.duration)
+            )
         }
-        return 0.0
+        return PlaybackPolicy.bufferedDuration(at: CMTimeGetSeconds(currentTime), ranges: ranges)
     }
 
     public func extractTelemetry(from playerItem: AVPlayerItem, currentStallCount: Int) -> StreamTelemetry {

@@ -2,6 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${1:-}" == "--core" ]]; then
+  shift
+  exec "$SCRIPT_DIR/test-core.sh" "$@"
+fi
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DESTINATION="${IOS_SIM_DESTINATION:-platform=iOS Simulator,name=iPhone 17e}"
 DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/test}"

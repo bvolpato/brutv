@@ -8,28 +8,58 @@ public final class FavoritesStore: ObservableObject {
     @Published public private(set) var favoriteChannelIDs: Set<Int> = []
     @Published public private(set) var recentChannelIDs: [Int] = []
 
+    private let defaults: UserDefaults
+    private let libraryKey = "brutv.favorites.sourceLibraries"
     private let favoritesKey = "brutv.favorites.channelIDs"
     private let recentsKey = "brutv.favorites.recentIDs"
+    private var sourceID: UUID?
+    private var state = SourceLibraryState()
 
-    public init() {
-        load()
-    }
-
-    private func load() {
-        if let stored = UserDefaults.standard.array(forKey: favoritesKey) as? [Int] {
-            self.favoriteChannelIDs = Set(stored)
+    public init(userDefaults: UserDefaults = .standard, sourceID: UUID? = nil) {
+        self.defaults = userDefaults
+        if let data = userDefaults.data(forKey: libraryKey),
+           let stored = try? JSONDecoder().decode(SourceLibraryState.self, from: data) {
+            state = stored
         }
-        if let stored = UserDefaults.standard.array(forKey: recentsKey) as? [Int] {
-            self.recentChannelIDs = stored
+        let persistedProfile = userDefaults.data(forKey: "brutv.account.currentProfile")
+            .flatMap { try? JSONDecoder().decode(ServerProfile.self, from: $0) }
+        self.sourceID = sourceID ?? persistedProfile?.id
+        if state.migrateLegacy(
+            favorites: userDefaults.array(forKey: favoritesKey) as? [Int],
+            recents: userDefaults.array(forKey: recentsKey) as? [Int],
+            ownerID: persistedProfile?.id
+        ), persistState() {
+            userDefaults.removeObject(forKey: favoritesKey)
+            userDefaults.removeObject(forKey: recentsKey)
         }
+        publishLibrary()
     }
 
-    private func saveFavorites() {
-        UserDefaults.standard.set(Array(favoriteChannelIDs), forKey: favoritesKey)
+    public func selectSource(_ sourceID: UUID?) {
+        self.sourceID = sourceID
+        publishLibrary()
     }
 
-    private func saveRecents() {
-        UserDefaults.standard.set(recentChannelIDs, forKey: recentsKey)
+    private func publishLibrary() {
+        let library = state.library(for: sourceID)
+        favoriteChannelIDs = library.favoriteIDs
+        recentChannelIDs = library.recentIDs
+    }
+
+    @discardableResult
+    private func persistState() -> Bool {
+        guard let data = try? JSONEncoder().encode(state) else { return false }
+        defaults.set(data, forKey: libraryKey)
+        return true
+    }
+
+    private func updateLibrary(_ update: (inout ChannelLibrary) -> Void) {
+        guard let sourceID else { return }
+        var library = state.library(for: sourceID)
+        update(&library)
+        state.setLibrary(library, for: sourceID)
+        persistState()
+        publishLibrary()
     }
 
     public func isFavorite(channelID: Int) -> Bool {
@@ -37,27 +67,20 @@ public final class FavoritesStore: ObservableObject {
     }
 
     public func toggleFavorite(channelID: Int) {
-        if favoriteChannelIDs.contains(channelID) {
-            favoriteChannelIDs.remove(channelID)
-        } else {
-            favoriteChannelIDs.insert(channelID)
+        updateLibrary { library in
+            if library.favoriteIDs.contains(channelID) {
+                library.favoriteIDs.remove(channelID)
+            } else {
+                library.favoriteIDs.insert(channelID)
+            }
         }
-        saveFavorites()
     }
 
     public func addRecent(channelID: Int) {
-        var recents = recentChannelIDs.filter { $0 != channelID }
-        recents.insert(channelID, at: 0)
-        // Keep max 30 recent channels
-        if recents.count > 30 {
-            recents = Array(recents.prefix(30))
-        }
-        self.recentChannelIDs = recents
-        saveRecents()
+        updateLibrary { $0.addRecent(channelID) }
     }
 
     public func clearRecents() {
-        self.recentChannelIDs.removeAll()
-        saveRecents()
+        updateLibrary { $0.recentIDs.removeAll() }
     }
 }

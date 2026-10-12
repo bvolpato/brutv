@@ -62,7 +62,12 @@ public enum LoginLink: Equatable, Sendable {
             return .m3u(url: playlist)
         }
         let port = components.port.map { ":\($0)" } ?? ""
-        return .xtream(server: "\(scheme)://\(host)\(port)", username: user, password: pass)
+        var panelPath = components.percentEncodedPath
+        panelPath = String(panelPath.dropLast("get.php".count))
+        while panelPath.hasSuffix("/") {
+            panelPath.removeLast()
+        }
+        return .xtream(server: "\(scheme)://\(host)\(port)\(panelPath)", username: user, password: pass)
     }
 
     public var url: URL {

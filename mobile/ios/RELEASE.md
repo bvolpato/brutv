@@ -18,7 +18,7 @@ The Apple Developer identifier is `com.bvolpato.brutv` under team `83BXSDT7QC`. 
 - Support and marketing: https://brunovolpato.com/brutv/
 - Privacy policy: https://brunovolpato.com/brutv/privacy/
 
-The public support and privacy pages are deployed. Native compilation, tests, signed archives, real device screenshots, and upload still require a Mac. Verify the Mac sandbox, outgoing network access, icon, and shared bundle identifier. The existing release script below exports iOS only; archive Mac Catalyst separately through Xcode Organizer. Reviewer contact and access details remain pending.
+The public support and privacy pages are deployed. Full app compilation and tests, signed archives, real device screenshots, and upload still require a Mac. The portable Swift core suite also runs on Linux. Verify the Mac sandbox, outgoing network access, icon, and shared bundle identifier. The existing release script below exports iOS only; archive Mac Catalyst separately through Xcode Organizer. Reviewer contact and access details remain pending.
 
 Before submission, install a stable Xcode version that meets Apple's current SDK requirements. As of this decision date, uploads require Xcode 26 or later with the iOS / iPadOS 26 SDK: https://developer.apple.com/news/upcoming-requirements/?id=04282026a
 
@@ -50,11 +50,30 @@ IOS_SIM_DESTINATION="platform=iOS Simulator,name=iPad Pro 13-inch (M5)" ./mobile
 
 ## 2. Running Automated Tests
 
-Run the full unit and UI test suite:
+Run the full unit and UI test suite on a Mac with Xcode:
 
 ```bash
 ./mobile/ios/BruTV/test.sh
 ```
+
+If the default simulator is unavailable, list installed devices and select an available simulator UDID:
+
+```bash
+xcrun simctl list devices available
+IOS_SIM_DESTINATION="platform=iOS Simulator,id=<available-UDID>" ./test.sh
+```
+
+Run the portable suite on Linux or macOS:
+
+```bash
+./test.sh --core
+```
+
+This command uses local Swift when available, otherwise a pinned official Swift Docker image. Docker tests run without network access and use fixture responses. The package compiles the production source parser, Xtream client, source identity/library helpers, and playback policy. It excludes AVFoundation, Combine stores, and SwiftUI.
+
+The October 12 Android follow-up reproduced six source regressions against the original iOS source and fixed them. All 37 portable tests pass in debug and release configurations; every Apple Swift source and test file also passes syntax parsing. New Xcode tests cover cancelled or overlapping sign-ins, source-specific favorites and history, pausing during connection, native transport controls, and resuming a pending movie seek. Syntax parsing does not type-check Apple framework APIs. Those native tests, the full app build, Picture in Picture controls, VOD recovery, and real device playback remain unverified until run on a Mac.
+
+The Apple buffer preferences remain 1.5, 4, and 10 seconds. They request buffering ahead of the playhead through AVPlayer's [preferredForwardBufferDuration](https://developer.apple.com/documentation/avfoundation/avplayeritem/preferredforwardbufferduration). They do not force Android-style live-edge offsets.
 
 ---
 

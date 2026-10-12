@@ -14,114 +14,170 @@ public final class AccountStore: ObservableObject {
 
     public let client: XtreamCodesClient
 
+    private let defaults: UserDefaults
+    private let favorites: FavoritesStore
     private let userDefaultsKey = "brutv.account.currentProfile"
     private let profilesKey = "brutv.account.savedProfiles"
+    private var generation = UUID()
+    private var restoreTask: Task<Void, Never>?
+    private var loginTask: Task<AuthResponse?, Error>?
 
-    public init(client: XtreamCodesClient = XtreamCodesClient()) {
+    public init(
+        client: XtreamCodesClient = XtreamCodesClient(),
+        userDefaults: UserDefaults = .standard,
+        favorites: FavoritesStore? = nil,
+        shouldRestoreSession: Bool = true
+    ) {
         self.client = client
+        self.defaults = userDefaults
+        self.favorites = favorites ?? FavoritesStore.shared
         if ProcessInfo.processInfo.arguments.contains("--reset-session") {
-            UserDefaults.standard.removeObject(forKey: userDefaultsKey)
+            userDefaults.removeObject(forKey: userDefaultsKey)
         }
         loadPersistedState()
-        restoreSession()
+        self.favorites.selectSource(currentProfile?.id)
+        if shouldRestoreSession {
+            restoreSession()
+        }
     }
 
     private func loadPersistedState() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
+        if let data = defaults.data(forKey: userDefaultsKey),
            let profile = try? JSONDecoder().decode(ServerProfile.self, from: data) {
-            self.currentProfile = profile
+            currentProfile = profile
         }
-        if let data = UserDefaults.standard.data(forKey: profilesKey),
+        if let data = defaults.data(forKey: profilesKey),
            let profiles = try? JSONDecoder().decode([ServerProfile].self, from: data) {
-            self.savedProfiles = profiles
+            savedProfiles = profiles
         }
     }
 
     private func persistState() {
         if let currentProfile, let data = try? JSONEncoder().encode(currentProfile) {
-            UserDefaults.standard.set(data, forKey: userDefaultsKey)
+            defaults.set(data, forKey: userDefaultsKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: userDefaultsKey)
+            defaults.removeObject(forKey: userDefaultsKey)
         }
         if let data = try? JSONEncoder().encode(savedProfiles) {
-            UserDefaults.standard.set(data, forKey: profilesKey)
+            defaults.set(data, forKey: profilesKey)
         }
     }
 
-    /// Reopens the last session without a login screen. The account is checked in the
-    /// background; only a definite auth rejection signs the user out, not a network error.
+    private func beginSessionChange() -> UUID {
+        restoreTask?.cancel()
+        restoreTask = nil
+        loginTask?.cancel()
+        loginTask = nil
+        generation = UUID()
+        return generation
+    }
+
+    /// Reopens the last session without a login screen. Only a definite auth rejection signs out.
     private func restoreSession() {
         guard let profile = currentProfile else { return }
+        let token = beginSessionChange()
+        let candidate = client.makeIndependentClient()
+        configure(candidate, for: profile)
+        client.adoptSource(from: candidate)
+        isAuthenticated = true
+        guard profile.kind == .xtream else { return }
 
+        restoreTask = Task { [weak self] in
+            do {
+                let response = try await candidate.authenticate()
+                try Task.checkCancellation()
+                guard let self, self.generation == token else { return }
+                self.authResponse = response
+                self.restoreTask = nil
+            } catch XtreamError.authenticationFailed {
+                guard !Task.isCancelled, let self, self.generation == token else { return }
+                self.logout()
+            } catch {
+                guard let self, self.generation == token else { return }
+                self.restoreTask = nil
+                // Offline or server hiccup: keep the persisted session.
+            }
+        }
+    }
+
+    private func configure(_ client: XtreamCodesClient, for profile: ServerProfile) {
         switch profile.kind {
         case .xtream:
             client.updateCredentials(serverURL: profile.serverURL, user: profile.username, pass: profile.password)
-            isAuthenticated = true
-            Task { [weak self] in
-                guard let self else { return }
-                do {
-                    self.authResponse = try await self.client.authenticate()
-                } catch XtreamError.authenticationFailed {
-                    self.logout()
-                } catch {
-                    // Offline or server hiccup: keep the session.
-                }
-            }
         case .m3u:
             client.updatePlaylist(url: profile.playlistURL ?? profile.serverURL)
-            isAuthenticated = true
         }
     }
 
     // MARK: - Sign in
 
     public func login(serverURL: String, username: String, password: String, saveProfile: Bool = true) async throws {
-        self.isLoading = true
-        self.errorMessage = nil
-        defer { self.isLoading = false }
-
-        client.updateCredentials(serverURL: serverURL, user: username, pass: password)
-
-        do {
-            let response = try await client.authenticate()
-            self.authResponse = response
-
-            let profile = ServerProfile(
-                name: username,
-                serverURL: serverURL,
-                username: username,
-                password: password,
-                lastConnected: Date(),
-                isActive: true
-            )
-            activate(profile, save: saveProfile)
-        } catch {
-            self.errorMessage = error.localizedDescription
-            self.isAuthenticated = false
-            throw error
-        }
+        let candidate = client.makeIndependentClient()
+        candidate.updateCredentials(serverURL: serverURL, user: username, pass: password)
+        let profile = ServerProfile(
+            name: candidate.username,
+            serverURL: candidate.serverURLString,
+            username: candidate.username,
+            password: candidate.password,
+            lastConnected: Date(),
+            isActive: true
+        )
+        try await signIn(candidate: candidate, profile: profile, saveProfile: saveProfile)
     }
 
-    /// Signs in with an M3U playlist URL. Xtream `get.php` playlist URLs use the Xtream API instead.
+    /// Xtream `get.php` playlist URLs use the Xtream API instead.
     public func login(playlistURL: String, saveProfile: Bool = true) async throws {
         let trimmed = playlistURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if case let .xtream(server, user, pass) = LoginLink.fromPlaylistURL(trimmed) {
             try await login(serverURL: server, username: user, password: pass, saveProfile: saveProfile)
             return
         }
+        let candidate = client.makeIndependentClient()
+        candidate.updatePlaylist(url: trimmed)
+        try await signIn(candidate: candidate, profile: .playlist(url: trimmed), saveProfile: saveProfile)
+    }
 
-        self.isLoading = true
-        self.errorMessage = nil
-        defer { self.isLoading = false }
+    private func signIn(candidate: XtreamCodesClient, profile: ServerProfile, saveProfile: Bool) async throws {
+        try Task.checkCancellation()
+        let token = beginSessionChange()
+        isLoading = true
+        errorMessage = nil
+        defer {
+            if generation == token {
+                isLoading = false
+                loginTask = nil
+            }
+        }
 
-        client.updatePlaylist(url: trimmed)
+        let task = Task<AuthResponse?, Error> {
+            try Task.checkCancellation()
+            switch profile.kind {
+            case .xtream:
+                return try await candidate.authenticate()
+            case .m3u:
+                try await candidate.loadPlaylist()
+                return nil
+            }
+        }
+        loginTask = task
         do {
-            try await client.loadPlaylist()
-            self.authResponse = nil
-            activate(.playlist(url: trimmed), save: saveProfile)
+            let response = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            try Task.checkCancellation()
+            guard generation == token else { throw CancellationError() }
+            client.adoptSource(from: candidate)
+            authResponse = response
+            activate(profile, save: saveProfile)
         } catch {
-            self.errorMessage = error.localizedDescription
-            self.isAuthenticated = false
+            guard generation == token, !Task.isCancelled, !task.isCancelled else {
+                throw CancellationError()
+            }
+            if !(error is CancellationError) {
+                errorMessage = error.localizedDescription
+            }
             throw error
         }
     }
@@ -152,22 +208,44 @@ public final class AccountStore: ObservableObject {
     }
     #endif
 
-    private func activate(_ profile: ServerProfile, save: Bool) {
-        self.currentProfile = profile
-        self.isAuthenticated = true
+    private func existingProfile(for profile: ServerProfile) -> ServerProfile? {
+        let profiles = (currentProfile.map { [$0] } ?? []) + savedProfiles
+        return profiles.first { $0.sameSource(as: profile) }
+    }
+
+    private func activate(_ candidate: ServerProfile, save: Bool) {
+        let existing = existingProfile(for: candidate)
+        let profile = ServerProfile(
+            id: existing?.id ?? candidate.id,
+            name: existing?.name ?? candidate.name,
+            serverURL: candidate.serverURL,
+            username: candidate.username,
+            password: candidate.password,
+            lastConnected: candidate.lastConnected,
+            isActive: true,
+            kind: candidate.kind,
+            playlistURL: candidate.playlistURL
+        )
+        currentProfile = profile
+        favorites.selectSource(profile.id)
+        isAuthenticated = true
         if save {
-            var profiles = savedProfiles.filter { !$0.sameSource(as: profile) }
+            var profiles = savedProfiles.filter { $0.id != profile.id && !$0.sameSource(as: profile) }
             profiles.insert(profile, at: 0)
-            self.savedProfiles = profiles
+            savedProfiles = profiles
         }
         persistState()
     }
 
     public func logout() {
-        self.isAuthenticated = false
-        self.authResponse = nil
-        self.currentProfile = nil
-        UserDefaults.standard.removeObject(forKey: userDefaultsKey)
-        client.clearCache()
+        _ = beginSessionChange()
+        isLoading = false
+        errorMessage = nil
+        isAuthenticated = false
+        authResponse = nil
+        currentProfile = nil
+        favorites.selectSource(nil)
+        defaults.removeObject(forKey: userDefaultsKey)
+        client.adoptSource(from: client.makeIndependentClient())
     }
 }

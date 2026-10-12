@@ -3,8 +3,15 @@ import XCTest
 
 @MainActor
 final class FavoritesStoreTests: XCTestCase {
+    private func makeDefaults() -> (UserDefaults, String) {
+        let suite = "BruTV.FavoritesStoreTests.\(UUID().uuidString)"
+        return (UserDefaults(suiteName: suite)!, suite)
+    }
+
     func testFavoriteToggle() {
-        let store = FavoritesStore()
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = FavoritesStore(userDefaults: defaults, sourceID: UUID())
         let channelID = 99999
 
         if store.isFavorite(channelID: channelID) {
@@ -21,7 +28,9 @@ final class FavoritesStoreTests: XCTestCase {
     }
 
     func testRecentsTracking() {
-        let store = FavoritesStore()
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = FavoritesStore(userDefaults: defaults, sourceID: UUID())
         store.clearRecents()
 
         store.addRecent(channelID: 101)
@@ -29,6 +38,55 @@ final class FavoritesStoreTests: XCTestCase {
 
         XCTAssertEqual(store.recentChannelIDs.first, 102)
         XCTAssertTrue(store.recentChannelIDs.contains(101))
+    }
+
+    func testSwitchingAndRestartingRetainsSeparateSourceLibraries() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = UUID()
+        let second = UUID()
+        let store = FavoritesStore(userDefaults: defaults, sourceID: first)
+        store.toggleFavorite(channelID: 7)
+        store.addRecent(channelID: 7)
+
+        store.selectSource(second)
+        XCTAssertFalse(store.isFavorite(channelID: 7))
+        XCTAssertTrue(store.recentChannelIDs.isEmpty)
+        store.toggleFavorite(channelID: 9)
+        store.addRecent(channelID: 7)
+
+        store.selectSource(nil)
+        store.toggleFavorite(channelID: 100)
+        store.addRecent(channelID: 100)
+        XCTAssertTrue(store.favoriteChannelIDs.isEmpty)
+        XCTAssertTrue(store.recentChannelIDs.isEmpty)
+
+        let restarted = FavoritesStore(userDefaults: defaults, sourceID: first)
+        XCTAssertEqual(restarted.favoriteChannelIDs, [7])
+        XCTAssertEqual(restarted.recentChannelIDs, [7])
+        restarted.selectSource(second)
+        XCTAssertEqual(restarted.favoriteChannelIDs, [9])
+        XCTAssertEqual(restarted.recentChannelIDs, [7])
+    }
+
+    func testLegacyLibraryMigratesOnlyToPersistedProfile() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = ServerProfile(serverURL: "https://provider.example", username: "test", password: "test")
+        defaults.set(try JSONEncoder().encode(profile), forKey: "brutv.account.currentProfile")
+        defaults.set([7], forKey: "brutv.favorites.channelIDs")
+        defaults.set([9, 7], forKey: "brutv.favorites.recentIDs")
+
+        let store = FavoritesStore(userDefaults: defaults)
+        XCTAssertEqual(store.favoriteChannelIDs, [7])
+        XCTAssertEqual(store.recentChannelIDs, [9, 7])
+        XCTAssertNil(defaults.object(forKey: "brutv.favorites.channelIDs"))
+        XCTAssertNil(defaults.object(forKey: "brutv.favorites.recentIDs"))
+        store.selectSource(UUID())
+        XCTAssertTrue(store.favoriteChannelIDs.isEmpty)
+        XCTAssertTrue(store.recentChannelIDs.isEmpty)
+        store.selectSource(profile.id)
+        XCTAssertEqual(store.favoriteChannelIDs, [7])
     }
 }
 
