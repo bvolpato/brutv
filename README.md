@@ -1,14 +1,18 @@
 # BruTV - State-of-the-Art IPTV & Live Stream Player
 
-BruTV is an IPTV player built natively with Swift and SwiftUI, specifically targeted for **iPadOS** and **iOS**. Engineered for real-time quality and low-latency buffering, BruTV features instant channel zapping, telemetry HUD, 4K/FHD stream playback, and Picture-in-Picture.
+BruTV is a native IPTV player for Apple and Android devices. The SwiftUI app targets iPhone, iPad, and Mac Catalyst. The Kotlin app adapts to Android phones, tablets, Android TV, and Android-based Fire TV devices. Both use Xtream Codes, M3U sources, and compatible `brutv://login` QR links.
+
+See [the Android guide](mobile/android/README.md) for builds, APK installation, TV pairing, and device compatibility.
+
+The separate [Vega OS starter](mobile/vega/README.md) has source and JavaScript validation. It still requires Amazon SDK packaging and device validation.
 
 ---
 
-## Key Features
+## Apple App Features
 
 - **Real-Time Buffer Engine:**
-  - Configurable buffer duration: **Ultra Low Latency (1.5s)** for near-live broadcast sports timing, **Balanced (4.0s)**, and **High Stability (10.0s)**.
-  - Automatic stream recovery with a 10-second connection watchdog and up to 2 retries. Live channels always play as HLS (`.m3u8`).
+  - Buffer-ahead preferences: **Ultra Low Latency (1.5s)**, **Balanced (4.0s)**, and **High Stability (10.0s)**. AVPlayer controls actual buffering and live timing; these preferences do not guarantee a fixed delay or uninterrupted playback.
+  - Automatic recovery for transient failures, with a 20-second waiting/stall watchdog and up to 2 retries. Live channels always play as HLS (`.m3u8`).
   - In-player **Stream Telemetry HUD** displaying real-time buffer seconds ahead of playhead, observed network bitrate (Mbps), native resolution, frame rate, dropped frames, and stall counters.
 - **Two Ways to Sign In:**
   - Xtream Codes: server URL, username, and password.
@@ -77,9 +81,19 @@ brutv/
 
 ### 2. Run Tests
 
+Run the full Apple unit and UI suite on a Mac with Xcode:
+
 ```bash
 ./test.sh
 ```
+
+Run the portable source, library, and playback-policy tests on Linux or macOS with Swift installed, or through Docker:
+
+```bash
+./test.sh --core
+```
+
+The core suite compiles the shared Swift logic. AVPlayer, SwiftUI, account integration, and device playback still need the Xcode suite and device testing. See [the release guide](mobile/ios/RELEASE.md#2-running-automated-tests) for details.
 
 ### 3. Capture Screenshots
 
