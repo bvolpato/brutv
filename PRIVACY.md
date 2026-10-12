@@ -14,5 +14,4 @@ BruTV ("we", "our", or "the app") respects your privacy. This policy outlines ou
 - We do not operate proxy servers, intermediate gateways, or logging servers.
 
 ### 3. Contact
-For inquiries regarding this privacy policy, please open an issue on GitHub:
-https://github.com/bvolpato/brutv
+The published policy is at https://brunovolpato.com/brutv/privacy/. For questions, email me@brunovolpato.com.

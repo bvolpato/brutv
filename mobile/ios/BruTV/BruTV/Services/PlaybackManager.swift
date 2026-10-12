@@ -121,12 +121,32 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func startPlayback(for stream: LiveStream, format: StreamFormatPreference) {
+        if let direct = stream.directURLString {
+            guard let url = Self.playableURL(fromPlaylistEntry: direct) else {
+                self.playbackState = .failed("Invalid stream URL.")
+                return
+            }
+            prepareAndPlay(url: url)
+            return
+        }
+
         guard let url = AccountStore.shared.client.liveStreamURL(streamID: stream.id, format: format) else {
             self.playbackState = .failed("Invalid stream URL.")
             return
         }
 
         prepareAndPlay(url: url)
+    }
+
+    /// AVPlayer cannot play raw MPEG-TS over HTTP. Xtream-style playlist entries
+    /// (`/live/user/pass/123.ts`) also serve HLS at the same path with `.m3u8`.
+    nonisolated static func playableURL(fromPlaylistEntry entry: String) -> URL? {
+        guard var components = URLComponents(string: entry) else { return nil }
+        let path = components.path
+        if path.lowercased().hasSuffix(".ts"), path.contains("/live/") {
+            components.path = String(path.dropLast(3)) + ".m3u8"
+        }
+        return components.url
     }
 
     public func playVOD(vod: VODStream) {

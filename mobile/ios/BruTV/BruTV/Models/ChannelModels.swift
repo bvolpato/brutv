@@ -66,6 +66,8 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
     public let epgChannelId: String?
     public let categoryId: String
     public let tvArchive: Int
+    /// Set for M3U playlist channels. Xtream channels build their URL from credentials.
+    public let directURLString: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "stream_id"
@@ -76,6 +78,8 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
         case epgChannelId = "epg_channel_id"
         case categoryId = "category_id"
         case tvArchive = "tv_archive"
+        // Not Xtream's "direct_source": providers often fill that with unusable values.
+        case directURLString = "brutv_direct_url"
     }
 
     public init(
@@ -86,7 +90,8 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
         iconURLString: String? = nil,
         epgChannelId: String? = nil,
         categoryId: String = "",
-        tvArchive: Int = 0
+        tvArchive: Int = 0,
+        directURLString: String? = nil
     ) {
         self.id = id
         self.num = num
@@ -96,6 +101,7 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
         self.epgChannelId = epgChannelId
         self.categoryId = categoryId
         self.tvArchive = tvArchive
+        self.directURLString = directURLString
     }
 
     public init(from decoder: Decoder) throws {
@@ -137,6 +143,8 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
         } else {
             self.tvArchive = 0
         }
+
+        self.directURLString = try? container.decodeIfPresent(String.self, forKey: .directURLString)
     }
 
     public var quality: StreamQuality {

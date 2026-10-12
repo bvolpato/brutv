@@ -54,6 +54,18 @@ public final class XtreamCodesClient: @unchecked Sendable {
     private var cachedVODCategories: [VODCategory]?
     private var cachedSeriesCategories: [SeriesCategory]?
 
+    // M3U playlist mode. When set, live channels come from the playlist and VOD/series are empty.
+    private var _playlistURLString: String?
+    private var cachedPlaylistChannels: [LiveStream]?
+
+    public var playlistURLString: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _playlistURLString
+    }
+
+    public var isPlaylistMode: Bool { playlistURLString != nil }
+
     public init(
         serverURLString: String = "",
         username: String = "",
@@ -79,12 +91,84 @@ public final class XtreamCodesClient: @unchecked Sendable {
         self._serverURLString = cleanURL
         self._username = user.trimmingCharacters(in: .whitespacesAndNewlines)
         self._password = pass.trimmingCharacters(in: .whitespacesAndNewlines)
+        self._playlistURLString = nil
+        resetCachesLocked()
+    }
 
+    /// Switches to M3U playlist mode. Call `loadPlaylist()` to download and validate it.
+    public func updatePlaylist(url: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        self._playlistURLString = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        self._serverURLString = ""
+        self._username = ""
+        self._password = ""
+        resetCachesLocked()
+    }
+
+    private func resetCachesLocked() {
         self.cachedLiveCategories = nil
         self.cachedLiveStreams.removeAll()
         self.cachedAllLiveStreams = nil
         self.cachedVODCategories = nil
         self.cachedSeriesCategories = nil
+        self.cachedPlaylistChannels = nil
+    }
+
+    // MARK: - M3U playlist
+
+    /// Downloads and parses the playlist. Throws if it has no playable channels.
+    @discardableResult
+    public func loadPlaylist() async throws -> [LiveStream] {
+        lock.lock()
+        let cached = cachedPlaylistChannels
+        let urlString = _playlistURLString
+        lock.unlock()
+
+        if let cached { return cached }
+        guard let urlString, let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else {
+            throw XtreamError.invalidURL
+        }
+
+        let request = createRequest(url: url, timeout: 60.0)
+        let (data, response) = try await session.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
+            throw XtreamError.serverError(httpResponse.statusCode)
+        }
+
+        let entries = M3UPlaylistParser.parse(data)
+        let live = entries.filter { !$0.isVOD }
+        // Some playlists contain only VOD items. Show them rather than nothing.
+        let source = live.isEmpty ? entries : live
+        guard !source.isEmpty else {
+            throw XtreamError.decodingError("The playlist has no channels. Check that the link points to an M3U file.")
+        }
+
+        var seen = Set<Int>()
+        var channels: [LiveStream] = []
+        channels.reserveCapacity(source.count)
+        for (index, entry) in source.enumerated() {
+            let id = M3UPlaylistParser.stableID(for: entry.url)
+            guard seen.insert(id).inserted else { continue }
+            channels.append(
+                LiveStream(
+                    id: id,
+                    num: index + 1,
+                    name: entry.name,
+                    iconURLString: entry.logo,
+                    epgChannelId: entry.tvgID,
+                    categoryId: entry.group,
+                    directURLString: entry.url
+                )
+            )
+        }
+
+        lock.lock()
+        cachedPlaylistChannels = channels
+        lock.unlock()
+        return channels
     }
 
     // MARK: - URL Generation
@@ -175,6 +259,15 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchLiveCategories() async throws -> [LiveCategory] {
+        if isPlaylistMode {
+            // Categories are the playlist's group-title values, in playlist order.
+            let channels = try await loadPlaylist()
+            var seen = Set<String>()
+            return channels.compactMap { channel in
+                seen.insert(channel.categoryId).inserted ? LiveCategory(id: channel.categoryId, name: channel.categoryId) : nil
+            }
+        }
+
         if let cached = cachedLiveCategories, !cached.isEmpty {
             return cached
         }
@@ -197,6 +290,12 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchLiveStreams(categoryID: String? = nil) async throws -> [LiveStream] {
+        if isPlaylistMode {
+            let channels = try await loadPlaylist()
+            guard let categoryID, !categoryID.isEmpty, categoryID != "ALL" else { return channels }
+            return channels.filter { $0.categoryId == categoryID }
+        }
+
         if let categoryID, let cached = cachedLiveStreams[categoryID] {
             return cached
         }
@@ -231,6 +330,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchVODCategories() async throws -> [VODCategory] {
+        if isPlaylistMode { return [] }
         if let cached = cachedVODCategories {
             return cached
         }
@@ -243,6 +343,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchVODStreams(categoryID: String? = nil) async throws -> [VODStream] {
+        if isPlaylistMode { return [] }
         var params: [String: String] = [:]
         if let categoryID, !categoryID.isEmpty {
             params["category_id"] = categoryID
@@ -255,6 +356,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchSeriesCategories() async throws -> [SeriesCategory] {
+        if isPlaylistMode { return [] }
         if let cached = cachedSeriesCategories {
             return cached
         }
@@ -267,6 +369,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func fetchSeries(categoryID: String? = nil) async throws -> [SeriesItem] {
+        if isPlaylistMode { return [] }
         var params: [String: String] = [:]
         if let categoryID, !categoryID.isEmpty {
             params["category_id"] = categoryID
@@ -279,10 +382,8 @@ public final class XtreamCodesClient: @unchecked Sendable {
     }
 
     public func clearCache() {
-        self.cachedLiveCategories = nil
-        self.cachedLiveStreams.removeAll()
-        self.cachedAllLiveStreams = nil
-        self.cachedVODCategories = nil
-        self.cachedSeriesCategories = nil
+        lock.lock()
+        defer { lock.unlock() }
+        resetCachesLocked()
     }
 }

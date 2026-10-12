@@ -6,6 +6,7 @@ public struct SettingsView: View {
 
     @State private var showingLogoutAlert = false
     @State private var showingClearCacheAlert = false
+    @State private var showingQRCode = false
 
     public init() {}
 
@@ -48,12 +49,27 @@ public struct SettingsView: View {
 
                 if let current = account.currentProfile {
                     HStack {
-                        Text("Server Address")
+                        Text("Source")
                         Spacer()
-                        Text(current.serverURL)
+                        Text(current.kind == .m3u ? "M3U Playlist" : "Xtream Codes")
+                            .foregroundColor(.gray)
+                    }
+
+                    HStack {
+                        Text(current.kind == .m3u ? "Playlist" : "Server Address")
+                        Spacer()
+                        Text(current.kind == .m3u ? (current.playlistURL ?? current.serverURL) : current.serverURL)
                             .foregroundColor(.gray)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
+
+                    Button {
+                        showingQRCode = true
+                    } label: {
+                        Label("Share Sign-In QR Code", systemImage: "qrcode")
+                    }
+                    .accessibilityIdentifier("shareLoginQRButton")
                 }
             }
 
@@ -104,6 +120,11 @@ public struct SettingsView: View {
             }
         }
         .navigationTitle("Settings & Engine")
+        .sheet(isPresented: $showingQRCode) {
+            if let profile = account.currentProfile {
+                LoginQRCodeView(link: profile.loginLink, title: profile.name)
+            }
+        }
         .alert("Clear Image Cache", isPresented: $showingClearCacheAlert) {
             Button("Clear", role: .destructive) {
                 // Clear cache

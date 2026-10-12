@@ -29,15 +29,16 @@ Usage: mobile/ios/BruTV/release.sh [--skip-simulator-build]
 Builds signed App Store IPA. Must run on macOS with Xcode.
 
 Required env:
-  IOS_TEAM_ID
-  IOS_PROFILE_NAME
   IOS_P12_PASSWORD
 
 Certificate/profile input:
-  Provide IOS_CERTIFICATE_BASE64 and IOS_PROVISIONING_PROFILE_BASE64
-  or IOS_CERTIFICATE_PATH and IOS_PROVISIONING_PROFILE_PATH.
+  Provide IOS_CERTIFICATE_BASE64 and IOS_PROVISIONING_PROFILE_BASE64,
+  or IOS_CERTIFICATE_PATH and IOS_PROVISIONING_PROFILE_PATH,
+  or put one .p12 and one .mobileprovision in mobile/ios/BruTV/signing/.
 
 Optional env:
+  IOS_TEAM_ID              default: TeamIdentifier from the profile
+  IOS_PROFILE_NAME         default: Name from the profile
   IOS_BUNDLE_ID            default: com.bvolpato.brutv
   IOS_EXPORT_METHOD        default: app-store-connect
   IOS_BUILD_NUMBER
@@ -106,8 +107,6 @@ require_cmd xcodebuild
 require_cmd security
 require_cmd xcrun
 require_cmd /usr/libexec/PlistBuddy
-require_env IOS_TEAM_ID
-require_env IOS_PROFILE_NAME
 require_env IOS_P12_PASSWORD
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH"
@@ -124,14 +123,30 @@ if [[ -n "${IOS_PROVISIONING_PROFILE_BASE64:-}" ]]; then
   decode_base64_to_file "$IOS_PROVISIONING_PROFILE_BASE64" "$PROFILE_PATH"
 fi
 
+# If no input is given, use the files in the local signing/ folder (gitignored).
+LOCAL_SIGNING_DIR="$SCRIPT_DIR/signing"
+if [[ -z "$CERT_PATH" ]]; then
+  CERT_PATH=$(find "$LOCAL_SIGNING_DIR" -maxdepth 1 -name '*.p12' -type f 2>/dev/null | sort | head -n 1 || true)
+fi
+if [[ -z "$PROFILE_PATH" ]]; then
+  PROFILE_PATH=$(find "$LOCAL_SIGNING_DIR" -maxdepth 1 -name '*.mobileprovision' -type f 2>/dev/null | sort | head -n 1 || true)
+fi
+
 [[ -n "$CERT_PATH" && -f "$CERT_PATH" ]] || {
-  echo "error: missing signing certificate. Set IOS_CERTIFICATE_BASE64 or IOS_CERTIFICATE_PATH" >&2
+  echo "error: missing signing certificate. Set IOS_CERTIFICATE_BASE64 or IOS_CERTIFICATE_PATH, or put a .p12 in $LOCAL_SIGNING_DIR" >&2
   exit 1
 }
 [[ -n "$PROFILE_PATH" && -f "$PROFILE_PATH" ]] || {
-  echo "error: missing provisioning profile. Set IOS_PROVISIONING_PROFILE_BASE64 or IOS_PROVISIONING_PROFILE_PATH" >&2
+  echo "error: missing provisioning profile. Set IOS_PROVISIONING_PROFILE_BASE64 or IOS_PROVISIONING_PROFILE_PATH, or put a .mobileprovision in $LOCAL_SIGNING_DIR" >&2
   exit 1
 }
+
+# Read the profile name and team from the profile when they are not set.
+PROFILE_INFO_PLIST="$SIGNING_DIR/profile-info.plist"
+security cms -D -i "$PROFILE_PATH" > "$PROFILE_INFO_PLIST"
+IOS_PROFILE_NAME="${IOS_PROFILE_NAME:-$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_INFO_PLIST")}"
+IOS_TEAM_ID="${IOS_TEAM_ID:-$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$PROFILE_INFO_PLIST")}"
+echo "profile: $IOS_PROFILE_NAME (team $IOS_TEAM_ID)"
 
 while IFS= read -r keychain; do
   keychain="${keychain#*\"}"

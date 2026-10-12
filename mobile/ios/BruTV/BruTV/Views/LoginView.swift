@@ -1,16 +1,34 @@
 import SwiftUI
 
 public struct LoginView: View {
+    private enum LoginMode: String, CaseIterable, Identifiable {
+        case xtream = "Xtream Codes"
+        case m3u = "M3U Playlist"
+        var id: String { rawValue }
+    }
+
     @ObservedObject private var account = AccountStore.shared
 
-    @State private var serverURL: String = "http://virello.win"
-    @State private var username: String = "Bruno081225p2"
-    @State private var password: String = "tv8392602653"
+    @State private var mode: LoginMode = .xtream
+    @State private var serverURL: String = ""
+    @State private var username: String = ""
+    @State private var password: String = ""
+    @State private var playlistURL: String = ""
     @State private var showPassword: Bool = false
     @State private var isSubmitting: Bool = false
     @State private var errorMessage: String?
 
     public init() {}
+
+    private var canSubmit: Bool {
+        guard !isSubmitting else { return false }
+        switch mode {
+        case .xtream:
+            return !serverURL.isEmpty && !username.isEmpty && !password.isEmpty
+        case .m3u:
+            return !playlistURL.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
 
     public var body: some View {
         ZStack {
@@ -55,74 +73,19 @@ public struct LoginView: View {
 
                     // Credentials Box
                     VStack(spacing: 16) {
-                        // Server URL
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("SERVER ADDRESS")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.gray)
-                            HStack {
-                                Image(systemName: "globe")
-                                    .foregroundColor(.cyan)
-                                    .frame(width: 20)
-                                TextField("http://example.com:80", text: $serverURL)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                                    .foregroundColor(.white)
+                        Picker("Login type", selection: $mode) {
+                            ForEach(LoginMode.allCases) { mode in
+                                Text(mode.rawValue).tag(mode)
                             }
-                            .padding(14)
-                            .background(Color(white: 0.12))
-                            .cornerRadius(12)
                         }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("loginModePicker")
+                        .onChange(of: mode) { _, _ in errorMessage = nil }
 
-                        // Username
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("USERNAME")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.gray)
-                            HStack {
-                                Image(systemName: "person.fill")
-                                    .foregroundColor(.cyan)
-                                    .frame(width: 20)
-                                TextField("Username", text: $username)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                                    .foregroundColor(.white)
-                            }
-                            .padding(14)
-                            .background(Color(white: 0.12))
-                            .cornerRadius(12)
-                        }
-
-                        // Password
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("PASSWORD")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.gray)
-                            HStack {
-                                Image(systemName: "lock.fill")
-                                    .foregroundColor(.cyan)
-                                    .frame(width: 20)
-                                if showPassword {
-                                    TextField("Password", text: $password)
-                                        .autocapitalization(.none)
-                                        .disableAutocorrection(true)
-                                        .foregroundColor(.white)
-                                } else {
-                                    SecureField("Password", text: $password)
-                                        .autocapitalization(.none)
-                                        .disableAutocorrection(true)
-                                        .foregroundColor(.white)
-                                }
-                                Button {
-                                    showPassword.toggle()
-                                } label: {
-                                    Image(systemName: showPassword ? "eye.slash" : "eye")
-                                        .foregroundColor(.gray)
-                                }
-                            }
-                            .padding(14)
-                            .background(Color(white: 0.12))
-                            .cornerRadius(12)
+                        if mode == .xtream {
+                            xtreamFields
+                        } else {
+                            m3uFields
                         }
 
                         if let errorMessage {
@@ -148,7 +111,7 @@ public struct LoginView: View {
                                         .tint(.black)
                                         .padding(.trailing, 6)
                                 }
-                                Text(isSubmitting ? "Connecting..." : "Connect Server")
+                                Text(isSubmitting ? "Connecting..." : (mode == .xtream ? "Connect Server" : "Load Playlist"))
                                     .font(.system(size: 16, weight: .bold))
                             }
                             .frame(maxWidth: .infinity)
@@ -158,25 +121,45 @@ public struct LoginView: View {
                             .cornerRadius(14)
                             .shadow(color: .cyan.opacity(0.3), radius: 10, x: 0, y: 4)
                         }
-                        .disabled(isSubmitting || serverURL.isEmpty || username.isEmpty || password.isEmpty)
+                        .disabled(!canSubmit)
+                        .accessibilityIdentifier("connectButton")
                         .padding(.top, 4)
 
-                        // Quick Demo Login Button
-                        Button {
-                            useDemoCredentials()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "sparkles")
-                                    .foregroundColor(.cyan)
-                                Text("Fill Demo Credentials (virello.win)")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(.cyan)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(12)
-                            .background(Color.cyan.opacity(0.12))
-                            .cornerRadius(12)
+                        // Sign in from a shared link (Mac has no camera flow for QR codes)
+                        PasteButton(payloadType: String.self) { strings in
+                            guard let text = strings.first else { return }
+                            Task { @MainActor in signIn(withPasted: text) }
                         }
+                        .buttonBorderShape(.capsule)
+                        .tint(.cyan)
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityIdentifier("pasteLoginLinkButton")
+
+                        Text("Got a BruTV QR code? Scan it with the Camera app. Got a link? Copy it, then tap Paste.")
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+
+                        #if DEBUG
+                        if mode == .xtream && !ProcessInfo.processInfo.arguments.contains("--store-screenshots") {
+                            // Quick Demo Login Button (Debug builds only)
+                            Button {
+                                useDemoCredentials()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "sparkles")
+                                        .foregroundColor(.cyan)
+                                    Text("Fill Demo Credentials (virello.win)")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.cyan)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(12)
+                                .background(Color.cyan.opacity(0.12))
+                                .cornerRadius(12)
+                            }
+                        }
+                        #endif
                     }
                     .padding(24)
                     .background(
@@ -200,21 +183,20 @@ public struct LoginView: View {
 
                             ForEach(account.savedProfiles) { profile in
                                 Button {
-                                    serverURL = profile.serverURL
-                                    username = profile.username
-                                    password = profile.password
-                                    submitLogin()
+                                    signIn(with: profile.loginLink)
                                 } label: {
                                     HStack {
-                                        Image(systemName: "server.rack")
+                                        Image(systemName: profile.kind == .m3u ? "list.bullet.rectangle" : "server.rack")
                                             .foregroundColor(.cyan)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(profile.name)
                                                 .font(.system(size: 14, weight: .semibold))
                                                 .foregroundColor(.white)
-                                            Text(profile.serverURL)
+                                            Text(profile.kind == .m3u ? (profile.playlistURL ?? profile.serverURL) : profile.serverURL)
                                                 .font(.system(size: 12))
                                                 .foregroundColor(.gray)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         }
                                         Spacer()
                                         Image(systemName: "chevron.right")
@@ -236,33 +218,161 @@ public struct LoginView: View {
         }
     }
 
-    private func useDemoCredentials() {
-        self.serverURL = "http://virello.win"
-        self.username = "Bruno081225p2"
-        self.password = "tv8392602653"
-        self.errorMessage = nil
+    // MARK: - Fields
+
+    private var xtreamFields: some View {
+        VStack(spacing: 16) {
+            // Server URL
+            VStack(alignment: .leading, spacing: 6) {
+                Text("SERVER ADDRESS")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                HStack {
+                    Image(systemName: "globe")
+                        .foregroundColor(.cyan)
+                        .frame(width: 20)
+                    TextField("http://example.com:80", text: $serverURL)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .keyboardType(.URL)
+                        .foregroundColor(.white)
+                        .accessibilityIdentifier("serverField")
+                }
+                .padding(14)
+                .background(Color(white: 0.12))
+                .cornerRadius(12)
+            }
+
+            // Username
+            VStack(alignment: .leading, spacing: 6) {
+                Text("USERNAME")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                HStack {
+                    Image(systemName: "person.fill")
+                        .foregroundColor(.cyan)
+                        .frame(width: 20)
+                    TextField("Username", text: $username)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .foregroundColor(.white)
+                        .accessibilityIdentifier("usernameField")
+                }
+                .padding(14)
+                .background(Color(white: 0.12))
+                .cornerRadius(12)
+            }
+
+            // Password
+            VStack(alignment: .leading, spacing: 6) {
+                Text("PASSWORD")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                HStack {
+                    Image(systemName: "lock.fill")
+                        .foregroundColor(.cyan)
+                        .frame(width: 20)
+                    if showPassword {
+                        TextField("Password", text: $password)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .foregroundColor(.white)
+                    } else {
+                        SecureField("Password", text: $password)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .foregroundColor(.white)
+                    }
+                    Button {
+                        showPassword.toggle()
+                    } label: {
+                        Image(systemName: showPassword ? "eye.slash" : "eye")
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(14)
+                .background(Color(white: 0.12))
+                .cornerRadius(12)
+            }
+        }
     }
 
+    private var m3uFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("PLAYLIST URL")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.gray)
+            HStack {
+                Image(systemName: "list.bullet.rectangle")
+                    .foregroundColor(.cyan)
+                    .frame(width: 20)
+                TextField("http://example.com/playlist.m3u", text: $playlistURL)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .keyboardType(.URL)
+                    .foregroundColor(.white)
+                    .accessibilityIdentifier("playlistField")
+            }
+            .padding(14)
+            .background(Color(white: 0.12))
+            .cornerRadius(12)
+
+            Text("Paste an .m3u or .m3u8 link. Xtream get.php links unlock movies and series too.")
+                .font(.system(size: 11))
+                .foregroundColor(.gray)
+        }
+    }
+
+    // MARK: - Actions
+
+    #if DEBUG
+    private func useDemoCredentials() {
+        self.serverURL = ServerProfile.demo.serverURL
+        self.username = ServerProfile.demo.username
+        self.password = ServerProfile.demo.password
+        self.errorMessage = nil
+    }
+    #endif
+
     private func submitLogin() {
+        switch mode {
+        case .xtream:
+            signIn(with: .xtream(server: serverURL, username: username, password: password))
+        case .m3u:
+            signIn(with: .m3u(url: playlistURL))
+        }
+    }
+
+    private func signIn(withPasted text: String) {
+        guard let link = LoginLink(pasted: text) else {
+            errorMessage = "The clipboard does not contain a BruTV link or playlist URL."
+            return
+        }
+        // Show what was pasted so people can see which account they are joining.
+        switch link {
+        case let .xtream(server, user, pass):
+            mode = .xtream
+            serverURL = server
+            username = user
+            password = pass
+        case let .m3u(url):
+            mode = .m3u
+            playlistURL = url
+        }
+        signIn(with: link)
+    }
+
+    private func signIn(with link: LoginLink) {
         isSubmitting = true
         errorMessage = nil
 
         Task {
             do {
-                try await account.login(
-                    serverURL: serverURL,
-                    username: username,
-                    password: password
-                )
-                await MainActor.run {
-                    self.isSubmitting = false
-                }
+                try await account.login(link: link)
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                    self.isSubmitting = false
-                }
+                self.errorMessage = error.localizedDescription
             }
+            self.isSubmitting = false
         }
     }
 }

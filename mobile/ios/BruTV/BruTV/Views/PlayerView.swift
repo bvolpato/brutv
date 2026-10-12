@@ -4,6 +4,10 @@ import AVKit
 public struct PlayerView: View {
     @Binding public var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    /// iPhone portrait and narrow iPad split views.
+    private var isCompact: Bool { horizontalSizeClass == .compact }
 
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var favorites = FavoritesStore.shared
@@ -219,39 +223,69 @@ public struct PlayerView: View {
     }
 
     private var topControlsBar: some View {
-        HStack(spacing: 12) {
-            // Prominent Back to Channels button
-            Button {
-                dismissPlayer(stop: true)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .bold))
-                    Text("Channels")
-                        .font(.system(size: 14, weight: .semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                backToChannelsButton
+                minimizeButton
+                if !isCompact {
+                    channelTitle
                 }
-                .foregroundColor(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Capsule().fill(Color.black.opacity(0.65)))
-                .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                Spacer(minLength: 8)
+                topActionButtons
             }
-            .accessibilityIdentifier("playerBackButton")
+            if isCompact {
+                channelTitle
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 16)
+        .padding(.bottom, 24)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.85), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
 
-            // Minimize to Mini-Player bar button
-            Button {
-                dismissPlayer(stop: false)
-            } label: {
-                Image(systemName: "arrow.down.right.and.arrow.up.left")
+    private var backToChannelsButton: some View {
+        Button {
+            dismissPlayer(stop: true)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .bold))
+                Text("Channels")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.85))
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.black.opacity(0.5)))
+                    .lineLimit(1)
             }
-            .accessibilityLabel("Minimize")
-            .accessibilityIdentifier("playerMinimizeButton")
+            .fixedSize()
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(Color.black.opacity(0.65)))
+            .overlay(Capsule().stroke(Color.white.opacity(0.25), lineWidth: 1))
+        }
+        .accessibilityIdentifier("playerBackButton")
+    }
 
-            // Channel Logo & Title
+    private var minimizeButton: some View {
+        Button {
+            dismissPlayer(stop: false)
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85))
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Color.black.opacity(0.5)))
+        }
+        .accessibilityLabel("Minimize")
+        .accessibilityIdentifier("playerMinimizeButton")
+    }
+
+    private var channelTitle: some View {
+        HStack(spacing: 10) {
             if let stream = playback.currentStream {
                 CachedAsyncImage(url: stream.iconURL) {
                     Image(systemName: "tv")
@@ -262,38 +296,39 @@ public struct PlayerView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.1)))
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 8) {
-                    Text(streamName)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+            Text(streamName)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
-                    // LIVE indicator
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 6, height: 6)
-                        Text("LIVE")
-                            .font(.system(size: 9, weight: .black))
-                            .foregroundColor(.white)
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.red.opacity(0.3)))
-
-                    // Quality Badge
-                    Text(qualityBadgeText)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.cyan))
-                }
+            // LIVE indicator
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 6, height: 6)
+                Text("LIVE")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundColor(.white)
             }
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.red.opacity(0.3)))
 
-            Spacer()
+            // Quality Badge
+            Text(qualityBadgeText)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.white)
+                .fixedSize()
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.cyan))
+        }
+    }
 
+    @ViewBuilder
+    private var topActionButtons: some View {
             // HUD Toggle
             Button {
                 playback.settings.showStatsHUD.toggle()
@@ -330,17 +365,6 @@ public struct PlayerView: View {
             }
             .accessibilityLabel("Close Player")
             .accessibilityIdentifier("playerCloseButton")
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 16)
-        .padding(.bottom, 24)
-        .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.85), Color.clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
     }
 
     private var bottomControlsBar: some View {
@@ -368,7 +392,7 @@ public struct PlayerView: View {
             .padding(.horizontal, 20)
 
             // Playback and Zapping controls
-            HStack(spacing: 32) {
+            HStack(spacing: isCompact ? 20 : 32) {
                 // Channel Guide Drawer
                 Button {
                     withAnimation {
@@ -380,7 +404,9 @@ public struct PlayerView: View {
                             .font(.system(size: 20))
                         Text("Channels")
                             .font(.system(size: 10))
+                            .lineLimit(1)
                     }
+                    .fixedSize()
                     .foregroundColor(.white)
                 }
                 .accessibilityIdentifier("playerGuideButton")

@@ -1,120 +1,89 @@
 #!/usr/bin/env bash
+# Captures App Store screenshots with the testCaptureStoreScreenshots UI test.
+# The test signs in with a public M3U playlist, so the images show no private account data.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEVICE_NAME="${IOS_SCREENSHOT_DEVICE:-iPhone 17e}"
-IPAD_DEVICE_NAME="${IOS_IPAD_SCREENSHOT_DEVICE:-iPad Pro 13-inch (M5)}"
+IPHONE_DEVICE="${IOS_SCREENSHOT_DEVICE:-iPhone 18 Pro Max}"
+IPAD_DEVICE="${IOS_IPAD_SCREENSHOT_DEVICE:-iPad Pro 13-inch (M5)}"
 DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/screenshots}"
 SCREENSHOT_DIR="${IOS_SCREENSHOT_DIR:-$SCRIPT_DIR/screenshots}"
-BUNDLE_ID="${IOS_BUNDLE_ID:-com.bvolpato.brutv}"
-APP_PATH_OVERRIDE="${IOS_APP_PATH:-}"
+PLAYLIST="${BRUTV_SCREENSHOT_PLAYLIST:-https://iptv-org.github.io/iptv/countries/br.m3u}"
+CATEGORY="${BRUTV_SCREENSHOT_CATEGORY:-Education}"
+CHANNEL="${BRUTV_SCREENSHOT_CHANNEL:-Canal Futura}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "error: screenshots require macOS with Xcode" >&2
   exit 1
 fi
-
 command -v xcodebuild >/dev/null 2>&1 || { echo "error: xcodebuild not found" >&2; exit 1; }
-command -v xcrun >/dev/null 2>&1 || { echo "error: xcrun not found" >&2; exit 1; }
 
-mkdir -p "$SCREENSHOT_DIR"
-
-if [[ -n "$APP_PATH_OVERRIDE" ]]; then
-  APP_PATH="$APP_PATH_OVERRIDE"
-else
-  cd "$SCRIPT_DIR"
-  xcodebuild clean build \
-    -project BruTV.xcodeproj \
-    -scheme BruTV \
-    -destination "platform=iOS Simulator,name=$DEVICE_NAME" \
-    -configuration Debug \
-    -derivedDataPath "$DERIVED_DATA_PATH" \
-    CODE_SIGNING_ALLOWED=NO
-
-  APP_PATH=$(find "$DERIVED_DATA_PATH" -name "BruTV.app" -type d | sort | head -n 1)
-fi
-
-[[ -d "$APP_PATH" ]] || {
-  echo "error: app not found: $APP_PATH" >&2
-  exit 1
-}
+cd "$SCRIPT_DIR"
 
 capture_device() {
-  local target_device="$1"
-  local output_subdir="$2"
+  local device="$1"
+  local subdir="$2"
   local dev_id
 
-  dev_id=$(xcrun simctl list devices available | grep "$target_device" | head -n 1 | sed 's/.*(\([A-Z0-9-]*\)).*/\1/')
+  dev_id=$(xcrun simctl list devices available | grep -F "$device (" | head -n 1 | sed -E 's/.*\(([A-F0-9-]{36})\).*/\1/')
   if [[ -z "$dev_id" ]]; then
-    echo "warning: simulator not found: $target_device, skipping"
+    echo "warning: simulator not found: $device, skipping"
     return 0
   fi
 
-  echo "Capturing on $target_device ($dev_id)..."
+  echo "Capturing on $device ($dev_id)..."
   xcrun simctl boot "$dev_id" >/dev/null 2>&1 || true
-  sleep 4
-  xcrun simctl install "$dev_id" "$APP_PATH"
+  xcrun simctl bootstatus "$dev_id" -b >/dev/null
+  xcrun simctl status_bar "$dev_id" override \
+    --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 \
+    --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 || true
 
-  mkdir -p "$SCREENSHOT_DIR/$output_subdir"
+  rm -rf "$SCREENSHOT_DIR/$subdir"
+  mkdir -p "$SCREENSHOT_DIR/$subdir"
 
-  # 1. Login Screen
-  xcrun simctl terminate "$dev_id" "$BUNDLE_ID" >/dev/null 2>&1 || true
-  xcrun simctl launch "$dev_id" "$BUNDLE_ID" >/dev/null 2>&1 || true
-  sleep 3
-  xcrun simctl io "$dev_id" screenshot "$SCREENSHOT_DIR/$output_subdir/01_login.png" >/dev/null || true
+  local log="$SCREENSHOT_DIR/$subdir.xcodebuild.log"
+  TEST_RUNNER_BRUTV_SCREENSHOT_DIR="$SCREENSHOT_DIR/$subdir" \
+  TEST_RUNNER_BRUTV_SCREENSHOT_PLAYLIST="$PLAYLIST" \
+  TEST_RUNNER_BRUTV_SCREENSHOT_CATEGORY="$CATEGORY" \
+  TEST_RUNNER_BRUTV_SCREENSHOT_CHANNEL="$CHANNEL" \
+  xcodebuild test \
+    -project BruTV.xcodeproj \
+    -scheme BruTV \
+    -destination "platform=iOS Simulator,id=$dev_id" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
+    -only-testing:BruTVUITests/BruTVUITests/testCaptureStoreScreenshots \
+    CODE_SIGNING_ALLOWED=NO > "$log" 2>&1 &
+  local pid=$!
 
-  # 2. Main Live Channels Screen (with Demo Login)
-  xcrun simctl terminate "$dev_id" "$BUNDLE_ID" >/dev/null 2>&1 || true
-  xcrun simctl launch "$dev_id" "$BUNDLE_ID" --demo-login >/dev/null 2>&1 || true
-  sleep 6
-  xcrun simctl io "$dev_id" screenshot "$SCREENSHOT_DIR/$output_subdir/02_live_channels.png" >/dev/null || true
+  # xcodebuild can hang after the test ends. Stop it 20s after the suite result is logged.
+  local done_at=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $done_at -eq 0 ]] && grep -q "Test Suite 'Selected tests' \(passed\|failed\)" "$log"; then
+      done_at=$SECONDS
+    fi
+    if [[ $done_at -gt 0 && $((SECONDS - done_at)) -ge 20 ]]; then
+      kill "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 2
+  done
+  wait "$pid" 2>/dev/null || true
 
-  # 3. Channel Guide & Player
-  sleep 3
-  xcrun simctl io "$dev_id" screenshot "$SCREENSHOT_DIR/$output_subdir/03_player_view.png" >/dev/null || true
+  if ! grep -q "Test Suite 'Selected tests' passed" "$log"; then
+    tail -40 "$log" >&2
+    echo "error: screenshot test failed on $device. Full log: $log" >&2
+    exit 1
+  fi
+  rm -f "$log"
 
-  echo "  Done capturing on $target_device"
+  xcrun simctl status_bar "$dev_id" clear || true
+  echo "  Saved to $SCREENSHOT_DIR/$subdir"
+  for f in "$SCREENSHOT_DIR/$subdir"/*.png; do
+    [[ -f "$f" ]] && echo "  $(basename "$f"): $(sips -g pixelWidth -g pixelHeight "$f" | awk '/pixel/ {printf "%s ", $2}')"
+  done
 }
 
-# Capture on iPhone
-capture_device "$DEVICE_NAME" "iphone"
-
-# Capture on iPad
-capture_device "$IPAD_DEVICE_NAME" "ipad"
-
-# Post-processing into required App Store Connect resolutions
-echo "Post-processing screenshots into required App Store Connect resolutions..."
-
-# 6.7-inch (1290 x 2796)
-mkdir -p "$SCREENSHOT_DIR/6.7-inch"
-for f in "$SCREENSHOT_DIR/iphone"/*.png; do
-  [[ -f "$f" ]] || continue
-  name=$(basename "$f")
-  cp "$f" "$SCREENSHOT_DIR/6.7-inch/$name"
-  sips -z 2796 1290 "$SCREENSHOT_DIR/6.7-inch/$name" >/dev/null
-done
-echo "  Generated 6.7-inch screenshots (1290 x 2796)"
-
-# 6.5-inch (1242 x 2688)
-mkdir -p "$SCREENSHOT_DIR/6.5-inch"
-for f in "$SCREENSHOT_DIR/iphone"/*.png; do
-  [[ -f "$f" ]] || continue
-  name=$(basename "$f")
-  cp "$f" "$SCREENSHOT_DIR/6.5-inch/$name"
-  sips -z 2688 1242 "$SCREENSHOT_DIR/6.5-inch/$name" >/dev/null
-done
-echo "  Generated 6.5-inch screenshots (1242 x 2688)"
-
-# iPad Pro 13-inch (2048 x 2732)
-if [[ -d "$SCREENSHOT_DIR/ipad" ]]; then
-  mkdir -p "$SCREENSHOT_DIR/ipad-13-inch"
-  for f in "$SCREENSHOT_DIR/ipad"/*.png; do
-    [[ -f "$f" ]] || continue
-    name=$(basename "$f")
-    cp "$f" "$SCREENSHOT_DIR/ipad-13-inch/$name"
-    sips -z 2732 2048 "$SCREENSHOT_DIR/ipad-13-inch/$name" >/dev/null
-  done
-  echo "  Generated iPad 13-inch screenshots (2048 x 2732)"
-fi
+capture_device "$IPHONE_DEVICE" "iphone-6.9-inch"
+capture_device "$IPAD_DEVICE" "ipad-13-inch"
 
 echo "Screenshots generated in: $SCREENSHOT_DIR"

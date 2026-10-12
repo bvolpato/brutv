@@ -39,7 +39,7 @@ public struct LiveTVView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
-                    TextField("Search channels (e.g. Globo, SBT, Record)...", text: $searchText)
+                    TextField("Search channels...", text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
                         .accessibilityIdentifier("channelSearchField")
