@@ -18,8 +18,6 @@ xcuserdata/
 mobile/ios/**/build/
 mobile/ios/**/artifact/
 mobile/ios/BruTV/build/
-mobile/ios/BruTV/screenshots/
-screenshots/
 *.ipa
 *.dSYM.zip
 *.dSYM

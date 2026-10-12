@@ -1,0 +1,640 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		APPBF001 /* BruTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC001; };
+		APPBF002 /* AppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC002; };
+		APPBF003 /* AccountModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC003; };
+		APPBF004 /* ChannelModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC004; };
+		APPBF005 /* EPGModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC005; };
+		APPBF006 /* PlayerSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC006; };
+		APPBF007 /* XtreamCodesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC007; };
+		APPBF008 /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC008; };
+		APPBF009 /* FavoritesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC009; };
+		APPBF010 /* HLSBufferEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC010; };
+		APPBF011 /* PlaybackManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC011; };
+		APPBF012 /* CachedAsyncImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC012; };
+		APPBF013 /* TechStatsHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC013; };
+		APPBF014 /* VideoPlayerContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC014; };
+		APPBF015 /* ChannelCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC015; };
+		APPBF016 /* LiveTVView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC016; };
+		APPBF017 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC017; };
+		APPBF018 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC018; };
+		APPBF019 /* VODView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC019; };
+		APPBF020 /* SeriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC020; };
+		APPBF021 /* FavoritesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC021; };
+		APPBF022 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC022; };
+		APPBF023 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC023; };
+		APPBF024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
+		APPBF025 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
+		TESTBF001 /* XtreamCodesClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC001; };
+		TESTBF002 /* BufferEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC002; };
+		TESTBF003 /* FavoritesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC003; };
+		UIBF001 /* BruTVUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UISRC001; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		TESTPROXY001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PROJECT001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = APPTARGET001;
+			remoteInfo = BruTV;
+		};
+		UIPROXY001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PROJECT001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = APPTARGET001;
+			remoteInfo = BruTV;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		APPPROD001 /* BruTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BruTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		TESTPROD001 /* BruTVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BruTVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		UIPROD001 /* BruTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BruTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		APPSRC001 /* BruTVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BruTVApp.swift; sourceTree = "<group>"; };
+		APPSRC002 /* AppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootView.swift; sourceTree = "<group>"; };
+		APPSRC003 /* AccountModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountModels.swift; sourceTree = "<group>"; };
+		APPSRC004 /* ChannelModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelModels.swift; sourceTree = "<group>"; };
+		APPSRC005 /* EPGModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPGModels.swift; sourceTree = "<group>"; };
+		APPSRC006 /* PlayerSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSettings.swift; sourceTree = "<group>"; };
+		APPSRC007 /* XtreamCodesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XtreamCodesClient.swift; sourceTree = "<group>"; };
+		APPSRC008 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
+		APPSRC009 /* FavoritesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStore.swift; sourceTree = "<group>"; };
+		APPSRC010 /* HLSBufferEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLSBufferEngine.swift; sourceTree = "<group>"; };
+		APPSRC011 /* PlaybackManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackManager.swift; sourceTree = "<group>"; };
+		APPSRC012 /* CachedAsyncImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedAsyncImage.swift; sourceTree = "<group>"; };
+		APPSRC013 /* TechStatsHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TechStatsHUD.swift; sourceTree = "<group>"; };
+		APPSRC014 /* VideoPlayerContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerContainer.swift; sourceTree = "<group>"; };
+		APPSRC015 /* ChannelCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelCardView.swift; sourceTree = "<group>"; };
+		APPSRC016 /* LiveTVView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTVView.swift; sourceTree = "<group>"; };
+		APPSRC017 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		APPSRC018 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		APPSRC019 /* VODView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VODView.swift; sourceTree = "<group>"; };
+		APPSRC020 /* SeriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeriesView.swift; sourceTree = "<group>"; };
+		APPSRC021 /* FavoritesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesView.swift; sourceTree = "<group>"; };
+		APPSRC022 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		APPSRC023 /* MainContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainContentView.swift; sourceTree = "<group>"; };
+		APPRES001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		APPRES002 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		APPINFO001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		APPENT001 /* BruTV.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BruTV.entitlements; sourceTree = "<group>"; };
+		TESTSRC001 /* XtreamCodesClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XtreamCodesClientTests.swift; sourceTree = "<group>"; };
+		TESTSRC002 /* BufferEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferEngineTests.swift; sourceTree = "<group>"; };
+		TESTSRC003 /* FavoritesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesStoreTests.swift; sourceTree = "<group>"; };
+		UISRC001 /* BruTVUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BruTVUITests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		APPFRAMEWORKS /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TESTFRAMEWORKS /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UIFRAMEWORKS /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		ROOTGROUP /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				APPGROUP /* BruTV */,
+				TESTGROUP /* BruTVTests */,
+				UIGROUP /* BruTVUITests */,
+				PRODUCTSGROUP /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		PRODUCTSGROUP /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				APPPROD001 /* BruTV.app */,
+				TESTPROD001 /* BruTVTests.xctest */,
+				UIPROD001 /* BruTVUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		APPGROUP /* BruTV */ = {
+			isa = PBXGroup;
+			children = (
+				APPSRC001 /* BruTVApp.swift */,
+				APPSRC002 /* AppRootView.swift */,
+				APPINFO001 /* Info.plist */,
+				APPENT001 /* BruTV.entitlements */,
+				MODELSGROUP /* Models */,
+				SERVICESGROUP /* Services */,
+				VIEWSGROUP /* Views */,
+				RESOURCESGROUP /* Resources */,
+			);
+			path = BruTV;
+			sourceTree = "<group>";
+		};
+		MODELSGROUP /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				APPSRC003 /* AccountModels.swift */,
+				APPSRC004 /* ChannelModels.swift */,
+				APPSRC005 /* EPGModels.swift */,
+				APPSRC006 /* PlayerSettings.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		SERVICESGROUP /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				APPSRC007 /* XtreamCodesClient.swift */,
+				APPSRC008 /* AccountStore.swift */,
+				APPSRC009 /* FavoritesStore.swift */,
+				APPSRC010 /* HLSBufferEngine.swift */,
+				APPSRC011 /* PlaybackManager.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		VIEWSGROUP /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				COMPONENTSGROUP /* Components */,
+				APPSRC015 /* ChannelCardView.swift */,
+				APPSRC016 /* LiveTVView.swift */,
+				APPSRC017 /* PlayerView.swift */,
+				APPSRC018 /* LoginView.swift */,
+				APPSRC019 /* VODView.swift */,
+				APPSRC020 /* SeriesView.swift */,
+				APPSRC021 /* FavoritesView.swift */,
+				APPSRC022 /* SettingsView.swift */,
+				APPSRC023 /* MainContentView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		COMPONENTSGROUP /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				APPSRC012 /* CachedAsyncImage.swift */,
+				APPSRC013 /* TechStatsHUD.swift */,
+				APPSRC014 /* VideoPlayerContainer.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		RESOURCESGROUP /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				APPRES001 /* Assets.xcassets */,
+				APPRES002 /* PrivacyInfo.xcprivacy */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		TESTGROUP /* BruTVTests */ = {
+			isa = PBXGroup;
+			children = (
+				TESTSRC001 /* XtreamCodesClientTests.swift */,
+				TESTSRC002 /* BufferEngineTests.swift */,
+				TESTSRC003 /* FavoritesStoreTests.swift */,
+			);
+			path = BruTVTests;
+			sourceTree = "<group>";
+		};
+		UIGROUP /* BruTVUITests */ = {
+			isa = PBXGroup;
+			children = (
+				UISRC001 /* BruTVUITests.swift */,
+			);
+			path = BruTVUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		APPTARGET001 /* BruTV */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = APPCONFIGLIST;
+			buildPhases = (
+				APPSOURCES /* Sources */,
+				APPFRAMEWORKS /* Frameworks */,
+				APPRESOURCES /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BruTV;
+			productName = BruTV;
+			productReference = APPPROD001 /* BruTV.app */;
+			productType = "com.apple.product-type.application";
+		};
+		TESTTARGET001 /* BruTVTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = TESTCONFIGLIST;
+			buildPhases = (
+				TESTSOURCES /* Sources */,
+				TESTFRAMEWORKS /* Frameworks */,
+				TESTRESOURCES /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				TESTDEPENDENCY001 /* PBXTargetDependency */,
+			);
+			name = BruTVTests;
+			productName = BruTVTests;
+			productReference = TESTPROD001 /* BruTVTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		UITARGET001 /* BruTVUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = UICONFIGLIST;
+			buildPhases = (
+				UISOURCES /* Sources */,
+				UIFRAMEWORKS /* Frameworks */,
+				UIRESOURCES /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				UIDEPENDENCY001 /* PBXTargetDependency */,
+			);
+			name = BruTVUITests;
+			productName = BruTVUITests;
+			productReference = UIPROD001 /* BruTVUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		PROJECT001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					APPTARGET001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					TESTTARGET001 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = APPTARGET001;
+					};
+					UITARGET001 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = APPTARGET001;
+					};
+				};
+			};
+			buildConfigurationList = PROJECTCONFIGLIST;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = ROOTGROUP;
+			productRefGroup = PRODUCTSGROUP /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				APPTARGET001 /* BruTV */,
+				TESTTARGET001 /* BruTVTests */,
+				UITARGET001 /* BruTVUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		APPRESOURCES /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				APPBF024 /* Assets.xcassets in Resources */,
+				APPBF025 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TESTRESOURCES /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UIRESOURCES /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		APPSOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				APPBF001 /* BruTVApp.swift in Sources */,
+				APPBF002 /* AppRootView.swift in Sources */,
+				APPBF003 /* AccountModels.swift in Sources */,
+				APPBF004 /* ChannelModels.swift in Sources */,
+				APPBF005 /* EPGModels.swift in Sources */,
+				APPBF006 /* PlayerSettings.swift in Sources */,
+				APPBF007 /* XtreamCodesClient.swift in Sources */,
+				APPBF008 /* AccountStore.swift in Sources */,
+				APPBF009 /* FavoritesStore.swift in Sources */,
+				APPBF010 /* HLSBufferEngine.swift in Sources */,
+				APPBF011 /* PlaybackManager.swift in Sources */,
+				APPBF012 /* CachedAsyncImage.swift in Sources */,
+				APPBF013 /* TechStatsHUD.swift in Sources */,
+				APPBF014 /* VideoPlayerContainer.swift in Sources */,
+				APPBF015 /* ChannelCardView.swift in Sources */,
+				APPBF016 /* LiveTVView.swift in Sources */,
+				APPBF017 /* PlayerView.swift in Sources */,
+				APPBF018 /* LoginView.swift in Sources */,
+				APPBF019 /* VODView.swift in Sources */,
+				APPBF020 /* SeriesView.swift in Sources */,
+				APPBF021 /* FavoritesView.swift in Sources */,
+				APPBF022 /* SettingsView.swift in Sources */,
+				APPBF023 /* MainContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		TESTSOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				TESTBF001 /* XtreamCodesClientTests.swift in Sources */,
+				TESTBF002 /* BufferEngineTests.swift in Sources */,
+				TESTBF003 /* FavoritesStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		UISOURCES /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				UIBF001 /* BruTVUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		TESTDEPENDENCY001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = APPTARGET001 /* BruTV */;
+			targetProxy = TESTPROXY001 /* PBXContainerItemProxy */;
+		};
+		UIDEPENDENCY001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = APPTARGET001 /* BruTV */;
+			targetProxy = UIPROXY001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		PROJECTDEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		PROJECTRELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		APPDEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BruTV/BruTV.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BruTV/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		APPRELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BruTV/BruTV.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = BruTV/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		TESTDEBUG /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BruTV.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BruTV";
+			};
+			name = Debug;
+		};
+		TESTRELEASE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BruTV.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BruTV";
+			};
+			name = Release;
+		};
+		UIDEBUG = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = BruTV; }; name = Debug; };
+		UIRELEASE = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = BruTV; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		PROJECTCONFIGLIST /* Build configuration list for PBXProject "BruTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				PROJECTDEBUG /* Debug */,
+				PROJECTRELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		APPCONFIGLIST /* Build configuration list for PBXNativeTarget "BruTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				APPDEBUG /* Debug */,
+				APPRELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		TESTCONFIGLIST /* Build configuration list for PBXNativeTarget "BruTVTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				TESTDEBUG /* Debug */,
+				TESTRELEASE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		UICONFIGLIST = {isa = XCConfigurationList; buildConfigurations = (UIDEBUG, UIRELEASE,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = PROJECT001 /* Project object */;
+}
