@@ -49,3 +49,6 @@ mobile/android/**/*.jks
 mobile/android/**/*.keystore
 *.jks
 *.keystore
+
+# Vega SDK build metadata
+mobile/vega/buildinfo.json

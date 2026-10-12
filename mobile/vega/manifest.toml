@@ -3,7 +3,7 @@ schema-version = 1
 [package]
 id = "com.bvolpato.brutv"
 title = "BruTV"
-version = "0.1.0"
+version = "1.0.0"
 icon = "@image/BruTV.png"
 
 [components]
@@ -38,6 +38,13 @@ id = "com.amazon.audio.system"
 id = "com.amazon.gipc.uuid.*"
 [[wants.privilege]]
 id = "com.amazon.devconf.privilege.accessibility"
+
+[offers]
+[[offers.interaction]]
+id = "com.bvolpato.brutv.main"
+[[offers.module]]
+id = "/com.bvolpato.brutv.main@IMod1"
+includes-messages = ["pkg://com.bvolpato.brutv.main"]
 
 [[message]]
 uri = "pkg://com.bvolpato.brutv.main"
