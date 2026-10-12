@@ -76,8 +76,8 @@ public final class HLSBufferEngine: @unchecked Sendable {
         telemetry.bufferDuration = calculateBufferDuration(for: playerItem)
         telemetry.stallCount = currentStallCount
 
-        if let naturalSize = playerItem.asset.tracks(withMediaType: .video).first?.naturalSize {
-            telemetry.resolution = naturalSize
+        if playerItem.presentationSize != .zero {
+            telemetry.resolution = playerItem.presentationSize
         }
 
         if let accessLog = playerItem.accessLog(), let lastEvent = accessLog.events.last {

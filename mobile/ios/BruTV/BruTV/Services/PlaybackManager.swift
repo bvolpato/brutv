@@ -39,8 +39,10 @@ public final class PlaybackManager: ObservableObject {
     private var telemetryTimer: Timer?
     private var stallCount: Int = 0
     private var retryAttempts: Int = 0
-    private let maxRetryAttempts = 3
+    private let maxRetryAttempts = 2
     private var currentFormat: StreamFormatPreference = .hls
+    private var watchdogWorkItem: DispatchWorkItem?
+    private var retryWorkItem: DispatchWorkItem?
 
     public init() {
         self.player = AVPlayer()
@@ -65,6 +67,7 @@ public final class PlaybackManager: ObservableObject {
                 guard let self else { return }
                 switch status {
                 case .playing:
+                    self.cancelWatchdog()
                     self.playbackState = .playing
                     self.retryAttempts = 0
                 case .paused:
@@ -74,7 +77,9 @@ public final class PlaybackManager: ObservableObject {
                         self.playbackState = .paused
                     }
                 case .waitingToPlayAtSpecifiedRate:
-                    self.playbackState = .buffering
+                    if self.playbackState == .playing {
+                        self.playbackState = .buffering
+                    }
                 @unknown default:
                     break
                 }
@@ -92,6 +97,9 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func play(stream: LiveStream, from playlist: [LiveStream]? = nil) {
+        cancelWatchdog()
+        cancelRetry()
+
         if let playlist {
             setPlaylist(playlist, startingWith: stream)
         } else if activePlaylist.isEmpty {
@@ -103,7 +111,8 @@ public final class PlaybackManager: ObservableObject {
         self.currentVOD = nil
         self.playbackState = .loading
         self.stallCount = 0
-        self.currentFormat = settings.preferredFormat
+        self.retryAttempts = 0
+        self.currentFormat = .hls
 
         // Record in history
         FavoritesStore.shared.addRecent(channelID: stream.id)
@@ -121,10 +130,14 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func playVOD(vod: VODStream) {
+        cancelWatchdog()
+        cancelRetry()
+
         self.currentVOD = vod
         self.currentStream = nil
         self.playbackState = .loading
         self.stallCount = 0
+        self.retryAttempts = 0
 
         guard let url = AccountStore.shared.client.vodStreamURL(streamID: vod.id, containerExtension: vod.containerExtension) else {
             self.playbackState = .failed("Invalid movie URL.")
@@ -135,7 +148,15 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func prepareAndPlay(url: URL) {
-        let asset = AVURLAsset(url: url)
+        cancelWatchdog()
+        let asset = AVURLAsset(
+            url: url,
+            options: [
+                "AVURLAssetHTTPHeaderFieldsKey": [
+                    "User-Agent": "IPTVSmartersPro/1.1.1"
+                ]
+            ]
+        )
         let playerItem = AVPlayerItem(asset: asset)
 
         // Apply state-of-the-art buffer tuning
@@ -150,6 +171,30 @@ public final class PlaybackManager: ObservableObject {
         player.play()
 
         startTelemetryMonitoring()
+        startWatchdog()
+    }
+
+    private func startWatchdog() {
+        let currentID = currentStream?.id
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if (self.playbackState == .loading || self.playbackState == .buffering) && self.currentStream?.id == currentID {
+                print("Connection watchdog triggered for stream \(String(describing: currentID))")
+                self.playbackState = .failed("Connection timed out. The channel may be temporarily offline.")
+            }
+        }
+        self.watchdogWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0, execute: item)
+    }
+
+    private func cancelWatchdog() {
+        watchdogWorkItem?.cancel()
+        watchdogWorkItem = nil
+    }
+
+    private func cancelRetry() {
+        retryWorkItem?.cancel()
+        retryWorkItem = nil
     }
 
     private func observePlayerItem(_ playerItem: AVPlayerItem) {
@@ -162,9 +207,11 @@ public final class PlaybackManager: ObservableObject {
                 guard let self else { return }
                 switch status {
                 case .readyToPlay:
+                    self.cancelWatchdog()
                     self.playbackState = .playing
                     self.player.play()
                 case .failed:
+                    self.cancelWatchdog()
                     self.handlePlaybackFailure(playerItem.error)
                 default:
                     break
@@ -177,30 +224,27 @@ public final class PlaybackManager: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.stallCount += 1
-                self.playbackState = .buffering
+                if self.playbackState == .playing {
+                    self.playbackState = .buffering
+                }
             }
             .store(in: &itemObservers)
     }
 
     private func handlePlaybackFailure(_ error: Error?) {
+        cancelWatchdog()
         print("Playback failed: \(String(describing: error))")
 
-        // Format fallback: if HLS failed, try MPEG-TS
-        if currentFormat == .hls, let stream = currentStream {
-            print("Attempting fallback to MPEG-TS...")
-            currentFormat = .ts
-            startPlayback(for: stream, format: .ts)
-            return
-        }
-
-        // Retry mechanism
+        // Retry mechanism with active stream verification
         if retryAttempts < maxRetryAttempts, let stream = currentStream {
             retryAttempts += 1
             print("Retrying stream (attempt \(retryAttempts))...")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                guard let self else { return }
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, self.currentStream?.id == stream.id else { return }
                 self.startPlayback(for: stream, format: self.currentFormat)
             }
+            self.retryWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
             return
         }
 
@@ -234,8 +278,11 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func stop() {
+        cancelWatchdog()
+        cancelRetry()
         player.pause()
         player.replaceCurrentItem(with: nil)
+        itemObservers.removeAll()
         currentStream = nil
         currentVOD = nil
         playbackState = .idle

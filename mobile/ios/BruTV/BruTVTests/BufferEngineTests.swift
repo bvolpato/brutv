@@ -34,4 +34,28 @@ final class BufferEngineTests: XCTestCase {
         XCTAssertEqual(t.observedBitrateFormatted, "4.50 Mbps")
         XCTAssertEqual(t.resolutionFormatted, "1920x1080")
     }
+
+    @MainActor
+    func testPlaybackManagerStopResetsState() {
+        let manager = PlaybackManager.shared
+        let dummyStream = LiveStream(
+            id: 99999,
+            num: 1,
+            name: "Test Channel",
+            streamType: "live",
+            iconURLString: nil,
+            epgChannelId: nil,
+            categoryId: "1"
+        )
+
+        manager.play(stream: dummyStream)
+        XCTAssertEqual(manager.currentStream?.id, 99999)
+        XCTAssertNotEqual(manager.playbackState, .idle)
+
+        // Stopping playback must immediately clear active stream and return to idle
+        manager.stop()
+        XCTAssertNil(manager.currentStream)
+        XCTAssertNil(manager.currentVOD)
+        XCTAssertEqual(manager.playbackState, .idle)
+    }
 }

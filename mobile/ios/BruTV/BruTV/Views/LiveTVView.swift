@@ -42,6 +42,7 @@ public struct LiveTVView: View {
                     TextField("Search channels (e.g. Globo, SBT, Record)...", text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
+                        .accessibilityIdentifier("channelSearchField")
                     if !searchText.isEmpty {
                         Button {
                             searchText = ""

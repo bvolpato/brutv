@@ -56,16 +56,20 @@ public struct MainContentView: View {
             }
         }
         .fullScreenCover(isPresented: $isPlayerFullScreen) {
-            PlayerView()
+            PlayerView(isPresented: $isPlayerFullScreen)
         }
         .onChange(of: playback.currentStream) { _, stream in
             if stream != nil {
                 isPlayerFullScreen = true
+            } else if playback.currentVOD == nil {
+                isPlayerFullScreen = false
             }
         }
         .onChange(of: playback.currentVOD) { _, vod in
             if vod != nil {
                 isPlayerFullScreen = true
+            } else if playback.currentStream == nil {
+                isPlayerFullScreen = false
             }
         }
     }
@@ -205,6 +209,9 @@ public struct MainContentView: View {
                         .foregroundColor(.white)
                         .padding(8)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Play or Pause")
+                .accessibilityIdentifier("miniPlayerPlayPause")
 
                 Button {
                     playback.stop()
@@ -214,6 +221,9 @@ public struct MainContentView: View {
                         .foregroundColor(.gray)
                         .padding(8)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop")
+                .accessibilityIdentifier("miniPlayerClose")
             }
             .padding(10)
             .background(
@@ -227,5 +237,6 @@ public struct MainContentView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("miniPlayer")
     }
 }

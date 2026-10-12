@@ -82,6 +82,7 @@ public struct ChannelCardView: View {
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("favoriteButton")
             }
             .padding(10)
             .background(
@@ -94,6 +95,7 @@ public struct ChannelCardView: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("channelCard")
     }
 }
 
