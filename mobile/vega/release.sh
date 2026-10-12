@@ -22,7 +22,7 @@ case "$target" in
     *) echo "Unsupported Vega target: $target." >&2; exit 1 ;;
 esac
 version="$(node -p 'require("./package.json").version')"
-build_number="${BRUTV_VEGA_BUILD_NUMBER:-2}"
+build_number="${BRUTV_VEGA_BUILD_NUMBER:-3}"
 if [[ ! "$build_number" =~ ^[0-9]+$ ]]; then
     echo "BRUTV_VEGA_BUILD_NUMBER must be a nonnegative integer." >&2
     exit 1
