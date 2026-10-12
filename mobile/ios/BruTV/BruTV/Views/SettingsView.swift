@@ -1,0 +1,125 @@
+import SwiftUI
+
+public struct SettingsView: View {
+    @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var playback = PlaybackManager.shared
+
+    @State private var showingLogoutAlert = false
+    @State private var showingClearCacheAlert = false
+
+    public init() {}
+
+    public var body: some View {
+        Form {
+            // Account Information
+            Section(header: Text("ACCOUNT & SUBSCRIPTION")) {
+                if let user = account.authResponse?.userInfo {
+                    HStack {
+                        Text("Username")
+                        Spacer()
+                        Text(user.username)
+                            .foregroundColor(.gray)
+                    }
+
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text(user.status)
+                            .foregroundColor(user.status.lowercased() == "active" ? .green : .red)
+                            .fontWeight(.semibold)
+                    }
+
+                    HStack {
+                        Text("Expires")
+                        Spacer()
+                        Text(user.expirationFormatted)
+                            .foregroundColor(.gray)
+                    }
+
+                    if let maxCons = user.maxConnections {
+                        HStack {
+                            Text("Max Connections")
+                            Spacer()
+                            Text(maxCons)
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+
+                if let current = account.currentProfile {
+                    HStack {
+                        Text("Server Address")
+                        Spacer()
+                        Text(current.serverURL)
+                            .foregroundColor(.gray)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            // State-of-the-Art Buffering Engine
+            Section(
+                header: Text("PLAYBACK & BUFFERING ENGINE"),
+                footer: Text("Ultra Low Latency (1.5s) delivers near-live sports broadcast timing. Balanced (4.0s) ensures zero stuttering on regular broadband. High Stability (10.0s) protects against cellular jitter.")
+            ) {
+                Picker("Buffer Profile", selection: $playback.settings.bufferProfile) {
+                    ForEach(BufferProfile.allCases) { profile in
+                        Text(profile.title).tag(profile)
+                    }
+                }
+
+                Picker("Stream Protocol", selection: $playback.settings.preferredFormat) {
+                    ForEach(StreamFormatPreference.allCases) { fmt in
+                        Text(fmt.displayName).tag(fmt)
+                    }
+                }
+
+                Toggle("Stream Telemetry HUD", isOn: $playback.settings.showStatsHUD)
+                Toggle("Hardware Acceleration", isOn: $playback.settings.hardwareAcceleration)
+            }
+
+            // Cache & Maintenance
+            Section(header: Text("CACHE & DATA")) {
+                Button("Clear Logo & Poster Cache") {
+                    showingClearCacheAlert = true
+                }
+
+                Button("Refresh Channel Listings") {
+                    account.client.clearCache()
+                }
+            }
+
+            // Session
+            Section {
+                Button(role: .destructive) {
+                    showingLogoutAlert = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Log Out & Switch Server")
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .navigationTitle("Settings & Engine")
+        .alert("Clear Image Cache", isPresented: $showingClearCacheAlert) {
+            Button("Clear", role: .destructive) {
+                // Clear cache
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will clear temporarily cached channel logos and movie covers.")
+        }
+        .alert("Log Out", isPresented: $showingLogoutAlert) {
+            Button("Log Out", role: .destructive) {
+                playback.stop()
+                account.logout()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to log out of this IPTV server?")
+        }
+    }
+}
