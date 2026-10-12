@@ -43,5 +43,9 @@ mobile/android/.kotlin/
 mobile/android/**/build/
 mobile/android/local.properties
 mobile/android/keystore.properties
+mobile/android/release-signing.properties
+mobile/android/signing/
+mobile/android/**/*.jks
+mobile/android/**/*.keystore
 *.jks
 *.keystore
