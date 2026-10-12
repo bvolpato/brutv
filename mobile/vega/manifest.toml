@@ -1,0 +1,45 @@
+schema-version = 1
+
+[package]
+id = "com.bvolpato.brutv"
+title = "BruTV"
+version = "0.1.0"
+icon = "@image/BruTV.png"
+
+[components]
+[[components.interactive]]
+id = "com.bvolpato.brutv.main"
+runtime-module = "/com.amazon.kepler.keplerscript.runtime.loader_2@IKeplerScript_2_0"
+categories = ["com.amazon.category.main"]
+launch-type = "singleton"
+
+[wants]
+[[wants.service]]
+id = "com.amazon.inputmethod.service"
+[[wants.service]]
+id = "com.amazon.inputd.service"
+[[wants.service]]
+id = "com.amazon.mediametrics.service"
+[[wants.service]]
+id = "com.amazon.mediabuffer.service"
+[[wants.service]]
+id = "com.amazon.mediatransform.service"
+[[wants.service]]
+id = "com.amazon.media.server"
+[[wants.service]]
+id = "com.amazon.media.playersession.service"
+[[wants.service]]
+id = "com.amazon.audio.stream"
+[[wants.service]]
+id = "com.amazon.audio.control"
+[[wants.service]]
+id = "com.amazon.audio.system"
+[[wants.service]]
+id = "com.amazon.gipc.uuid.*"
+[[wants.privilege]]
+id = "com.amazon.devconf.privilege.accessibility"
+
+[[message]]
+uri = "pkg://com.bvolpato.brutv.main"
+sender-privileges = ["*"]
+receiver-privileges = ["self"]
