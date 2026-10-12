@@ -65,6 +65,17 @@ The script verifies both signatures and copies versioned artifacts into
 directories. Google Play may require the configured upload certificate to
 match the app's existing Play Console setup.
 
+The hosted direct APK and standard App Bundle keep API 23 support for Android
+6+. Google Play automatic protection requires API 24, so build a separate
+Play-only App Bundle with:
+
+```bash
+./gradlew :app:bundleRelease -PbrutvMinSdk=24
+```
+
+This override applies to that Gradle build only. Keep the resulting API 24
+bundle for Google Play and continue hosting the API 23 APK for direct installs.
+
 For family testing on Android/Fire OS, Downloader can download an APK from a
 direct HTTPS URL and open the system installer. The APK must first be hosted
 at an accessible URL; building locally does not publish it. Allow installation

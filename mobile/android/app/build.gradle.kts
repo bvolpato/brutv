@@ -17,6 +17,7 @@ val releaseStoreFile = releaseSigningValues["storeFile"]
     ?.let(::File)
 val productionSigningConfigured = releaseSigningValues.values.all(String::isNotBlank) &&
     releaseStoreFile?.isFile == true
+val brutvMinimumSdk = providers.gradleProperty("brutvMinSdk").orNull?.toInt() ?: 23
 
 plugins {
     id("com.android.application")
@@ -29,7 +30,7 @@ android {
 
     defaultConfig {
         applicationId = "com.bvolpato.brutv"
-        minSdk = 23
+        minSdk = brutvMinimumSdk
         targetSdk = 36
         versionCode = 2
         versionName = "1.0.0"
