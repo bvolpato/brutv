@@ -101,19 +101,41 @@ public struct PlayerView: View {
                 accessibilityIdentifier: "playerVideo",
                 accessibilityStatus: playback.playbackState.testDescription
             )
+            .contentShape(Rectangle())
             .ignoresSafeArea()
             #if targetEnvironment(macCatalyst)
-            // Declared before the single tap so a double-click is not read as two clicks.
+            .onHover { isHovering in
+                if isHovering {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls = true
+                    }
+                    if playback.playbackState == .playing {
+                        scheduleControlsAutoHide()
+                    }
+                }
+            }
             .onTapGesture(count: 2) {
                 toggleMacFullScreen()
             }
-            #endif
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showControls.toggle()
                 }
                 if showControls && playback.playbackState == .playing {
                     scheduleControlsAutoHide()
+                } else {
+                    controlsTimer?.invalidate()
+                }
+            }
+            #else
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showControls.toggle()
+                }
+                if showControls && playback.playbackState == .playing {
+                    scheduleControlsAutoHide()
+                } else {
+                    controlsTimer?.invalidate()
                 }
             }
             .gesture(
@@ -137,6 +159,7 @@ public struct PlayerView: View {
                         }
                     }
             )
+            #endif
 
             // Buffering Indicator with Cancel Button
             if playback.playbackState == .buffering || playback.playbackState == .loading {
@@ -242,6 +265,18 @@ public struct PlayerView: View {
                 VStack {
                     topControlsBar
                     Spacer()
+                        .contentShape(Rectangle())
+                        #if targetEnvironment(macCatalyst)
+                        .onTapGesture(count: 2) {
+                            toggleMacFullScreen()
+                        }
+                        #endif
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showControls = false
+                            }
+                            controlsTimer?.invalidate()
+                        }
                     bottomControlsBar
                 }
                 .transition(.opacity)

@@ -59,7 +59,7 @@ export function vegaAdapter(video: VideoPlayer, onError: () => void, live = fals
   let loading = false;
   const handleError = (event: Event) => {
     const detail = (event as Event & {detail?: {severity: number; category: number; code: number}}).detail;
-    if (detail?.severity !== shakaRuntime.util.Error.Severity.CRITICAL) return;
+    if (!detail || detail.severity !== shakaRuntime.util.Error.Severity.CRITICAL) return;
     if (detail.code === shakaRuntime.util.Error.Code.OPERATION_ABORTED) return;
     if (recorder && [shakaRuntime.util.Error.Category.MEDIA, shakaRuntime.util.Error.Category.MANIFEST,
       shakaRuntime.util.Error.Category.NETWORK].includes(detail.category)) {
@@ -71,8 +71,8 @@ export function vegaAdapter(video: VideoPlayer, onError: () => void, live = fals
   player.configure({
     abr: {enabled: true},
     streaming: {
-      bufferingGoal: 20, rebufferingGoal: 3,
-      bufferBehind: 30, liveSync: false,
+      bufferingGoal: live ? 6 : 20, rebufferingGoal: live ? 1 : 3,
+      bufferBehind: 30, liveSync: live,
       retryParameters: {maxAttempts: 3, baseDelay: 1000, backoffFactor: 2, fuzzFactor: 0.5, timeout: 15000},
     },
     manifest: {retryParameters: {maxAttempts: 3, timeout: 15000}},
@@ -119,21 +119,28 @@ export function vegaAdapter(video: VideoPlayer, onError: () => void, live = fals
   return {
     async load(url) {
       httpURL(url);
+      let targetURL = url;
       const path = new URL(url).pathname.toLowerCase();
-      if (path.endsWith('.ts') || path.endsWith('.mkv')) {
+      if (path.endsWith('.ts')) {
+        if (url.includes('/live/')) {
+          targetURL = url.replace(/\.ts$/i, '.m3u8');
+        } else {
+          throw new Error('Use HLS, DASH or an MP4 source on this Vega starter.');
+        }
+      } else if (path.endsWith('.mkv')) {
         throw new Error('Use HLS, DASH or an MP4 source on this Vega starter.');
       }
       if (recorder && !recorder.info.recording) {
         await useOriginalSource(info?.message || 'Local live recording stopped.');
       }
-      if (live && loadedURL !== url && !fallback.disabled) {
+      if (live && loadedURL !== targetURL && !fallback.disabled) {
         unavailable = undefined;
-        recordingPreparation = prepareRecording(url);
+        recordingPreparation = prepareRecording(targetURL);
         await recordingPreparation;
         recordingPreparation = undefined;
       }
       if (destroyed) return;
-      loadedURL = url;
+      loadedURL = targetURL;
       recordingOrigin = recorder?.timelineOrigin;
       needsRecordingOrigin = !!recorder;
       loading = true;
@@ -142,8 +149,8 @@ export function vegaAdapter(video: VideoPlayer, onError: () => void, live = fals
           const localURL = recorder.manifestURL;
           await fallback.load(() => player.load(localURL, undefined, 'application/x-mpegurl'),
             () => useOriginalSource('The temporary live buffer could not be played on this device.'),
-            async () => {if (!destroyed) await player.load(url);});
-        } else await player.load(url);
+            async () => {if (!destroyed) await player.load(targetURL);});
+        } else await player.load(targetURL);
       } finally {loading = false;}
     },
     timeline() {
