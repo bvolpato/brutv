@@ -8,6 +8,7 @@ public struct SettingsView: View {
     @State private var showingLogoutAlert = false
     @State private var showingClearCacheAlert = false
     @State private var showingQRCode = false
+    @State private var statusFeedback: String?
 
     public init() {}
 
@@ -124,8 +125,20 @@ public struct SettingsView: View {
 
                 Button {
                     account.client.clearCache()
+                    showFeedback("Channel listings refreshed".localized)
                 } label: {
                     Label("Refresh Channel Listings".localized, systemImage: "arrow.clockwise")
+                }
+
+                if let statusFeedback {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(statusFeedback)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.green)
+                    }
+                    .transition(.opacity)
                 }
             }
 
@@ -151,7 +164,8 @@ public struct SettingsView: View {
         }
         .alert("Clear Image Cache".localized, isPresented: $showingClearCacheAlert) {
             Button("Clear".localized, role: .destructive) {
-                // Clear cache
+                ImageCache.shared.clear()
+                showFeedback("Image cache cleared".localized)
             }
             Button("Cancel".localized, role: .cancel) {}
         } message: {
@@ -165,6 +179,20 @@ public struct SettingsView: View {
             Button("Cancel".localized, role: .cancel) {}
         } message: {
             Text("Are you sure you want to log out of this IPTV server?".localized)
+        }
+    }
+
+    private func showFeedback(_ message: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            statusFeedback = message
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if statusFeedback == message {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    statusFeedback = nil
+                }
+            }
         }
     }
 }

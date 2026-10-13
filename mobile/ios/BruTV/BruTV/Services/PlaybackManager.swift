@@ -90,6 +90,9 @@ public final class PlaybackManager: ObservableObject {
     // Active playlist for fast zapping
     @Published public private(set) var activePlaylist: [LiveStream] = []
     @Published public private(set) var activeIndex: Int = 0
+    @Published public private(set) var activeEpisodeList: [SeriesEpisode] = []
+    @Published public private(set) var activeEpisodeIndex: Int = 0
+    @Published public private(set) var activeSeriesName: String = ""
 
     private var itemObservers: Set<AnyCancellable> = []
     private var accountObserver: AnyCancellable?
@@ -265,6 +268,9 @@ public final class PlaybackManager: ObservableObject {
 
         self.currentStream = stream
         self.currentVOD = nil
+        self.activeEpisodeList = []
+        self.activeEpisodeIndex = 0
+        self.activeSeriesName = ""
         self.playbackState = .loading
         self.stallCount = 0
         self.currentFormat = .hls
@@ -387,6 +393,9 @@ public final class PlaybackManager: ObservableObject {
         beginPlaybackSession()
 
         self.currentVOD = vod
+        self.activeEpisodeList = []
+        self.activeEpisodeIndex = 0
+        self.activeSeriesName = ""
         self.quality = QualityStepDownPolicy(stallsToStepDown: 2)
         self.currentStream = nil
         self.playbackState = .loading
@@ -401,7 +410,7 @@ public final class PlaybackManager: ObservableObject {
         prepareAndPlay(url: url)
     }
 
-    public func playEpisode(episode: SeriesEpisode, seriesName: String) {
+    public func playEpisode(episode: SeriesEpisode, seriesName: String, seasonEpisodes: [SeriesEpisode] = []) {
         beginPlaybackSession()
 
         let titleFormatted: String
@@ -421,6 +430,17 @@ public final class PlaybackManager: ObservableObject {
             streamType: "series"
         )
         self.currentVOD = vod
+        if !seasonEpisodes.isEmpty {
+            self.activeEpisodeList = seasonEpisodes
+            self.activeEpisodeIndex = seasonEpisodes.firstIndex(where: { $0.id == episode.id }) ?? 0
+            self.activeSeriesName = seriesName
+        } else if let idx = self.activeEpisodeList.firstIndex(where: { $0.id == episode.id }) {
+            self.activeEpisodeIndex = idx
+        } else {
+            self.activeEpisodeList = []
+            self.activeEpisodeIndex = 0
+            self.activeSeriesName = ""
+        }
         self.quality = QualityStepDownPolicy(stallsToStepDown: 2)
         self.currentStream = nil
         self.playbackState = .loading
@@ -433,6 +453,26 @@ public final class PlaybackManager: ObservableObject {
 
         providerURL = url
         prepareAndPlay(url: url)
+    }
+
+    public var hasPreviousEpisode: Bool {
+        !activeEpisodeList.isEmpty && activeEpisodeIndex > 0
+    }
+
+    public var hasNextEpisode: Bool {
+        !activeEpisodeList.isEmpty && activeEpisodeIndex + 1 < activeEpisodeList.count
+    }
+
+    public func previousEpisode() {
+        guard hasPreviousEpisode else { return }
+        let prev = activeEpisodeList[activeEpisodeIndex - 1]
+        playEpisode(episode: prev, seriesName: activeSeriesName, seasonEpisodes: activeEpisodeList)
+    }
+
+    public func nextEpisode() {
+        guard hasNextEpisode else { return }
+        let next = activeEpisodeList[activeEpisodeIndex + 1]
+        playEpisode(episode: next, seriesName: activeSeriesName, seasonEpisodes: activeEpisodeList)
     }
 
     private func beginPlaybackSession() {

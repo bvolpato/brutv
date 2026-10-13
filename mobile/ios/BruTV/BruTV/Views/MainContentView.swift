@@ -195,7 +195,7 @@ public struct MainContentView: View {
     private var iphoneLayout: some View {
         TabView(selection: tabSelection) {
             NavigationStack {
-                HomeView()
+                HomeView(onNavigate: { selectedSection = $0 })
             }
             .tabItem {
                 Label("BruTV", systemImage: "play.tv.fill")
@@ -227,7 +227,7 @@ public struct MainContentView: View {
             .tag(NavigationSection.series)
 
             NavigationStack {
-                FavoritesView()
+                FavoritesView(onNavigate: { selectedSection = $0 })
             }
             .tabItem {
                 Label("Favorites".localized, systemImage: "heart.fill")
@@ -249,7 +249,7 @@ public struct MainContentView: View {
     private func detailView(for section: NavigationSection) -> some View {
         switch section {
         case .home:
-            HomeView()
+            HomeView(onNavigate: { selectedSection = $0 })
         case .liveTV:
             LiveTVView()
         case .movies:
@@ -257,7 +257,7 @@ public struct MainContentView: View {
         case .series:
             SeriesView()
         case .favorites:
-            FavoritesView()
+            FavoritesView(onNavigate: { selectedSection = $0 })
         case .settings:
             SettingsView()
         }
@@ -280,6 +280,15 @@ public struct MainContentView: View {
         .frame(width: 96, height: 54)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func formatMiniTime(_ seconds: Double) -> String {
+        guard !seconds.isNaN && !seconds.isInfinite && seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
     // Mini Player bar
@@ -325,9 +334,18 @@ public struct MainContentView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            Text(vod.streamType == "series" ? (playback.isPlaybackRequested ? "Series Playing".localized : "Paused".localized) : (playback.isPlaybackRequested ? "Movie Playing".localized : "Paused".localized))
-                                .font(.system(size: 11))
-                                .foregroundColor(.gray)
+                            let statusLabel = vod.streamType == "series"
+                                ? (playback.isPlaybackRequested ? "Series Playing".localized : "Paused".localized)
+                                : (playback.isPlaybackRequested ? "Movie Playing".localized : "Paused".localized)
+                            if playback.vodDuration > 0 {
+                                Text("\(statusLabel) • \(formatMiniTime(playback.vodCurrentTime)) / \(formatMiniTime(playback.vodDuration))")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.gray)
+                            } else {
+                                Text(statusLabel)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.gray)
+                            }
                         }
                     }
 
@@ -339,6 +357,18 @@ public struct MainContentView: View {
             .accessibilityHint("Opens the full screen player".localized)
             .accessibilityIdentifier("miniPlayer")
 
+            if playback.currentStream != nil && playback.activePlaylist.count > 1 {
+                Button {
+                    playback.previousChannel()
+                } label: {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle())
+                .accessibilityLabel("Previous Channel".localized)
+                .help("Previous channel".localized)
+            }
+
             Button {
                 playback.togglePlayPause()
             } label: {
@@ -349,6 +379,18 @@ public struct MainContentView: View {
             .accessibilityLabel((playback.isPlaybackRequested ? "Pause" : "Play").localized)
             .help((playback.isPlaybackRequested ? "Pause playback" : "Resume playback").localized)
             .accessibilityIdentifier("miniPlayerPlayPause")
+
+            if playback.currentStream != nil && playback.activePlaylist.count > 1 {
+                Button {
+                    playback.nextChannel()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle())
+                .accessibilityLabel("Next Channel".localized)
+                .help("Next channel".localized)
+            }
 
             Button {
                 playback.stop()

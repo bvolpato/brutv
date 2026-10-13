@@ -10,6 +10,7 @@ public struct LiveTVView: View {
     @State private var streams: [LiveStream] = []
     @State private var searchText: String = ""
     @State private var selectedQuality: StreamQuality = .all
+    @State private var showFavoritesOnly: Bool = false
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
 
@@ -19,6 +20,9 @@ public struct LiveTVView: View {
 
     private var filteredStreams: [LiveStream] {
         streams.filter { stream in
+            if showFavoritesOnly && !favorites.isFavorite(channelID: stream.id) {
+                return false
+            }
             // Search text filter
             if !searchText.isEmpty {
                 let matchesName = stream.name.localizedCaseInsensitiveContains(searchText)
@@ -81,6 +85,28 @@ public struct LiveTVView: View {
                             ForEach(StreamQuality.allCases, id: \.self) { quality in
                                 qualityPill(quality)
                             }
+
+                            Button {
+                                showFavoritesOnly.toggle()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+                                        .font(.system(size: 10, weight: .bold))
+                                    Text("Favorites".localized)
+                                        .font(.system(size: 11, weight: .bold))
+                                }
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 5)
+                                .background(showFavoritesOnly ? Color.red.opacity(0.85) : Color.white.opacity(0.1))
+                                .foregroundColor(.white)
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(showFavoritesOnly ? Color.red : Color.white.opacity(0.12), lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .fixedSize()
                         }
                     }
 
@@ -150,6 +176,23 @@ public struct LiveTVView: View {
                         Text("Try adjusting your search query or category filter.".localized)
                             .font(.system(size: 13))
                             .foregroundColor(.gray)
+                        if !searchText.isEmpty || selectedQuality != .all || showFavoritesOnly || selectedCategoryID != "ALL" {
+                            Button {
+                                searchText = ""
+                                selectedQuality = .all
+                                showFavoritesOnly = false
+                                if selectedCategoryID != "ALL" {
+                                    selectedCategoryID = "ALL"
+                                    loadChannels(categoryID: "ALL")
+                                }
+                            } label: {
+                                Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.cyan)
+                            .padding(.top, 4)
+                        }
                         Spacer()
                     }
                 } else {
