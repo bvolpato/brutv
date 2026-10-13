@@ -217,12 +217,46 @@ private fun decodeQr(image: ImageProxy): String? = runCatching {
     for (y in 0 until height) {
         for (x in 0 until width) data[y * width + x] = buffer.get(start + y * plane.rowStride + x * plane.pixelStride)
     }
-    val luminance = PlanarYUVLuminanceSource(data, width, height, 0, 0, width, height, false)
+    val rotation = image.imageInfo.rotationDegrees
+    val (rotatedData, finalWidth, finalHeight) = when (rotation) {
+        90 -> {
+            val rotated = ByteArray(width * height)
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    rotated[x * height + (height - y - 1)] = data[y * width + x]
+                }
+            }
+            Triple(rotated, height, width)
+        }
+        180 -> {
+            val rotated = ByteArray(width * height)
+            for (i in 0 until width * height) {
+                rotated[width * height - 1 - i] = data[i]
+            }
+            Triple(rotated, width, height)
+        }
+        270 -> {
+            val rotated = ByteArray(width * height)
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    rotated[(width - x - 1) * height + y] = data[y * width + x]
+                }
+            }
+            Triple(rotated, height, width)
+        }
+        else -> Triple(data, width, height)
+    }
+    val luminance = PlanarYUVLuminanceSource(rotatedData, finalWidth, finalHeight, 0, 0, finalWidth, finalHeight, false)
     val reader = MultiFormatReader().apply {
         setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE), DecodeHintType.TRY_HARDER to true))
     }
-    try { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance))).text.takeIf { it.length <= 8192 } }
-    finally { reader.reset() }
+    try {
+        val result = runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance))).text }.getOrNull()
+            ?: runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance.invert()))).text }.getOrNull()
+        result?.takeIf { it.length <= 8192 }
+    } finally {
+        reader.reset()
+    }
 }.getOrNull()
 
 @Composable

@@ -59,4 +59,26 @@ class LoginLinksTest {
             assertEquals("Device-local playlists cannot be shared in a sign-in link.", error.message)
         }
     }
+
+    @Test
+    fun parsesTolerantLinkFormats() {
+        val trailingSlash = LoginLinks.parse("brutv://login/?server=http%3A%2F%2Fiptv.example%3A8080&username=demo&password=pass")
+        assertNotNull(trailingSlash)
+        assertEquals("http://iptv.example:8080", trailingSlash?.server)
+        assertEquals("demo", trailingSlash?.username)
+
+        val singleSlash = LoginLinks.parse("brutv:/login?server=http%3A%2F%2Fiptv.example%3A8080&username=demo&password=pass")
+        assertNotNull(singleSlash)
+        assertEquals("demo", singleSlash?.username)
+
+        val uppercase = LoginLinks.parse("BRUTV://LOGIN?server=http%3A%2F%2Fiptv.example%3A8080&username=demo&password=pass")
+        assertNotNull(uppercase)
+
+        val unencodedSpecialChars = LoginLinks.parse("brutv://login?server=http://iptv.example:8080&username=demo&password=pass{word}")
+        assertNotNull(unencodedSpecialChars)
+        assertEquals("pass{word}", unencodedSpecialChars?.password)
+
+        val quoted = LoginLinks.parse("\"brutv://login?server=http%3A%2F%2Fiptv.example%3A8080&username=demo&password=pass\"")
+        assertNotNull(quoted)
+    }
 }
