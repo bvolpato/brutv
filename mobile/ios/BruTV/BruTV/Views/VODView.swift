@@ -64,13 +64,15 @@ public struct VODView: View {
                                     .foregroundColor(isSelected ? .black : .white)
                                     .cornerRadius(20)
                             }
+                            .buttonStyle(.plain)
+                            .fixedSize()
                         }
                     }
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color(white: 0.06))
+            .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
 
             Divider().background(Color.white.opacity(0.1))
 
@@ -145,7 +147,8 @@ public struct VODView: View {
             }
         }
         .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("Movies (VOD)")
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             if categories.isEmpty {
                 await loadCategories()

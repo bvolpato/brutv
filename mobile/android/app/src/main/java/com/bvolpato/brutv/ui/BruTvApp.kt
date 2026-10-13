@@ -1300,7 +1300,7 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
         }
         Text("Privacy", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         Text("BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
-        Text("BruTV • Version 1.0.0 (3)", color = Muted, style = MaterialTheme.typography.bodySmall)
+        Text("BruTV • Version 1.0.1", color = Muted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
