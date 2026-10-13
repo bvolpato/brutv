@@ -30,6 +30,7 @@
 		APPBF021 /* FavoritesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC021; };
 		APPBF022 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC022; };
 		APPBF023 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC023; };
+		APPBF038 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC038; };
 		APPBF024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
 		APPBF025 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
 		APPBF030 /* LoginLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC030; };
@@ -97,6 +98,7 @@
 		APPSRC021 /* FavoritesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesView.swift; sourceTree = "<group>"; };
 		APPSRC022 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		APPSRC023 /* MainContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainContentView.swift; sourceTree = "<group>"; };
+		APPSRC038 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		APPSRC030 /* LoginLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginLink.swift; sourceTree = "<group>"; };
 		APPSRC031 /* M3UPlaylistParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UPlaylistParser.swift; sourceTree = "<group>"; };
 		APPSRC032 /* LoginQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginQRCodeView.swift; sourceTree = "<group>"; };
@@ -227,6 +229,7 @@
 				APPSRC021 /* FavoritesView.swift */,
 				APPSRC022 /* SettingsView.swift */,
 				APPSRC023 /* MainContentView.swift */,
+				APPSRC038 /* HomeView.swift */,
 				APPSRC032 /* LoginQRCodeView.swift */,
 			);
 			path = Views;
@@ -434,6 +437,7 @@
 				APPBF021 /* FavoritesView.swift in Sources */,
 				APPBF022 /* SettingsView.swift in Sources */,
 				APPBF023 /* MainContentView.swift in Sources */,
+				APPBF038 /* HomeView.swift in Sources */,
 				APPBF030 /* LoginLink.swift in Sources */,
 				APPBF031 /* M3UPlaylistParser.swift in Sources */,
 				APPBF032 /* LoginQRCodeView.swift in Sources */,
