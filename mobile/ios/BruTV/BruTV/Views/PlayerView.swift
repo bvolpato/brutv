@@ -497,21 +497,27 @@ public struct PlayerView: View {
                     .foregroundColor(.white.opacity(0.85))
                     .frame(minWidth: 44, alignment: .leading)
 
-                Slider(
-                    value: Binding(
-                        get: { isScrubbing ? scrubTime : playback.vodCurrentTime },
-                        set: { scrubTime = $0 }
-                    ),
-                    in: 0...max(1.0, playback.vodDuration),
-                    onEditingChanged: { editing in
-                        isScrubbing = editing
-                        if !editing {
-                            playback.seek(to: scrubTime)
-                            scheduleControlsAutoHide()
+                InteractiveTimelineScrubber(
+                    value: isScrubbing ? scrubTime : playback.vodCurrentTime,
+                    range: 0...max(1.0, playback.vodDuration),
+                    onSeek: { targetTime in
+                        isScrubbing = false
+                        playback.seek(to: targetTime)
+                        scheduleControlsAutoHide()
+                    },
+                    onScrubbingChanged: { scrubbing, previewTime in
+                        isScrubbing = scrubbing
+                        scrubTime = previewTime
+                        if scrubbing {
+                            controlsTimer?.invalidate()
                         }
+                    },
+                    formatTime: { seconds in
+                        formatTime(seconds)
                     }
                 )
-                .tint(.cyan)
+                .accessibilityLabel("Playback progress scrubber")
+                .accessibilityIdentifier("vodTimelineScrubber")
 
                 Text(formatTime(playback.vodDuration))
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -906,11 +912,29 @@ public struct PlayerView: View {
         Group {
             if playback.canSeekLive && (playback.liveSeekEnd - playback.liveSeekStart) >= 4 {
                 VStack(spacing: 6) {
-                    Slider(value: Binding(get: { playback.livePlayhead }, set: { playback.seekLive(to: $0) }),
-                           in: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd))
-                        .tint(.cyan)
-                        .accessibilityLabel("Live rewind position")
-                        .accessibilityIdentifier("playerLiveSeekSlider")
+                    InteractiveTimelineScrubber(
+                        value: playback.livePlayhead,
+                        range: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd),
+                        onSeek: { targetTime in
+                            playback.seekLive(to: targetTime)
+                            scheduleControlsAutoHide()
+                        },
+                        onScrubbingChanged: { scrubbing, _ in
+                            if scrubbing {
+                                controlsTimer?.invalidate()
+                            }
+                        },
+                        formatTime: { targetTime in
+                            let diff = playback.liveSeekEnd - targetTime
+                            if diff < 2.0 {
+                                return "LIVE"
+                            } else {
+                                return "-" + formatTime(diff)
+                            }
+                        }
+                    )
+                    .accessibilityLabel("Live rewind position")
+                    .accessibilityIdentifier("playerLiveSeekSlider")
 
                     HStack(spacing: 8) {
                         Button {
