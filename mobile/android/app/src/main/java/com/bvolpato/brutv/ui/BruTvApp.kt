@@ -6,9 +6,16 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -188,7 +195,7 @@ fun BruTvApp(
     var splashDismissed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        delay(1400)
+        delay(1500)
         splashDismissed = true
     }
 
@@ -330,7 +337,7 @@ fun BruTvApp(
             AnimatedVisibility(
                 visible = showSplash,
                 enter = fadeIn(),
-                exit = fadeOut(animationSpec = tween(350)),
+                exit = fadeOut(animationSpec = tween(400)) + scaleOut(targetScale = 1.08f, animationSpec = tween(400)),
             ) {
                 BruTvSplashScreen(isTv = isTv)
             }
@@ -1558,19 +1565,56 @@ private fun BrandMark(compact: Boolean = false) {
 
 @Composable
 private fun BruTvSplashScreen(isTv: Boolean) {
+    val infiniteTransition = rememberInfiniteTransition(label = "splash")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.88f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowAlpha"
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Canvas),
         contentAlignment = Alignment.Center,
     ) {
+        // Ambient breathing background glow
+        Box(
+            modifier = Modifier
+                .size(if (isTv) 340.dp else 260.dp)
+                .graphicsLayer {
+                    scaleX = pulse
+                    scaleY = pulse
+                    alpha = glowAlpha
+                }
+                .clip(CircleShape)
+                .background(
+                    androidx.compose.ui.graphics.Brush.radialGradient(
+                        listOf(Aqua, Color.Transparent)
+                    )
+                )
+        )
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(if (isTv) 20.dp else 16.dp),
         ) {
             Box(
                 modifier = Modifier
-                    .size(if (isTv) 80.dp else 68.dp)
+                    .size(if (isTv) 84.dp else 72.dp)
                     .clip(RoundedCornerShape(if (isTv) 24.dp else 20.dp))
                     .background(
                         Brush.linearGradient(

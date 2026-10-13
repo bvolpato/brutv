@@ -40,10 +40,15 @@ public struct AppRootView: View {
 
             if showSplash {
                 BruTVSplashScreen()
-                    .transition(.opacity)
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity,
+                            removal: .scale(scale: 1.08).combined(with: .opacity)
+                        )
+                    )
                     .zIndex(100)
                     .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.2)) {
+                        withAnimation(.easeOut(duration: 0.25)) {
                             showSplash = false
                         }
                     }
@@ -76,8 +81,8 @@ public struct AppRootView: View {
         }
         #endif
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_400_000_000)
-            withAnimation(.easeInOut(duration: 0.35)) {
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            withAnimation(.easeInOut(duration: 0.4)) {
                 showSplash = false
             }
         }
@@ -121,17 +126,35 @@ public struct AppRootView: View {
 }
 
 public struct BruTVSplashScreen: View {
+    @State private var hasAppeared = false
+    @State private var pulseGlow = false
+    @State private var shimmerOffset: CGFloat = -150
+
     public init() {}
 
     public var body: some View {
         ZStack {
-            Color(hex: "#090D16")
+            Color(hex: "#080B11")
                 .ignoresSafeArea()
 
-            VStack(spacing: 16) {
-                // Gradient badge with Play arrow matching Android & app icon
+            // Ambient breathing background glow
+            RadialGradient(
+                gradient: Gradient(colors: [
+                    Color(hex: "#55E2D1").opacity(pulseGlow ? 0.22 : 0.08),
+                    Color(hex: "#167E74").opacity(pulseGlow ? 0.09 : 0.02),
+                    Color.clear
+                ]),
+                center: .center,
+                startRadius: 8,
+                endRadius: pulseGlow ? 250 : 160
+            )
+            .ignoresSafeArea()
+            .scaleEffect(hasAppeared ? 1.0 : 0.8)
+
+            VStack(spacing: 20) {
+                // Gradient badge with Play arrow & shimmer
                 ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [Color(hex: "#55E2D1"), Color(hex: "#167E74")],
@@ -139,31 +162,77 @@ public struct BruTVSplashScreen: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 76, height: 76)
-                        .shadow(color: Color(hex: "#55E2D1").opacity(0.35), radius: 18, x: 0, y: 8)
+                        .frame(width: 84, height: 84)
+                        .shadow(
+                            color: Color(hex: "#55E2D1").opacity(pulseGlow ? 0.55 : 0.28),
+                            radius: pulseGlow ? 26 : 14,
+                            x: 0,
+                            y: 8
+                        )
+
+                    // Sweeping light highlight
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0),
+                                    Color.white.opacity(0.35),
+                                    Color.white.opacity(0)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: 44, height: 84)
+                        .rotationEffect(.degrees(25))
+                        .offset(x: shimmerOffset)
+                        .mask(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .frame(width: 84, height: 84)
+                        )
 
                     Image(systemName: "play.fill")
-                        .font(.system(size: 38, weight: .bold))
+                        .font(.system(size: 42, weight: .bold))
                         .foregroundColor(Color(hex: "#06201F"))
-                        .offset(x: 2)
+                        .offset(x: 3)
+                }
+                .scaleEffect(hasAppeared ? 1.0 : 0.7)
+                .opacity(hasAppeared ? 1.0 : 0.0)
+
+                VStack(spacing: 6) {
+                    Text("BruTV")
+                        .font(.system(size: 38, weight: .heavy, design: .rounded))
+                        .foregroundColor(.white)
+                        .tracking(-0.6)
+                        .scaleEffect(hasAppeared ? 1.0 : 0.92)
+                        .opacity(hasAppeared ? 1.0 : 0.0)
+
+                    Text("IPTV that just works.")
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundColor(Color(hex: "#55E2D1"))
+                        .opacity(hasAppeared ? 1.0 : 0.0)
+                        .offset(y: hasAppeared ? 0 : 8)
                 }
 
-                Text("BruTV")
-                    .font(.system(size: 34, weight: .heavy, design: .rounded))
-                    .foregroundColor(.white)
-                    .tracking(-0.5)
-
-                Text("IPTV that just works.")
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundColor(Color(hex: "#55E2D1"))
-
-                Spacer().frame(height: 12)
+                Spacer().frame(height: 10)
 
                 ProgressView()
                     .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#55E2D1")))
-                    .scaleEffect(1.1)
+                    .scaleEffect(1.05)
+                    .opacity(hasAppeared ? 0.9 : 0.0)
             }
         }
         .accessibilityIdentifier("splashScreen")
+        .onAppear {
+            withAnimation(.spring(response: 0.65, dampingFraction: 0.72)) {
+                hasAppeared = true
+            }
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                pulseGlow = true
+            }
+            withAnimation(.easeInOut(duration: 1.1).delay(0.25)) {
+                shimmerOffset = 150
+            }
+        }
     }
 }

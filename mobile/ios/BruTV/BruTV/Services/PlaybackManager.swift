@@ -304,6 +304,10 @@ public final class PlaybackManager: ObservableObject {
     /// provider's HLS directly.
     private func startLive(url: URL) {
         providerURL = url
+        guard !url.isFileURL else {
+            prepareAndPlay(url: url)
+            return
+        }
         if settings.preferredFormat == .ts, let relayURL = TransportStreamRelayPolicy.relayURL(for: url) {
             startRelayedLivePlayback(relayURL: relayURL, fallbackURL: url)
         } else if settings.liveRewind {
