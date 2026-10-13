@@ -45,8 +45,10 @@ public struct VideoPlayerContainer: UIViewRepresentable {
     }
 
     public static func dismantleUIView(_ view: PlayerLayerView, coordinator: ()) {
-        view.allowsPictureInPicture = false
         view.player = nil
+        DispatchQueue.main.async {
+            view.allowsPictureInPicture = false
+        }
     }
 
     private func update(_ view: PlayerLayerView) {
@@ -88,7 +90,10 @@ public final class PictureInPictureModel: NSObject, ObservableObject, AVPictureI
         self.controller = controller
         possibleObservation = controller?.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
             let possible = controller.isPictureInPicturePossible
-            Task { @MainActor in self?.isPossible = possible }
+            Task { @MainActor in
+                guard let self, self.isPossible != possible else { return }
+                self.isPossible = possible
+            }
         }
     }
 
@@ -97,8 +102,11 @@ public final class PictureInPictureModel: NSObject, ObservableObject, AVPictureI
         if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
         possibleObservation = nil
         self.controller = nil
-        isPossible = false
-        isActive = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.controller == nil else { return }
+            if self.isPossible { self.isPossible = false }
+            if self.isActive { self.isActive = false }
+        }
     }
 
     public func toggle() {
