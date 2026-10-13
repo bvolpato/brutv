@@ -11,6 +11,7 @@ public struct LoginQRCodeView: View {
     public let link: LoginLink
     public let title: String
 
+    @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
 
@@ -27,7 +28,7 @@ public struct LoginQRCodeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    Text("Scan with the Camera app on iPhone or iPad. BruTV opens and signs in.")
+                    Text("Scan with the Camera app on iPhone or iPad. BruTV opens and signs in.".localized)
                         .font(.system(size: 14))
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
@@ -42,7 +43,7 @@ public struct LoginQRCodeView: View {
                             .background(Color.white)
                             .cornerRadius(16)
                             .frame(maxWidth: 320)
-                            .accessibilityLabel("Sign-in QR code")
+                            .accessibilityLabel("Sign-in QR code".localized)
                             .accessibilityIdentifier("loginQRCode")
                     }
 
@@ -61,9 +62,9 @@ public struct LoginQRCodeView: View {
                         if let qrImage {
                             ShareLink(
                                 item: Image(uiImage: qrImage),
-                                preview: SharePreview("BruTV sign-in for \(title)", image: Image(uiImage: qrImage))
+                                preview: SharePreview(String(format: "BruTV sign-in for %@".localized, title), image: Image(uiImage: qrImage))
                             ) {
-                                Label("Share QR", systemImage: "square.and.arrow.up")
+                                Label("Share QR".localized, systemImage: "square.and.arrow.up")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -74,7 +75,7 @@ public struct LoginQRCodeView: View {
                             UIPasteboard.general.string = link.url.absoluteString
                             copied = true
                         } label: {
-                            Label(copied ? "Copied" : "Copy Link", systemImage: copied ? "checkmark" : "link")
+                            Label(copied ? "Copied".localized : "Copy Link".localized, systemImage: copied ? "checkmark" : "link")
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.bordered)
@@ -84,7 +85,7 @@ public struct LoginQRCodeView: View {
                     .frame(maxWidth: 360)
 
                     Label {
-                        Text("This code contains the password. Share it only with people you trust. Anyone with it can use this subscription.")
+                        Text("This code contains the password. Share it only with people you trust. Anyone with it can use this subscription.".localized)
                     } icon: {
                         Image(systemName: "exclamationmark.shield.fill")
                             .foregroundColor(.orange)
@@ -100,12 +101,12 @@ public struct LoginQRCodeView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color(white: 0.04).ignoresSafeArea())
-            .navigationTitle("Sign-In QR Code")
+            .navigationTitle("Sign-In QR Code".localized)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button { dismiss() } label: {
-                        Label("Done", systemImage: "checkmark")
+                        Label("Done".localized, systemImage: "checkmark")
                     }
                 }
             }
@@ -158,6 +159,7 @@ enum LoginQRDecoder {
 public struct LoginQRScannerView: View {
     public let onLink: (LoginLink) -> Void
 
+    @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var cameraState: CameraState = .checking
     @State private var photoItem: PhotosPickerItem?
@@ -185,10 +187,10 @@ public struct LoginQRScannerView: View {
                     case .checking:
                         ProgressView().tint(.cyan)
                     case .denied:
-                        cameraMessage("Camera access is off for BruTV.", systemImage: "camera.fill",
-                                      action: ("Open Settings", openSettings))
+                        cameraMessage("Camera access is off for BruTV.".localized, systemImage: "camera.fill",
+                                      action: ("Open Settings".localized, openSettings))
                     case .unavailable:
-                        cameraMessage("No camera is available. Choose a photo of the QR code instead.",
+                        cameraMessage("No camera is available. Choose a photo of the QR code instead.".localized,
                                       systemImage: "camera.metering.unknown", action: nil)
                     }
                 }
@@ -196,20 +198,20 @@ public struct LoginQRScannerView: View {
                 .frame(maxWidth: 420)
                 .accessibilityIdentifier("qrScannerPreview")
 
-                Text("Point the camera at a BruTV sign-in QR code.")
+                Text("Point the camera at a BruTV sign-in QR code.".localized)
                     .font(.system(size: 14))
                     .foregroundColor(.gray)
                     .multilineTextAlignment(.center)
 
                 if let message {
-                    Label(message, systemImage: "exclamationmark.circle.fill")
+                    Label(message.localized, systemImage: "exclamationmark.circle.fill")
                         .font(.system(size: 13))
                         .foregroundColor(.orange)
                         .accessibilityIdentifier("qrScannerMessage")
                 }
 
                 PhotosPicker(selection: $photoItem, matching: .images) {
-                    Label("Choose Photo", systemImage: "photo.on.rectangle")
+                    Label("Choose Photo".localized, systemImage: "photo.on.rectangle")
                         .frame(maxWidth: 320)
                 }
                 .buttonStyle(.bordered)
@@ -220,11 +222,11 @@ public struct LoginQRScannerView: View {
             }
             .padding(20)
             .background(Color(white: 0.04).ignoresSafeArea())
-            .navigationTitle("Scan QR Code")
+            .navigationTitle("Scan QR Code".localized)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel".localized) { dismiss() }
                         .accessibilityIdentifier("qrScannerCancel")
                 }
             }
@@ -274,11 +276,11 @@ public struct LoginQRScannerView: View {
         defer { photoItem = nil }
         guard let data = try? await item.loadTransferable(type: Data.self),
               let image = UIImage(data: data)?.cgImage else {
-            message = "That photo could not be opened."
+            message = "That photo could not be opened.".localized
             return
         }
         guard let link = LoginQRDecoder.link(in: image) else {
-            message = "No BruTV QR code was found in that photo."
+            message = "No BruTV QR code was found in that photo.".localized
             return
         }
         finish(with: link)
@@ -286,7 +288,7 @@ public struct LoginQRScannerView: View {
 
     private func handle(code: String) {
         guard let link = LoginLink(pasted: code) else {
-            message = "This QR code is not a BruTV sign-in code."
+            message = "This QR code is not a BruTV sign-in code.".localized
             return
         }
         finish(with: link)

@@ -371,8 +371,8 @@ public struct PlayerView: View {
                 .frame(width: 38, height: 38)
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel(playback.currentVOD != nil ? "Back" : "Back to Channels")
-        .help(playback.currentVOD != nil ? "Stop playback and return" : "Stop playback and return to channels")
+        .accessibilityLabel((playback.currentVOD != nil ? "Back" : "Back to Channels").localized)
+        .help((playback.currentVOD != nil ? "Stop playback and return" : "Stop playback and return to channels").localized)
         .accessibilityIdentifier("playerBackButton")
     }
 
@@ -385,8 +385,8 @@ public struct PlayerView: View {
                 .frame(width: 38, height: 38)
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Minimize")
-        .help("Keep playing in the mini player")
+        .accessibilityLabel("Minimize".localized)
+        .help("Keep playing in the mini player".localized)
         .accessibilityIdentifier("playerMinimizeButton")
     }
 
@@ -399,8 +399,8 @@ public struct PlayerView: View {
                 .frame(width: 38, height: 38)
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Close Player")
-        .help("Close player and stop playback")
+        .accessibilityLabel("Close Player".localized)
+        .help("Close player and stop playback".localized)
         .accessibilityIdentifier("playerCloseButton")
     }
 
@@ -435,7 +435,7 @@ public struct PlayerView: View {
                     Circle()
                         .fill(Color.red)
                         .frame(width: 5, height: 5)
-                    Text(playback.shouldShowGoLive ? "DELAYED" : "LIVE")
+                    Text(playback.shouldShowGoLive ? "DELAYED".localized : "LIVE".localized)
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
                 }
@@ -452,7 +452,7 @@ public struct PlayerView: View {
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Color.cyan))
             } else if let vod = playback.currentVOD {
-                Text(vod.streamType == "series" ? "SERIES" : "MOVIE")
+                Text(vod.streamType == "series" ? "SERIES".localized : "MOVIE".localized)
                     .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.black)
                     .fixedSize()
@@ -512,7 +512,7 @@ public struct PlayerView: View {
                         formatTime(seconds)
                     }
                 )
-                .accessibilityLabel("Playback progress scrubber")
+                .accessibilityLabel("Playback progress scrubber".localized)
                 .accessibilityIdentifier("vodTimelineScrubber")
 
                 Text(formatTime(playback.vodDuration))
@@ -624,7 +624,7 @@ public struct PlayerView: View {
                 .font(.system(size: 16, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Rewind 10 seconds")
+        .accessibilityLabel("Rewind 10 seconds".localized)
     }
 
     private var vodForwardButton: some View {
@@ -636,7 +636,7 @@ public struct PlayerView: View {
                 .font(.system(size: 16, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Fast forward 10 seconds")
+        .accessibilityLabel("Fast forward 10 seconds".localized)
     }
 
     private var playPauseButton: some View {
@@ -648,8 +648,8 @@ public struct PlayerView: View {
                 .font(.system(size: 20, weight: .bold))
         }
         .buttonStyle(MediaControlButtonStyle(isPrimary: true, isCircular: true, size: 48))
-        .accessibilityLabel(playback.isPlaybackRequested ? "Pause" : "Play")
-        .help(playback.isPlaybackRequested ? "Pause playback" : "Resume playback")
+        .accessibilityLabel(playback.isPlaybackRequested ? "Pause".localized : "Play".localized)
+        .help(playback.isPlaybackRequested ? "Pause playback".localized : "Resume playback".localized)
         .accessibilityIdentifier("playerPlayPauseButton")
     }
 
@@ -662,8 +662,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Previous Channel")
-        .help("Previous channel")
+        .accessibilityLabel("Previous Channel".localized)
+        .help("Previous channel".localized)
         .accessibilityIdentifier("playerPrevButton")
     }
 
@@ -676,8 +676,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Next Channel")
-        .help("Next channel")
+        .accessibilityLabel("Next Channel".localized)
+        .help("Next channel".localized)
         .accessibilityIdentifier("playerNextButton")
     }
 
@@ -691,8 +691,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: showGuideDrawer, isCircular: true, size: 38))
-        .accessibilityLabel("Channel Guide")
-        .help("Browse channels")
+        .accessibilityLabel("Channel Guide".localized)
+        .help("Browse channels".localized)
         .accessibilityIdentifier("playerGuideButton")
     }
 
@@ -744,8 +744,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: playback.selectedSubtitleID != nil, isCircular: true, size: 38))
-        .accessibilityLabel("Audio and Subtitles")
-        .help("Select audio language and subtitles")
+        .accessibilityLabel("Audio & Subtitles".localized)
+        .help("Select audio language and subtitles".localized)
     }
 
     private var moreOptionsMenu: some View {
@@ -756,21 +756,21 @@ public struct PlayerView: View {
                         playback.aspectRatio = ratio
                     } label: {
                         if playback.aspectRatio == ratio {
-                            Label(ratio.displayName, systemImage: "checkmark")
+                            Label(ratio.displayName.localized, systemImage: "checkmark")
                         } else {
-                            Text(ratio.displayName)
+                            Text(ratio.displayName.localized)
                         }
                     }
                 }
             } label: {
-                Label("Aspect: \(playback.aspectRatio.displayName)", systemImage: "aspectratio")
+                Label("\("Aspect".localized): \(playback.aspectRatio.displayName.localized)", systemImage: "aspectratio")
             }
 
             Section {
                 Button {
                     playback.settings.showStatsHUD.toggle()
                 } label: {
-                    Label(playback.settings.showStatsHUD ? "Hide Stream Stats" : "Show Stream Stats",
+                    Label(playback.settings.showStatsHUD ? "Hide Stream Stats".localized : "Show Stream Stats".localized,
                           systemImage: playback.settings.showStatsHUD ? "gauge.with.needle.fill" : "gauge.with.needle")
                 }
 
@@ -778,7 +778,7 @@ public struct PlayerView: View {
                     Button {
                         pictureInPicture.toggle()
                     } label: {
-                        Label(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                        Label(pictureInPicture.isActive ? "Exit Picture in Picture".localized : "Picture in Picture".localized,
                               systemImage: pictureInPicture.isActive ? "pip.exit" : "pip.enter")
                     }
                     .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
@@ -788,7 +788,7 @@ public struct PlayerView: View {
                 Button {
                     toggleMacFullScreen()
                 } label: {
-                    Label(MacWindowFullScreen.isActive ? "Exit Full Screen" : "Enter Full Screen",
+                    Label(MacWindowFullScreen.isActive ? "Exit Full Screen".localized : "Enter Full Screen".localized,
                           systemImage: MacWindowFullScreen.isActive ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                 }
                 #endif
@@ -798,7 +798,7 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .bold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD, isCircular: true, size: 38))
-        .accessibilityLabel("More Options")
+        .accessibilityLabel("More Options".localized)
         .accessibilityIdentifier("playerMoreOptionsButton")
     }
 
@@ -811,9 +811,9 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .accessibilityLabel("Change Aspect Ratio")
-        .accessibilityValue(playback.aspectRatio.displayName)
-        .help("Aspect ratio: \(playback.aspectRatio.displayName)")
+        .accessibilityLabel("Change Aspect Ratio".localized)
+        .accessibilityValue(playback.aspectRatio.displayName.localized)
+        .help("\("Aspect ratio".localized): \(playback.aspectRatio.displayName.localized)")
     }
 
     private var muteButton: some View {
@@ -825,8 +825,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: playback.isMuted, isCircular: true, size: 38))
-        .accessibilityLabel(playback.isMuted ? "Unmute" : "Mute")
-        .help(playback.isMuted ? "Unmute audio" : "Mute audio")
+        .accessibilityLabel(playback.isMuted ? "Unmute".localized : "Mute".localized)
+        .help(playback.isMuted ? "Unmute audio".localized : "Mute audio".localized)
         .accessibilityIdentifier("playerMuteButton")
     }
 
@@ -839,8 +839,8 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD, isCircular: true, size: 38))
-        .accessibilityLabel(playback.settings.showStatsHUD ? "Hide Stream Stats" : "Show Stream Stats")
-        .help("Show or hide stream telemetry")
+        .accessibilityLabel(playback.settings.showStatsHUD ? "Hide Stream Stats".localized : "Show Stream Stats".localized)
+        .help("Show or hide stream telemetry".localized)
     }
 
     private var pipButton: some View {
@@ -853,8 +853,8 @@ public struct PlayerView: View {
         }
         .buttonStyle(MediaControlButtonStyle(isActive: pictureInPicture.isActive, isCircular: true, size: 38))
         .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
-        .accessibilityLabel(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture")
-        .help("Picture in Picture")
+        .accessibilityLabel(pictureInPicture.isActive ? "Exit Picture in Picture".localized : "Picture in Picture".localized)
+        .help("Picture in Picture".localized)
         .accessibilityIdentifier("playerPiPButton")
     }
 
@@ -868,14 +868,14 @@ public struct PlayerView: View {
                 .font(.system(size: 15, weight: .semibold))
         }
         .buttonStyle(MediaControlButtonStyle(isActive: MacWindowFullScreen.isActive, isCircular: true, size: 38))
-        .accessibilityLabel(MacWindowFullScreen.isActive ? "Exit Full Screen" : "Enter Full Screen")
-        .help("Full Screen")
+        .accessibilityLabel(MacWindowFullScreen.isActive ? "Exit Full Screen".localized : "Enter Full Screen".localized)
+        .help("Full Screen".localized)
     }
     #endif
 
     private var compactBufferIndicator: some View {
         HStack(spacing: 6) {
-            Text("Buffer \(playback.telemetry.bufferDurationFormatted)")
+            Text("\("Buffer".localized) \(playback.telemetry.bufferDurationFormatted)")
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundColor(.white.opacity(0.6))
                 .lineLimit(1)
@@ -923,13 +923,13 @@ public struct PlayerView: View {
                         formatTime: { targetTime in
                             let diff = playback.liveSeekEnd - targetTime
                             if diff < 2.0 {
-                                return "LIVE"
+                                return "LIVE".localized
                             } else {
                                 return "-" + formatTime(diff)
                             }
                         }
                     )
-                    .accessibilityLabel("Live rewind position")
+                    .accessibilityLabel("Live rewind position".localized)
                     .accessibilityIdentifier("playerLiveSeekSlider")
 
                     HStack(spacing: 8) {
@@ -941,7 +941,7 @@ public struct PlayerView: View {
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
-                        .accessibilityLabel("Rewind 10 seconds")
+                        .accessibilityLabel("Rewind 10 seconds".localized)
 
                         Button {
                             playback.seekLive(by: 10)
@@ -951,7 +951,7 @@ public struct PlayerView: View {
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
-                        .accessibilityLabel("Forward 10 seconds")
+                        .accessibilityLabel("Forward 10 seconds".localized)
 
                         Spacer()
 
@@ -962,7 +962,7 @@ public struct PlayerView: View {
                             } label: {
                                 HStack(spacing: 4) {
                                     Circle().fill(Color.red).frame(width: 5, height: 5)
-                                    Text("GO LIVE")
+                                    Text("GO LIVE".localized)
                                         .font(.system(size: 10, weight: .bold))
                                 }
                                 .padding(.horizontal, 8)

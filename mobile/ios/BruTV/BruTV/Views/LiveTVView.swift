@@ -55,7 +55,7 @@ public struct LiveTVView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search".localized)
-                        .accessibilityHint("Removes the channel search text.")
+                        .accessibilityHint("Removes the channel search text.".localized)
                     }
                 }
                 .padding(.horizontal, 14)

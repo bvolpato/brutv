@@ -93,13 +93,13 @@ public struct SettingsView: View {
             ) {
                 Picker("Buffer Profile".localized, selection: $playback.settings.bufferProfile) {
                     ForEach(BufferProfile.allCases) { profile in
-                        Text(profile.title).tag(profile)
+                        Text(profile.title.localized).tag(profile)
                     }
                 }
 
                 Picker("Stream Protocol".localized, selection: $playback.settings.preferredFormat) {
                     ForEach(StreamFormatPreference.allCases) { fmt in
-                        Text(fmt.displayName).tag(fmt)
+                        Text(fmt.displayName.localized).tag(fmt)
                     }
                 }
 

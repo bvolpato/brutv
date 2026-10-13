@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct AppRootView: View {
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var isSigningInFromLink = false
     @State private var linkError: String?
@@ -29,7 +30,7 @@ public struct AppRootView: View {
                     ProgressView()
                         .tint(.cyan)
                         .scaleEffect(1.4)
-                    Text("Signing in to BruTV...")
+                    Text("Signing in to BruTV...".localized)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
                 }
@@ -63,12 +64,12 @@ public struct AppRootView: View {
             handle(url: url)
         }
         .alert(
-            "Could not sign in",
+            "Could not sign in".localized,
             isPresented: Binding(get: { linkError != nil }, set: { if !$0 { linkError = nil } })
         ) {
-            Button("OK", role: .cancel) {}
+            Button("OK".localized, role: .cancel) {}
         } message: {
-            Text(linkError ?? "")
+            Text(linkError?.localized ?? "")
         }
     }
 
@@ -126,6 +127,7 @@ public struct AppRootView: View {
 }
 
 public struct BruTVSplashScreen: View {
+    @ObservedObject private var localization = LocalizationManager.shared
     @State private var hasAppeared = false
     @State private var pulseGlow = false
     @State private var shimmerOffset: CGFloat = -150
@@ -207,7 +209,7 @@ public struct BruTVSplashScreen: View {
                         .scaleEffect(hasAppeared ? 1.0 : 0.92)
                         .opacity(hasAppeared ? 1.0 : 0.0)
 
-                    Text("IPTV that just works.")
+                    Text("IPTV that just works.".localized)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundColor(Color(hex: "#55E2D1"))
                         .opacity(hasAppeared ? 1.0 : 0.0)
