@@ -347,27 +347,16 @@ public struct PlayerView: View {
     }
 
     private var topControlsBar: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                backToChannelsButton
-                channelTitle.fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 16)
-                minimizeButton
-                closeButton
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    backToChannelsButton
-                    Spacer(minLength: 8)
-                    minimizeButton
-                    closeButton
-                }
-                channelTitle
-            }
+        HStack(spacing: 10) {
+            backToChannelsButton
+            channelTitle
+            Spacer(minLength: 8)
+            minimizeButton
+            closeButton
         }
         .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 24)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
         .background(
             LinearGradient(
                 colors: [Color.black.opacity(0.85), Color.clear],
@@ -381,13 +370,12 @@ public struct PlayerView: View {
         Button {
             dismissPlayer(stop: true)
         } label: {
-            Label(playback.currentVOD != nil ? "Back" : "Channels", systemImage: "chevron.left")
-                .font(.system(size: 14, weight: .semibold))
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.horizontal, 12)
+            Image(systemName: "chevron.left")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 38, height: 38)
         }
-        .buttonStyle(MediaControlButtonStyle())
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
+        .accessibilityLabel(playback.currentVOD != nil ? "Back" : "Back to Channels")
         .help(playback.currentVOD != nil ? "Stop playback and return" : "Stop playback and return to channels")
         .accessibilityIdentifier("playerBackButton")
     }
@@ -397,9 +385,10 @@ public struct PlayerView: View {
             dismissPlayer(stop: false)
         } label: {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 38)
         }
-        .buttonStyle(MediaControlButtonStyle())
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Minimize")
         .help("Keep playing in the mini player")
         .accessibilityIdentifier("playerMinimizeButton")
@@ -410,36 +399,37 @@ public struct PlayerView: View {
             dismissPlayer(stop: true)
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 15, weight: .bold))
+                .frame(width: 38, height: 38)
         }
-        .buttonStyle(MediaControlButtonStyle())
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Close Player")
         .help("Close player and stop playback")
         .accessibilityIdentifier("playerCloseButton")
     }
 
     private var channelTitle: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if let stream = playback.currentStream {
                 CachedAsyncImage(url: stream.iconURL) {
                     Image(systemName: "tv")
-                        .font(.system(size: 16))
+                        .font(.system(size: 14))
                         .foregroundColor(.cyan)
                 }
-                .frame(width: 32, height: 32)
+                .frame(width: 30, height: 30)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.1)))
             } else if let vod = playback.currentVOD {
                 CachedAsyncImage(url: vod.iconURL) {
                     Image(systemName: vod.streamType == "series" ? "play.tv" : "film")
-                        .font(.system(size: 16))
+                        .font(.system(size: 14))
                         .foregroundColor(.cyan)
                 }
-                .frame(width: 32, height: 32)
+                .frame(width: 30, height: 30)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.1)))
             }
 
             Text(streamName)
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(size: 15, weight: .bold))
                 .foregroundColor(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -448,30 +438,30 @@ public struct PlayerView: View {
                 HStack(spacing: 4) {
                     Circle()
                         .fill(Color.red)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 5, height: 5)
                     Text(playback.shouldShowGoLive ? "DELAYED" : "LIVE")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.white)
                 }
                 .fixedSize()
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
                 .background(Capsule().fill(Color.red.opacity(0.3)))
 
                 Text(qualityBadgeText)
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.black)
                     .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
                     .background(Capsule().fill(Color.cyan))
             } else if let vod = playback.currentVOD {
                 Text(vod.streamType == "series" ? "SERIES" : "MOVIE")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundColor(.black)
                     .fixedSize()
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
                     .background(Capsule().fill(Color.cyan))
             }
         }
@@ -499,13 +489,13 @@ public struct PlayerView: View {
     }
 
     private var vodControlsDeck: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             // Scrubber Row
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Text(formatTime(isScrubbing ? scrubTime : playback.vodCurrentTime))
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.85))
-                    .frame(minWidth: 48, alignment: .leading)
+                    .frame(minWidth: 44, alignment: .leading)
 
                 Slider(
                     value: Binding(
@@ -524,23 +514,22 @@ public struct PlayerView: View {
                 .tint(.cyan)
 
                 Text(formatTime(playback.vodDuration))
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.85))
-                    .frame(minWidth: 48, alignment: .trailing)
+                    .frame(minWidth: 44, alignment: .trailing)
             }
 
             // Buttons Row
-            HStack(spacing: 12) {
+            HStack(spacing: 0) {
                 // Left group
                 HStack(spacing: 8) {
                     audioSubtitleMenu
-                    aspectRatioButton
                 }
 
                 Spacer(minLength: 8)
 
                 // Center playback group
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     vodRewindButton
                     playPauseButton
                     vodForwardButton
@@ -551,21 +540,15 @@ public struct PlayerView: View {
                 // Right group
                 HStack(spacing: 8) {
                     muteButton
-                    if PictureInPictureModel.isSupported {
-                        pipButton
-                    }
-                    statsButton
-                    #if targetEnvironment(macCatalyst)
-                    fullscreenButton
-                    #endif
+                    moreOptionsMenu
                 }
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.88))
+                .fill(Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.90))
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(.ultraThinMaterial)
@@ -576,27 +559,26 @@ public struct PlayerView: View {
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.5), radius: 18, x: 0, y: 6)
-        .frame(maxWidth: 620)
+        .frame(maxWidth: 580)
     }
 
     private var liveControlsDeck: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             if playback.settings.liveRewind {
                 liveTimeshiftControls
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 0) {
                 // Left group
                 HStack(spacing: 8) {
                     guideButton
                     audioSubtitleMenu
-                    aspectRatioButton
                 }
 
                 Spacer(minLength: 8)
 
                 // Center playback group
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     prevChannelButton
                     playPauseButton
                     nextChannelButton
@@ -607,23 +589,17 @@ public struct PlayerView: View {
                 // Right group
                 HStack(spacing: 8) {
                     muteButton
-                    if PictureInPictureModel.isSupported {
-                        pipButton
-                    }
-                    statsButton
-                    #if targetEnvironment(macCatalyst)
-                    fullscreenButton
-                    #endif
+                    moreOptionsMenu
                 }
             }
 
             compactBufferIndicator
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.88))
+                .fill(Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.90))
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(.ultraThinMaterial)
@@ -634,7 +610,7 @@ public struct PlayerView: View {
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.5), radius: 18, x: 0, y: 6)
-        .frame(maxWidth: 620)
+        .frame(maxWidth: 580)
     }
 
     private var vodRewindButton: some View {
@@ -643,10 +619,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "gobackward.10")
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 16, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Rewind 10 seconds")
     }
 
@@ -656,10 +631,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "goforward.10")
-                .font(.system(size: 20, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 16, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Fast forward 10 seconds")
     }
 
@@ -669,10 +643,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: playback.isPlaybackRequested ? "pause.fill" : "play.fill")
-                .font(.system(size: 24, weight: .bold))
-                .frame(width: 54, height: 54)
+                .font(.system(size: 20, weight: .bold))
         }
-        .buttonStyle(MediaControlButtonStyle(isPrimary: true, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isPrimary: true, isCircular: true, size: 48))
         .accessibilityLabel(playback.isPlaybackRequested ? "Pause" : "Play")
         .help(playback.isPlaybackRequested ? "Pause playback" : "Resume playback")
         .accessibilityIdentifier("playerPlayPauseButton")
@@ -684,10 +657,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "backward.end.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Previous Channel")
         .help("Previous channel")
         .accessibilityIdentifier("playerPrevButton")
@@ -699,10 +671,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "forward.end.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Next Channel")
         .help("Next channel")
         .accessibilityIdentifier("playerNextButton")
@@ -715,10 +686,9 @@ public struct PlayerView: View {
             }
         } label: {
             Image(systemName: "list.bullet.rectangle")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: showGuideDrawer, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: showGuideDrawer, isCircular: true, size: 38))
         .accessibilityLabel("Channel Guide")
         .help("Browse channels")
         .accessibilityIdentifier("playerGuideButton")
@@ -769,12 +739,65 @@ public struct PlayerView: View {
             }
         } label: {
             Image(systemName: "captions.bubble.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: playback.selectedSubtitleID != nil, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: playback.selectedSubtitleID != nil, isCircular: true, size: 38))
         .accessibilityLabel("Audio and Subtitles")
         .help("Select audio language and subtitles")
+    }
+
+    private var moreOptionsMenu: some View {
+        Menu {
+            Menu {
+                ForEach(VideoAspectRatio.allCases) { ratio in
+                    Button {
+                        playback.aspectRatio = ratio
+                    } label: {
+                        if playback.aspectRatio == ratio {
+                            Label(ratio.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(ratio.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Label("Aspect: \(playback.aspectRatio.displayName)", systemImage: "aspectratio")
+            }
+
+            Section {
+                Button {
+                    playback.settings.showStatsHUD.toggle()
+                } label: {
+                    Label(playback.settings.showStatsHUD ? "Hide Stream Stats" : "Show Stream Stats",
+                          systemImage: playback.settings.showStatsHUD ? "gauge.with.needle.fill" : "gauge.with.needle")
+                }
+
+                if PictureInPictureModel.isSupported {
+                    Button {
+                        pictureInPicture.toggle()
+                    } label: {
+                        Label(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                              systemImage: pictureInPicture.isActive ? "pip.exit" : "pip.enter")
+                    }
+                    .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+                }
+
+                #if targetEnvironment(macCatalyst)
+                Button {
+                    toggleMacFullScreen()
+                } label: {
+                    Label(MacWindowFullScreen.isActive ? "Exit Full Screen" : "Enter Full Screen",
+                          systemImage: MacWindowFullScreen.isActive ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                }
+                #endif
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+        }
+        .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD, isCircular: true, size: 38))
+        .accessibilityLabel("More Options")
+        .accessibilityIdentifier("playerMoreOptionsButton")
     }
 
     private var aspectRatioButton: some View {
@@ -783,10 +806,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "aspectratio")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
         .accessibilityLabel("Change Aspect Ratio")
         .accessibilityValue(playback.aspectRatio.displayName)
         .help("Aspect ratio: \(playback.aspectRatio.displayName)")
@@ -798,10 +820,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: playback.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: playback.isMuted, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: playback.isMuted, isCircular: true, size: 38))
         .accessibilityLabel(playback.isMuted ? "Unmute" : "Mute")
         .help(playback.isMuted ? "Unmute audio" : "Mute audio")
         .accessibilityIdentifier("playerMuteButton")
@@ -813,10 +834,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: "gauge.with.needle")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: playback.settings.showStatsHUD, isCircular: true, size: 38))
         .accessibilityLabel(playback.settings.showStatsHUD ? "Hide Stream Stats" : "Show Stream Stats")
         .help("Show or hide stream telemetry")
     }
@@ -827,10 +847,9 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: pictureInPicture.isActive ? "pip.exit" : "pip.enter")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: pictureInPicture.isActive, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: pictureInPicture.isActive, isCircular: true, size: 38))
         .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
         .accessibilityLabel(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture")
         .help("Picture in Picture")
@@ -844,91 +863,114 @@ public struct PlayerView: View {
             scheduleControlsAutoHide()
         } label: {
             Image(systemName: MacWindowFullScreen.isActive ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 44, height: 44)
+                .font(.system(size: 15, weight: .semibold))
         }
-        .buttonStyle(MediaControlButtonStyle(isActive: MacWindowFullScreen.isActive, isCircular: true))
+        .buttonStyle(MediaControlButtonStyle(isActive: MacWindowFullScreen.isActive, isCircular: true, size: 38))
         .accessibilityLabel(MacWindowFullScreen.isActive ? "Exit Full Screen" : "Enter Full Screen")
         .help("Full Screen")
     }
     #endif
 
     private var compactBufferIndicator: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text("Buffer \(playback.telemetry.bufferDurationFormatted)")
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundColor(.white.opacity(0.6))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.12))
-                    Capsule()
-                        .fill(playback.telemetry.bufferDuration >= 3.0 ? Color.green : (playback.telemetry.bufferDuration >= 1.0 ? Color.yellow : Color.orange))
-                        .frame(width: min(geo.size.width, geo.size.width * CGFloat(playback.telemetry.bufferDuration / 10.0)))
-                }
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .overlay(
+                    GeometryReader { geo in
+                        Capsule()
+                            .fill(playback.telemetry.bufferDuration >= 3.0 ? Color.green : (playback.telemetry.bufferDuration >= 1.0 ? Color.yellow : Color.orange))
+                            .frame(width: min(geo.size.width, max(2, geo.size.width * CGFloat(min(1.0, playback.telemetry.bufferDuration / 10.0)))))
+                    }
+                )
+                .frame(height: 3)
+
+            if !playback.telemetry.observedBitrateFormatted.isEmpty {
+                Text(playback.telemetry.observedBitrateFormatted)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(height: 3)
-
-            Text(playback.telemetry.observedBitrateFormatted)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
         }
         .frame(height: 12)
         .padding(.top, 2)
     }
 
     private var liveTimeshiftControls: some View {
-        VStack(spacing: 8) {
-            if playback.canSeekLive {
-                Slider(value: Binding(get: { playback.livePlayhead }, set: { playback.seekLive(to: $0) }),
-                       in: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd))
-                    .tint(.cyan)
-                    .accessibilityLabel("Live rewind position")
-                    .accessibilityIdentifier("playerLiveSeekSlider")
-                HStack(spacing: 12) {
-                    Button { playback.seekLive(by: -10); scheduleControlsAutoHide() } label: {
-                        Label("10s", systemImage: "gobackward.10")
-                    }
-                    .buttonStyle(MediaControlButtonStyle())
-                    .accessibilityLabel("Rewind 10 seconds")
-                    Button { playback.seekLive(by: 10); scheduleControlsAutoHide() } label: {
-                        Label("10s", systemImage: "goforward.10")
-                    }
-                    .buttonStyle(MediaControlButtonStyle())
-                    .accessibilityLabel("Forward 10 seconds")
-                    Spacer(minLength: 0)
-                    if playback.shouldShowGoLive {
-                        Button { playback.goLive(); scheduleControlsAutoHide() } label: {
-                            Label("Go Live", systemImage: "dot.radiowaves.left.and.right")
+        Group {
+            if playback.canSeekLive && (playback.liveSeekEnd - playback.liveSeekStart) >= 4 {
+                VStack(spacing: 6) {
+                    Slider(value: Binding(get: { playback.livePlayhead }, set: { playback.seekLive(to: $0) }),
+                           in: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd))
+                        .tint(.cyan)
+                        .accessibilityLabel("Live rewind position")
+                        .accessibilityIdentifier("playerLiveSeekSlider")
+
+                    HStack(spacing: 8) {
+                        Button {
+                            playback.seekLive(by: -10)
+                            scheduleControlsAutoHide()
+                        } label: {
+                            Image(systemName: "gobackward.10")
+                                .font(.system(size: 13, weight: .semibold))
                         }
-                        .buttonStyle(MediaControlButtonStyle(isActive: true))
-                        .accessibilityIdentifier("playerGoLiveButton")
+                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
+                        .accessibilityLabel("Rewind 10 seconds")
+
+                        Button {
+                            playback.seekLive(by: 10)
+                            scheduleControlsAutoHide()
+                        } label: {
+                            Image(systemName: "goforward.10")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
+                        .accessibilityLabel("Forward 10 seconds")
+
+                        Spacer()
+
+                        if playback.shouldShowGoLive {
+                            Button {
+                                playback.goLive()
+                                scheduleControlsAutoHide()
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Circle().fill(Color.red).frame(width: 5, height: 5)
+                                    Text("GO LIVE")
+                                        .font(.system(size: 10, weight: .bold))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                            }
+                            .buttonStyle(MediaControlButtonStyle(isActive: true, size: 28))
+                            .accessibilityIdentifier("playerGoLiveButton")
+                        } else {
+                            HStack(spacing: 4) {
+                                Circle().fill(Color.green).frame(width: 5, height: 5)
+                                Text("LIVE")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.green)
+                            }
+                        }
                     }
                 }
-                .font(.system(size: 12, weight: .semibold))
-            }
-            HStack(spacing: 8) {
-                Image(systemName: "clock.arrow.circlepath")
-                if let reason = playback.liveBufferUnavailable {
-                    Text("Rewind unavailable. \(reason)")
-                } else {
-                    Text(String(format: "Saved %.0fs · %.1f MiB", playback.liveBuffer.duration,
-                                Double(playback.liveBuffer.bytes) / 1_048_576))
-                    Spacer(minLength: 0)
-                    Text(playback.liveBehindSeconds > 1 ? String(format: "%.0fs behind", playback.liveBehindSeconds) : "Live")
+            } else if let reason = playback.liveBufferUnavailable {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 11))
+                    Text(reason)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
                 }
-            }
-            .font(.system(size: 11, weight: .medium))
-            .foregroundColor(.white.opacity(0.8))
-            if let notice = playback.liveBuffer.notice {
-                Text(notice)
-                    .font(.system(size: 11))
-                    .foregroundColor(.yellow)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundColor(.orange.opacity(0.85))
             }
         }
-        .frame(maxWidth: 520)
     }
 
     private var quickChannelDrawer: some View {
@@ -1008,10 +1050,12 @@ struct MediaControlButtonStyle: ButtonStyle {
     var isPrimary = false
     var isActive = false
     var isCircular = false
+    var size: CGFloat = 38
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(minWidth: 44, minHeight: 44)
+            .frame(width: isCircular ? size : nil, height: isCircular ? size : nil)
+            .frame(minWidth: isCircular ? size : 38, minHeight: isCircular ? size : 38)
             .foregroundColor(isPrimary ? .black : (isActive ? .cyan : .white))
             .background(
                 Group {
@@ -1019,7 +1063,7 @@ struct MediaControlButtonStyle: ButtonStyle {
                         Circle()
                             .fill(isPrimary ? Color.cyan : (isActive ? Color.cyan.opacity(0.22) : Color.white.opacity(0.12)))
                     } else {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .fill(isPrimary ? Color.cyan : (isActive ? Color.cyan.opacity(0.22) : Color.white.opacity(0.12)))
                     }
                 }
@@ -1030,7 +1074,7 @@ struct MediaControlButtonStyle: ButtonStyle {
                         Circle()
                             .stroke(isActive ? Color.cyan.opacity(0.6) : Color.white.opacity(0.16), lineWidth: 1)
                     } else {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(isActive ? Color.cyan.opacity(0.6) : Color.white.opacity(0.16), lineWidth: 1)
                     }
                 }

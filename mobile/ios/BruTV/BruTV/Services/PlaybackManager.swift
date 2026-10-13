@@ -96,7 +96,7 @@ public final class PlaybackManager: ObservableObject {
     private var nowPlayingObserver: AnyCancellable?
     private var telemetryTimer: Timer?
     private var stallCount: Int = 0
-    private var recovery = PlaybackRecoveryPolicy()
+    private var recovery = PlaybackRecoveryPolicy(maxAttempts: nil, maxDelay: 15.0)
     private var quality = QualityStepDownPolicy()
     /// The provider URL of what is playing. With live rewind on, AVPlayer reads a local
     /// copy instead, so this is the URL to hand to another player app.
@@ -328,14 +328,14 @@ public final class PlaybackManager: ObservableObject {
                 self.liveServer = server
                 capture = Task { await recorder.captureTransportStream(relayURL) }
                 var ready = false
-                let deadline = Date().addingTimeInterval(15)
+                let deadline = Date().addingTimeInterval(5)
                 while !Task.isCancelled, self.sessionGeneration == session {
                     if let failure = await recorder.transportStreamFailure() { throw failure }
                     let snapshot = await recorder.snapshot()
                     guard !Task.isCancelled, self.liveRecorder === recorder else { return }
                     self.liveBuffer = snapshot
-                    // Two short segments are enough to start; more arrive while it plays.
-                    if !ready, snapshot.duration >= max(4, snapshot.targetDuration * 2) {
+                    // Start as soon as we have at least 1 segment so playback begins fast.
+                    if !ready, snapshot.duration > 0 {
                         let localURL = try await server.start()
                         guard !Task.isCancelled, self.liveRecorder === recorder else { server.stop(); return }
                         ready = true
@@ -472,7 +472,7 @@ public final class PlaybackManager: ObservableObject {
                 var pollDelay: Double = 1
                 var failures = 0
                 // Past this, play the provider directly instead of making people wait.
-                let deadline = Date().addingTimeInterval(15)
+                let deadline = Date().addingTimeInterval(5)
                 while !Task.isCancelled, self.sessionGeneration == session {
                     do {
                         if ready {
@@ -484,7 +484,7 @@ public final class PlaybackManager: ObservableObject {
                         let snapshot = await recorder.snapshot()
                         guard !Task.isCancelled, self.liveRecorder === recorder else { return }
                         self.liveBuffer = snapshot
-                        if !ready, snapshot.duration >= snapshot.targetDuration * 3 {
+                        if !ready, snapshot.duration > 0 {
                             let localURL = try await server.start()
                             guard !Task.isCancelled, self.liveRecorder === recorder else { server.stop(); return }
                             ready = true
@@ -757,6 +757,10 @@ public final class PlaybackManager: ObservableObject {
                 }
             }
             currentError = current.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        // Live streams should automatically retry on unclassified playback interruptions.
+        if currentStream != nil {
+            return .transient
         }
         return .unknown
     }

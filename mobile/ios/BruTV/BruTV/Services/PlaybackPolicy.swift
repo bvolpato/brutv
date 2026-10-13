@@ -106,12 +106,14 @@ enum PlaybackPolicy {
 struct PlaybackRecoveryPolicy {
     private(set) var attempts = 0
     private var healthySince: TimeInterval?
-    private let maxAttempts: Int
+    private let maxAttempts: Int?
     private let healthyInterval: TimeInterval
+    private let maxDelay: TimeInterval
 
-    init(maxAttempts: Int = 2, healthyInterval: TimeInterval = 30) {
+    init(maxAttempts: Int? = 2, healthyInterval: TimeInterval = 30, maxDelay: TimeInterval = 15.0) {
         self.maxAttempts = maxAttempts
         self.healthyInterval = healthyInterval
+        self.maxDelay = maxDelay
     }
 
     mutating func reset() {
@@ -137,9 +139,10 @@ struct PlaybackRecoveryPolicy {
 
     mutating func nextRetryDelay(for failure: PlaybackFailure) -> TimeInterval? {
         recordInterruption()
-        guard failure.canRetry, attempts < maxAttempts else { return nil }
+        guard failure.canRetry else { return nil }
+        if let maxAttempts, attempts >= maxAttempts { return nil }
         attempts += 1
-        return 1.5 * Double(attempts)
+        return min(maxDelay, 1.5 * Double(attempts))
     }
 }
 

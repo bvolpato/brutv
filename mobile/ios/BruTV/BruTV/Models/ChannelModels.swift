@@ -161,12 +161,11 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
     }
 
     public var iconURL: URL? {
-        guard let iconURLString, !iconURLString.isEmpty else { return nil }
-        // URL with unencoded characters
-        if let direct = URL(string: iconURLString) {
+        guard let raw = iconURLString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if let direct = URL(string: raw) {
             return direct
         }
-        if let encoded = iconURLString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+        if let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
             return URL(string: encoded)
         }
         return nil
@@ -297,8 +296,14 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
     }
 
     public var iconURL: URL? {
-        guard let iconURLString, !iconURLString.isEmpty else { return nil }
-        return URL(string: iconURLString)
+        guard let raw = iconURLString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if let direct = URL(string: raw) {
+            return direct
+        }
+        if let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            return URL(string: encoded)
+        }
+        return nil
     }
 }
 

@@ -76,9 +76,7 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
     public var showStatsHUD: Bool
     public var autoPlayNextChannel: Bool
     public var hardwareAcceleration: Bool
-    /// Records live channels on the device so people can pause and rewind up to 10 minutes.
-    /// Off by default: it must download about 3 segments before playback starts, which is
-    /// slow on some providers, and it uses the account's only connection.
+    /// Records live channels on the device so people can pause and rewind adaptively.
     public var liveRewind: Bool
 
     public init(
@@ -88,7 +86,7 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
         showStatsHUD: Bool = false,
         autoPlayNextChannel: Bool = true,
         hardwareAcceleration: Bool = true,
-        liveRewind: Bool = false
+        liveRewind: Bool = true
     ) {
         self.bufferProfile = bufferProfile
         self.preferredFormat = preferredFormat
