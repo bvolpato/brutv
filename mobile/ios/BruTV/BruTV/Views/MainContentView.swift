@@ -204,8 +204,15 @@ public struct MainContentView: View {
                         }
                     } else if let vod = playback.currentVOD {
                         miniPlayerThumbnail {
-                            Image(systemName: "film")
-                                .foregroundColor(.cyan)
+                            if let iconURL = vod.iconURL {
+                                CachedAsyncImage(url: iconURL) {
+                                    Image(systemName: vod.streamType == "series" ? "play.tv" : "film")
+                                        .foregroundColor(.cyan)
+                                }
+                            } else {
+                                Image(systemName: vod.streamType == "series" ? "play.tv" : "film")
+                                    .foregroundColor(.cyan)
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 2) {
@@ -213,7 +220,7 @@ public struct MainContentView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            Text(playback.isPlaybackRequested ? "Movie Playing" : "Paused")
+                            Text(vod.streamType == "series" ? (playback.isPlaybackRequested ? "Series Playing" : "Paused") : (playback.isPlaybackRequested ? "Movie Playing" : "Paused"))
                                 .font(.system(size: 11))
                                 .foregroundColor(.gray)
                         }

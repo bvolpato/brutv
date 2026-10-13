@@ -232,6 +232,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
     public let rating: String?
     public let categoryId: String
     public let containerExtension: String
+    public let streamType: String
 
     enum CodingKeys: String, CodingKey {
         case id = "stream_id"
@@ -240,6 +241,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         case rating
         case categoryId = "category_id"
         case containerExtension = "container_extension"
+        case streamType = "stream_type"
     }
 
     public init(
@@ -248,7 +250,8 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         iconURLString: String? = nil,
         rating: String? = nil,
         categoryId: String = "",
-        containerExtension: String = "mp4"
+        containerExtension: String = "mp4",
+        streamType: String = "movie"
     ) {
         self.id = id
         self.name = name
@@ -256,6 +259,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         self.rating = rating
         self.categoryId = categoryId
         self.containerExtension = containerExtension
+        self.streamType = streamType
     }
 
     public init(from decoder: Decoder) throws {
@@ -289,6 +293,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         }
 
         self.containerExtension = try container.decodeIfPresent(String.self, forKey: .containerExtension) ?? "mp4"
+        self.streamType = (try? container.decodeIfPresent(String.self, forKey: .streamType)) ?? "movie"
     }
 
     public var iconURL: URL? {
@@ -419,5 +424,184 @@ public struct SeriesItem: Codable, Identifiable, Hashable, Sendable {
     public var coverURL: URL? {
         guard let coverURLString, !coverURLString.isEmpty else { return nil }
         return URL(string: coverURLString)
+    }
+}
+
+public struct SeriesDetails: Codable, Sendable {
+    public let info: SeriesInfo?
+    public let episodes: [String: [SeriesEpisode]]
+
+    enum CodingKeys: String, CodingKey {
+        case info
+        case episodes
+    }
+
+    public init(info: SeriesInfo? = nil, episodes: [String: [SeriesEpisode]] = [:]) {
+        self.info = info
+        self.episodes = episodes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.info = try? container.decodeIfPresent(SeriesInfo.self, forKey: .info)
+        if let dict = try? container.decode([String: [SeriesEpisode]].self, forKey: .episodes) {
+            self.episodes = dict
+        } else {
+            self.episodes = [:]
+        }
+    }
+}
+
+public struct SeriesInfo: Codable, Sendable {
+    public let name: String?
+    public let cover: String?
+    public let plot: String?
+    public let cast: String?
+    public let director: String?
+    public let genre: String?
+    public let rating: String?
+    public let backdropPath: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case cover
+        case plot
+        case cast
+        case director
+        case genre
+        case rating
+        case backdropPath = "backdrop_path"
+    }
+
+    public init(
+        name: String? = nil,
+        cover: String? = nil,
+        plot: String? = nil,
+        cast: String? = nil,
+        director: String? = nil,
+        genre: String? = nil,
+        rating: String? = nil,
+        backdropPath: [String]? = nil
+    ) {
+        self.name = name
+        self.cover = cover
+        self.plot = plot
+        self.cast = cast
+        self.director = director
+        self.genre = genre
+        self.rating = rating
+        self.backdropPath = backdropPath
+    }
+}
+
+public struct SeriesEpisode: Codable, Identifiable, Hashable, Sendable {
+    public let id: Int
+    public let episodeNum: Int
+    public let title: String
+    public let containerExtension: String
+    public let season: Int
+    public let info: SeriesEpisodeInfo?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case episodeNum = "episode_num"
+        case title
+        case containerExtension = "container_extension"
+        case season
+        case info
+    }
+
+    public init(
+        id: Int,
+        episodeNum: Int,
+        title: String,
+        containerExtension: String = "mp4",
+        season: Int = 1,
+        info: SeriesEpisodeInfo? = nil
+    ) {
+        self.id = id
+        self.episodeNum = episodeNum
+        self.title = title
+        self.containerExtension = containerExtension
+        self.season = season
+        self.info = info
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let intId = try? container.decode(Int.self, forKey: .id) {
+            self.id = intId
+        } else if let strId = try? container.decode(String.self, forKey: .id), let intVal = Int(strId) {
+            self.id = intVal
+        } else {
+            self.id = 0
+        }
+
+        if let intNum = try? container.decode(Int.self, forKey: .episodeNum) {
+            self.episodeNum = intNum
+        } else if let strNum = try? container.decode(String.self, forKey: .episodeNum), let intVal = Int(strNum) {
+            self.episodeNum = intVal
+        } else {
+            self.episodeNum = 1
+        }
+
+        self.title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? "Episode \(self.episodeNum)"
+        self.containerExtension = (try? container.decodeIfPresent(String.self, forKey: .containerExtension)) ?? "mp4"
+
+        if let intSeason = try? container.decode(Int.self, forKey: .season) {
+            self.season = intSeason
+        } else if let strSeason = try? container.decode(String.self, forKey: .season), let intVal = Int(strSeason) {
+            self.season = intVal
+        } else {
+            self.season = 1
+        }
+
+        self.info = try? container.decodeIfPresent(SeriesEpisodeInfo.self, forKey: .info)
+    }
+}
+
+public struct SeriesEpisodeInfo: Codable, Hashable, Sendable {
+    public let duration: String?
+    public let durationSecs: Int?
+    public let movieImage: String?
+    public let plot: String?
+    public let rating: String?
+
+    enum CodingKeys: String, CodingKey {
+        case duration
+        case durationSecs = "duration_secs"
+        case movieImage = "movie_image"
+        case plot
+        case rating
+    }
+
+    public init(
+        duration: String? = nil,
+        durationSecs: Int? = nil,
+        movieImage: String? = nil,
+        plot: String? = nil,
+        rating: String? = nil
+    ) {
+        self.duration = duration
+        self.durationSecs = durationSecs
+        self.movieImage = movieImage
+        self.plot = plot
+        self.rating = rating
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.duration = try? container.decodeIfPresent(String.self, forKey: .duration)
+        if let intSecs = try? container.decode(Int.self, forKey: .durationSecs) {
+            self.durationSecs = intSecs
+        } else if let strSecs = try? container.decode(String.self, forKey: .durationSecs), let val = Int(strSecs) {
+            self.durationSecs = val
+        } else {
+            self.durationSecs = nil
+        }
+        self.movieImage = try? container.decodeIfPresent(String.self, forKey: .movieImage)
+        self.plot = try? container.decodeIfPresent(String.self, forKey: .plot)
+        self.rating = try? container.decodeIfPresent(String.self, forKey: .rating)
     }
 }
