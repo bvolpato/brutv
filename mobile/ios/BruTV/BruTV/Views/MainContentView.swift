@@ -22,6 +22,7 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
 
 public struct MainContentView: View {
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var account = AccountStore.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var selectedSection: NavigationSection? = .liveTV
@@ -78,17 +79,59 @@ public struct MainContentView: View {
     // iPad Multi-Column Sidebar Layout
     private var ipadLayout: some View {
         NavigationSplitView {
-            List(selection: $selectedSection) {
-                ForEach(NavigationSection.allCases) { section in
-                    NavigationLink(value: section) {
-                        Label(section.rawValue, systemImage: section.iconName)
-                            .font(.system(size: 16, weight: .semibold))
+            VStack(spacing: 0) {
+                List(selection: $selectedSection) {
+                    Section {
+                        ForEach(NavigationSection.allCases) { section in
+                            NavigationLink(value: section) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: section.iconName)
+                                        .font(.system(size: 21, weight: .semibold))
+                                        .frame(width: 28, height: 28)
+                                        .foregroundColor(selectedSection == section ? .cyan : .secondary)
+
+                                    Text(section.rawValue)
+                                        .font(.system(size: 15, weight: selectedSection == section ? .bold : .medium))
+                                        .foregroundColor(selectedSection == section ? .white : .primary)
+                                }
+                                .padding(.vertical, 3)
+                            }
+                            .tag(section)
+                        }
                     }
-                    .tag(section)
+                }
+                .listStyle(.sidebar)
+
+                if let profile = account.currentProfile {
+                    Divider()
+                        .padding(.horizontal, 8)
+
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(Color.cyan)
+                            .frame(width: 8, height: 8)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected" : profile.username) : profile.name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+
+                            if let host = URL(string: profile.serverURL)?.host {
+                                Text(host)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.gray)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
             }
-            .listStyle(.sidebar)
             .navigationTitle("BruTV")
+            .navigationSplitViewColumnWidth(min: 155, ideal: 172, max: 195)
         } detail: {
             NavigationStack {
                 detailView(for: selectedSection ?? .liveTV)
