@@ -989,90 +989,96 @@ public struct PlayerView: View {
     }
 
     private var liveTimeshiftControls: some View {
-        Group {
-            if playback.canSeekLive && (playback.liveSeekEnd - playback.liveSeekStart) >= 4 {
-                VStack(spacing: 6) {
-                    InteractiveTimelineScrubber(
-                        value: playback.livePlayhead,
-                        range: playback.liveSeekStart...max(playback.liveSeekStart + 0.1, playback.liveSeekEnd),
-                        onSeek: { targetTime in
-                            playback.seekLive(to: targetTime)
-                            scheduleControlsAutoHide()
-                        },
-                        onScrubbingChanged: { scrubbing, _ in
-                            if scrubbing {
-                                controlsTimer?.invalidate()
-                            }
-                        },
-                        formatTime: { targetTime in
-                            let diff = playback.liveSeekEnd - targetTime
-                            if diff < 2.0 {
-                                return "LIVE".localized
-                            } else {
-                                return "-" + formatTime(diff)
-                            }
-                        }
-                    )
-                    .accessibilityLabel("Live rewind position".localized)
-                    .accessibilityIdentifier("playerLiveSeekSlider")
+        let isSeekable = playback.canSeekLive
+        let seekStart = isSeekable ? playback.liveSeekStart : 0.0
+        let seekEnd = isSeekable ? max(playback.liveSeekStart + 0.1, playback.liveSeekEnd) : 1.0
+        let playhead = isSeekable ? playback.livePlayhead : 1.0
 
-                    HStack(spacing: 8) {
-                        Button {
-                            playback.seekLive(by: -10)
-                            scheduleControlsAutoHide()
-                        } label: {
-                            Image(systemName: "gobackward.10")
-                                .font(.system(size: 13, weight: .semibold))
-                        }
-                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
-                        .accessibilityLabel("Rewind 10 seconds".localized)
-
-                        Button {
-                            playback.seekLive(by: 10)
-                            scheduleControlsAutoHide()
-                        } label: {
-                            Image(systemName: "goforward.10")
-                                .font(.system(size: 13, weight: .semibold))
-                        }
-                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
-                        .accessibilityLabel("Forward 10 seconds".localized)
-
-                        Spacer()
-
-                        if playback.shouldShowGoLive {
-                            Button {
-                                playback.goLive()
-                                scheduleControlsAutoHide()
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Circle().fill(Color.red).frame(width: 5, height: 5)
-                                    Text("GO LIVE".localized)
-                                        .font(.system(size: 10, weight: .bold))
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                            }
-                            .buttonStyle(MediaControlButtonStyle(isActive: true, size: 28))
-                            .accessibilityIdentifier("playerGoLiveButton")
-                        } else {
-                            HStack(spacing: 4) {
-                                Circle().fill(Color.green).frame(width: 5, height: 5)
-                                Text("LIVE".localized)
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.green)
-                            }
-                        }
+        return VStack(spacing: 6) {
+            InteractiveTimelineScrubber(
+                value: playhead,
+                range: seekStart...seekEnd,
+                onSeek: { targetTime in
+                    guard isSeekable else { return }
+                    playback.seekLive(to: targetTime)
+                    scheduleControlsAutoHide()
+                },
+                onScrubbingChanged: { scrubbing, _ in
+                    if scrubbing {
+                        controlsTimer?.invalidate()
+                    }
+                },
+                formatTime: { targetTime in
+                    let diff = seekEnd - targetTime
+                    if !isSeekable || diff < 2.0 {
+                        return "LIVE".localized
+                    } else {
+                        return "-" + formatTime(diff)
                     }
                 }
-            } else if let reason = playback.liveBufferUnavailable, !reason.contains("too long") {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.system(size: 11))
-                    Text(reason.localized)
-                        .font(.system(size: 11))
+            )
+            .disabled(!isSeekable)
+            .opacity(isSeekable ? 1.0 : 0.45)
+            .accessibilityLabel("Live rewind position".localized)
+            .accessibilityIdentifier("playerLiveSeekSlider")
+
+            HStack(spacing: 8) {
+                Button {
+                    playback.seekLive(by: -10)
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: "gobackward.10")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
+                .disabled(!isSeekable)
+                .opacity(isSeekable ? 1.0 : 0.45)
+                .accessibilityLabel("Rewind 10 seconds".localized)
+
+                Button {
+                    playback.seekLive(by: 10)
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: "goforward.10")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
+                .disabled(!isSeekable)
+                .opacity(isSeekable ? 1.0 : 0.45)
+                .accessibilityLabel("Forward 10 seconds".localized)
+
+                if playback.isRecoveringLiveBuffer {
+                    Text("Buffering rewind…".localized)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.cyan.opacity(0.85))
                         .lineLimit(1)
                 }
-                .foregroundColor(.orange.opacity(0.85))
+
+                Spacer()
+
+                if playback.shouldShowGoLive {
+                    Button {
+                        playback.goLive()
+                        scheduleControlsAutoHide()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.red).frame(width: 5, height: 5)
+                            Text("GO LIVE".localized)
+                                .font(.system(size: 10, weight: .bold))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                    }
+                    .buttonStyle(MediaControlButtonStyle(isActive: true, size: 28))
+                    .accessibilityIdentifier("playerGoLiveButton")
+                } else {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.green).frame(width: 5, height: 5)
+                        Text("LIVE".localized)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.green)
+                    }
+                }
             }
         }
     }

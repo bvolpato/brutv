@@ -191,7 +191,7 @@ struct LiveTimeshiftSnapshot: Sendable, Equatable {
     var targetDuration: Double = 6
     var recordedEnd: Double = 0
     var notice: String?
-    var canRewind: Bool { duration > targetDuration * 3 }
+    var canRewind: Bool { duration > 0 }
 }
 
 struct LiveTimeshiftCodecFallback {
@@ -521,8 +521,9 @@ actor LiveTimeshiftRecorder {
             captureNotice = "Capture paused while the app was inactive. Any missing live content is unavailable."
         }
         previousPollTime = now
-        if let latestSequence, let last = playlist.segments.last, last.sequence < latestSequence {
-            throw LiveTimeshiftError.unsupported("The provider reset its live timeline. Retry the channel to start a new buffer.")
+        if let currentLatest = latestSequence, let last = playlist.segments.last, last.sequence < currentLatest {
+            latestSequence = nil
+            captureNotice = "Capture resumed after a stream gap; unavailable content was not recorded."
         }
         var candidates = playlist.segments.filter { segment in latestSequence.map { segment.sequence > $0 } ?? true }
         if latestSequence == nil {
@@ -590,6 +591,10 @@ actor LiveTimeshiftRecorder {
     private var relayFailure: Error?
     private var relaySequence: Int64 = 0
     private var relayDiscontinuity: Int64 = 0
+
+    func clearTransportStreamFailure() {
+        relayFailure = nil
+    }
 
     /// Reads a continuous MPEG-TS response and records it as HLS segments until stopped.
     /// It reconnects after a dropped response and gives up after 3 failures in a row.
