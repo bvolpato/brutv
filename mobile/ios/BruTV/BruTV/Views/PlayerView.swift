@@ -5,6 +5,7 @@ public struct PlayerView: View {
     @Binding public var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var pictureInPicture = PictureInPictureModel.shared
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
     @State private var controlsTimer: Timer?
@@ -60,6 +61,20 @@ public struct PlayerView: View {
         #endif
     }
 
+    /// Hands the provider URL to VLC through its x-callback URL. If VLC is not
+    /// installed, opens its App Store page.
+    private func openInVLC() {
+        guard let source = playback.providerURL else { return }
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?#")
+        guard let encoded = source.absoluteString.addingPercentEncoding(withAllowedCharacters: allowed),
+              let vlc = URL(string: "vlc-x-callback://x-callback-url/stream?url=\(encoded)") else { return }
+        UIApplication.shared.open(vlc) { opened in
+            guard !opened, let store = URL(string: "https://apps.apple.com/app/vlc-media-player/id650377962") else { return }
+            UIApplication.shared.open(store)
+        }
+    }
+
     private var streamName: String {
         if let live = playback.currentStream {
             return live.cleanName
@@ -81,7 +96,10 @@ public struct PlayerView: View {
             VideoPlayerContainer(
                 player: playback.player,
                 aspectRatio: playback.aspectRatio,
-                showsNativeControls: false
+                showsNativeControls: false,
+                allowsPictureInPicture: true,
+                accessibilityIdentifier: "playerVideo",
+                accessibilityStatus: playback.playbackState.testDescription
             )
             .ignoresSafeArea()
             #if targetEnvironment(macCatalyst)
@@ -185,6 +203,19 @@ public struct PlayerView: View {
                         .tint(.white)
                     }
                     .controlSize(.large)
+
+                    if playback.providerURL != nil {
+                        // VLC has its own decoders for formats iOS cannot play.
+                        Button {
+                            openInVLC()
+                        } label: {
+                            Label("Open in VLC", systemImage: "arrow.up.forward.app")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .buttonStyle(.borderless)
+                        .tint(.cyan)
+                        .accessibilityIdentifier("playerOpenInVLCButton")
+                    }
                 }
                 .padding(24)
                 .background(
@@ -371,7 +402,7 @@ public struct PlayerView: View {
 
     private var bottomControlsBar: some View {
         VStack(spacing: 14) {
-            if playback.currentStream != nil { liveTimeshiftControls }
+            if playback.currentStream != nil && playback.settings.liveRewind { liveTimeshiftControls }
             HStack(spacing: 8) {
                 Button {
                     withAnimation {
@@ -464,6 +495,21 @@ public struct PlayerView: View {
                 .accessibilityLabel("Change Aspect Ratio")
                 .accessibilityValue(playback.aspectRatio.displayName)
                 .help("Aspect ratio: \(playback.aspectRatio.displayName)")
+
+                if PictureInPictureModel.isSupported {
+                    Button {
+                        pictureInPicture.toggle()
+                        scheduleControlsAutoHide()
+                    } label: {
+                        Label("PiP", systemImage: pictureInPicture.isActive ? "pip.exit" : "pip.enter")
+                            .padding(.horizontal, 12)
+                    }
+                    .buttonStyle(MediaControlButtonStyle(isActive: pictureInPicture.isActive))
+                    .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
+                    .accessibilityLabel(pictureInPicture.isActive ? "Exit Picture in Picture" : "Picture in Picture")
+                    .help("Picture in Picture")
+                    .accessibilityIdentifier("playerPiPButton")
+                }
             }
             .font(.system(size: 13, weight: .semibold))
 

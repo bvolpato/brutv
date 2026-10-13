@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import UIKit
 @testable import BruTV
 
 @MainActor
@@ -283,3 +284,27 @@ private final class ControlledAccountProtocol: URLProtocol, @unchecked Sendable 
         client?.urlProtocolDidFinishLoading(self)
     }
 }
+
+/// The in-app scanner reads the same QR codes that Settings shares.
+final class LoginQRDecoderTests: XCTestCase {
+    func testSharedQRCodeDecodesBackToTheSameLogin() throws {
+        let links: [LoginLink] = [
+            .xtream(server: "http://example.com:8080", username: "user", password: "p&ss=word+1"),
+            .m3u(url: "https://example.com/get.php?username=a&password=b&type=m3u_plus"),
+        ]
+        for link in links {
+            let image = try XCTUnwrap(LoginQRCodeView.makeQRCode(from: link.url.absoluteString)?.cgImage)
+            XCTAssertEqual(LoginQRDecoder.link(in: image), link)
+        }
+    }
+
+    func testImageWithoutQRCodeReturnsNil() throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64))
+        let image = try XCTUnwrap(renderer.image { context in
+            UIColor.gray.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        }.cgImage)
+        XCTAssertNil(LoginQRDecoder.link(in: image))
+    }
+}
+

@@ -158,6 +158,25 @@ public struct MainContentView: View {
         }
     }
 
+    /// A 16:9 live picture of what is playing. The placeholder (channel logo) shows
+    /// until the first video frame arrives, and for audio-only streams.
+    private func miniPlayerThumbnail<Placeholder: View>(@ViewBuilder placeholder: () -> Placeholder) -> some View {
+        ZStack {
+            Color.white.opacity(0.08)
+            placeholder()
+            VideoPlayerContainer(
+                player: playback.player,
+                aspectRatio: .fill,
+                accessibilityIdentifier: "miniPlayerVideo",
+                accessibilityStatus: playback.playbackState.testDescription
+            )
+            .allowsHitTesting(false)
+        }
+        .frame(width: 96, height: 54)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
     // Mini Player bar
     private var miniPlayerBar: some View {
         HStack(spacing: 10) {
@@ -166,13 +185,13 @@ public struct MainContentView: View {
             } label: {
                 HStack(spacing: 12) {
                     if let stream = playback.currentStream {
-                        CachedAsyncImage(url: stream.iconURL) {
-                            Image(systemName: "tv")
-                                .foregroundColor(.cyan)
+                        miniPlayerThumbnail {
+                            CachedAsyncImage(url: stream.iconURL) {
+                                Image(systemName: "tv")
+                                    .foregroundColor(.cyan)
+                            }
+                            .padding(10)
                         }
-                        .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(8)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(stream.cleanName)
@@ -184,11 +203,10 @@ public struct MainContentView: View {
                                 .foregroundColor(.cyan)
                         }
                     } else if let vod = playback.currentVOD {
-                        Image(systemName: "film")
-                            .foregroundColor(.cyan)
-                            .frame(width: 40, height: 40)
-                            .background(Color.white.opacity(0.1))
-                            .cornerRadius(8)
+                        miniPlayerThumbnail {
+                            Image(systemName: "film")
+                                .foregroundColor(.cyan)
+                        }
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(vod.name)

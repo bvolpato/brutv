@@ -32,18 +32,22 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
 
 - **Real-Time Buffer Engine:**
   - Buffer-ahead preferences: **Ultra Low Latency (1.5s)**, **Balanced (4.0s)**, and **High Stability (10.0s)**. AVPlayer controls actual buffering and live timing; these preferences do not guarantee a fixed delay or uninterrupted playback.
-  - Automatic recovery for transient failures, with a 20-second waiting/stall watchdog and up to 2 retries. Live channels always play as HLS (`.m3u8`).
+  - **MPEG-TS Relay Engine:** Xtream live channels play through a local relay by default. The relay streams the provider continuous `.ts` feed, cuts segments at video keyframes, corrects parameter set ordering, and serves local low-latency HLS. If the relay cannot connect, playback falls back to the provider HLS stream.
+  - **Live Edge Priority:** Live playback preserves its time offset from the live broadcast. After a stall, playback steps down variant quality and resumes buffered data immediately instead of freezing.
+  - **Live Pause and Rewind:** Opt-in local recorder in Settings > Playback. Captures live video to a temporary circular disk buffer (up to 10 minutes or 256 MiB) for instant pause, seek, and rewind.
+  - Automatic recovery for transient failures, with a watchdog timer and automatic retries.
   - In-player **Stream Telemetry HUD** displaying real-time buffer seconds ahead of playhead, observed network bitrate (Mbps), native resolution, frame rate, dropped frames, and stall counters.
 - **Two Ways to Sign In:**
   - Xtream Codes: server URL, username, and password.
   - M3U playlist: paste the playlist URL. If the URL is an Xtream `get.php` link, BruTV signs in with the Xtream API instead, because it is much faster than a large playlist.
 - **QR Code Sign-In:**
-  - Settings > **Share Sign-In QR Code** shows a QR code and a `brutv://login` link for the current source.
-  - Scan the code with the Camera app, or open the link, and BruTV signs in automatically.
-  - On the login screen, the **Paste** button reads a copied `brutv://` link.
+  - On the login screen, tap the camera button to scan a QR code with the device camera or select a screenshot from Photos.
+  - Settings > **Share Sign-In QR Code** displays a QR code and a `brutv://login` link for the active source.
+  - The **Paste** button on the login screen reads a copied `brutv://` link from the clipboard.
 - **Channels First:**
   - Fast channel switching and swipe gestures to flip stations directly on the video canvas.
   - In-player **Channel Guide Drawer** overlay with logos to surf without exiting full screen.
+  - **Mini Player:** Keep a live video thumbnail playing in the channel list while browsing other streams.
   - Categorized browsing (Globo Sudeste, SBT, Record, Band, News, Sports, Premiere, etc.).
   - Channel logos with high-performance memory and disk caching.
   - Quality badges automatically parsed from stream titles (4K, FHD, HD, SD).
@@ -51,9 +55,10 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
   - Favorite channel bookmarking and watch history.
 - **Movies (VOD) & Series:**
   - Catalog browsing with TMDb posters, ratings, plot overviews, director and cast details.
-- **Designed for iPad & iPhone:**
-  - Multi-column `NavigationSplitView` sidebar on iPad taking advantage of large screens.
+- **Designed for iPad, iPhone, and Mac:**
+  - Multi-column `NavigationSplitView` sidebar on iPad and Mac.
   - Native Picture-in-Picture (PiP) and background audio playback.
+  - On Mac Catalyst, double-click toggles full screen, and the Esc key exits full screen.
   - Dark glassmorphism Apple TV aesthetic.
 
 ---
@@ -153,7 +158,7 @@ If BruTV is not installed, the `brutv://` link does nothing. The person must ins
 
 Debug builds have a **"Fill Demo Credentials (virello.win)"** button on the login screen. UI tests use the same account:
 - **Server:** `http://virello.win`
-- **Username:** `Bruno081225p2`
-- **Password:** `tv8392602653`
+- **Username:** `Bruno081225`
+- **Password:** `tv737838290`
 
 Release builds do not contain this account. The code is inside `#if DEBUG` blocks. App Review and store screenshots use the public playlist `https://iptv-org.github.io/iptv/countries/br.m3u`.

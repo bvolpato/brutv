@@ -48,7 +48,9 @@
 		TESTBF014 /* PlaybackPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC014; };
 		APPBF035 /* LiveTimeshift.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC035; };
 		APPBF036 /* LiveTimeshiftServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC036; };
+		APPBF037 /* MPEGTSRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC037; };
 		TESTBF015 /* LiveTimeshiftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC015; };
+		TESTBF016 /* MPEGTSRelayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TESTSRC016; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -115,7 +117,9 @@
 		TESTSRC014 /* PlaybackPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPolicyTests.swift; sourceTree = "<group>"; };
 		APPSRC035 /* LiveTimeshift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshift.swift; sourceTree = "<group>"; };
 		APPSRC036 /* LiveTimeshiftServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshiftServer.swift; sourceTree = "<group>"; };
+		APPSRC037 /* MPEGTSRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPEGTSRelay.swift; sourceTree = "<group>"; };
 		TESTSRC015 /* LiveTimeshiftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveTimeshiftTests.swift; sourceTree = "<group>"; };
+		TESTSRC016 /* MPEGTSRelayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPEGTSRelayTests.swift; sourceTree = "<group>"; };
 		APPCATENT001 /* BruTVCatalyst.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BruTVCatalyst.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -198,6 +202,7 @@
 				APPSRC034 /* SourceLibraryState.swift */,
 				APPSRC035 /* LiveTimeshift.swift */,
 				APPSRC036 /* LiveTimeshiftServer.swift */,
+				APPSRC037 /* MPEGTSRelay.swift */,
 				APPSRC007 /* XtreamCodesClient.swift */,
 				APPSRC008 /* AccountStore.swift */,
 				APPSRC009 /* FavoritesStore.swift */,
@@ -254,6 +259,7 @@
 				TESTSRC013 /* AccountFlowTests.swift */,
 				TESTSRC014 /* PlaybackPolicyTests.swift */,
 				TESTSRC015 /* LiveTimeshiftTests.swift */,
+				TESTSRC016 /* MPEGTSRelayTests.swift */,
 				TESTSRC001 /* XtreamCodesClientTests.swift */,
 				TESTSRC002 /* BufferEngineTests.swift */,
 				TESTSRC003 /* FavoritesStoreTests.swift */,
@@ -401,6 +407,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				APPBF036 /* LiveTimeshiftServer.swift in Sources */,
+				APPBF037 /* MPEGTSRelay.swift in Sources */,
 				APPBF035 /* LiveTimeshift.swift in Sources */,
 				APPBF034 /* SourceLibraryState.swift in Sources */,
 				APPBF033 /* PlaybackPolicy.swift in Sources */,
@@ -438,6 +445,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				TESTBF015 /* LiveTimeshiftTests.swift in Sources */,
+				TESTBF016 /* MPEGTSRelayTests.swift in Sources */,
 				TESTBF014 /* PlaybackPolicyTests.swift in Sources */,
 				TESTBF013 /* AccountFlowTests.swift in Sources */,
 				TESTBF012 /* SourceLibraryStateTests.swift in Sources */,

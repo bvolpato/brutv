@@ -257,8 +257,8 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public static let demo = ServerProfile(
         name: "Demo Account",
         serverURL: "http://virello.win",
-        username: "Bruno081225p2",
-        password: "tv8392602653",
+        username: "Bruno081225",
+        password: "tv737838290",
         lastConnected: Date(),
         isActive: true
     )

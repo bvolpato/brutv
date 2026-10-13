@@ -142,3 +142,74 @@ struct PlaybackRecoveryPolicy {
         return 1.5 * Double(attempts)
     }
 }
+
+/// Lowers the quality cap when a stream keeps stalling.
+///
+/// AVPlayer already adapts between HLS variants, but it reacts slowly to a provider that
+/// cannot keep up. After `stallsToStepDown` stalls inside `window` seconds, cap the peak
+/// bitrate below the variant that is playing, so AVPlayer moves to a lower variant.
+struct QualityStepDownPolicy {
+    private(set) var peakBitRate: Double = 0
+    private var stalls: [TimeInterval] = []
+    let stallsToStepDown: Int
+    let window: TimeInterval
+    let floor: Double
+
+    init(stallsToStepDown: Int = 2, window: TimeInterval = 60, floor: Double = 350_000) {
+        self.stallsToStepDown = stallsToStepDown
+        self.window = window
+        self.floor = floor
+    }
+
+    mutating func reset() {
+        peakBitRate = 0
+        stalls.removeAll()
+    }
+
+    /// Records a stall. Returns a new peak bitrate cap when quality must step down.
+    /// `currentBitrate` is the bitrate of the variant that is playing, in bits per second.
+    mutating func recordStall(at time: TimeInterval, currentBitrate: Double) -> Double? {
+        guard time.isFinite else { return nil }
+        stalls = stalls.filter { time - $0 < window } + [time]
+        guard stalls.count >= stallsToStepDown, currentBitrate.isFinite, currentBitrate > 0 else { return nil }
+        let reference = peakBitRate > 0 ? min(peakBitRate, currentBitrate) : currentBitrate
+        let next = max(floor, reference * 0.7)
+        guard next < reference, peakBitRate == 0 || next < peakBitRate else { return nil }
+        peakBitRate = next
+        stalls.removeAll()
+        return next
+    }
+}
+
+/// Keeps live TV close to live when the provider is slow.
+///
+/// AVPlayer waits "to minimize stalls" until it predicts that playback can continue. When
+/// the provider sends media slower than real time, that never happens, and the picture
+/// freezes even with seconds of media buffered. For live TV, a short pause and some lost
+/// content are better than a frozen picture, so play what is buffered and jump ahead when
+/// playback falls far behind.
+enum LiveEdgePolicy {
+    enum Action: Equatable {
+        case none
+        /// Play the buffered media now.
+        case resume
+        /// Seek to the live position.
+        case jumpToLive
+    }
+
+    /// Media buffered ahead, in seconds, that is enough to play after a stall.
+    static let resumeBuffer: Double = 3
+    /// Distance behind live, in seconds, that makes playback jump back to live.
+    static let maximumBehind: Double = 30
+
+    static func action(waitingToMinimizeStalls: Bool, bufferedAhead: Double,
+                       behindLive: Double?, rewindEnabled: Bool) -> Action {
+        if !rewindEnabled, let behindLive, behindLive.isFinite, behindLive > maximumBehind {
+            return .jumpToLive
+        }
+        if waitingToMinimizeStalls, bufferedAhead.isFinite, bufferedAhead >= resumeBuffer {
+            return .resume
+        }
+        return .none
+    }
+}

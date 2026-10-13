@@ -37,6 +37,8 @@ public enum BufferProfile: String, Codable, CaseIterable, Identifiable, Sendable
 
 public enum StreamFormatPreference: String, Codable, CaseIterable, Identifiable, Sendable {
     case hls = "m3u8"
+    /// Reads the provider's continuous `.ts` stream through BruTV's local relay, and uses
+    /// HLS when the relay cannot start. Only Xtream live channels have a `.ts` stream.
     case ts = "ts"
 
     public var id: String { rawValue }
@@ -44,7 +46,7 @@ public enum StreamFormatPreference: String, Codable, CaseIterable, Identifiable,
     public var displayName: String {
         switch self {
         case .hls: return "Apple HLS (.m3u8)"
-        case .ts: return "MPEG-TS (.ts)"
+        case .ts: return "MPEG-TS (.ts, most compatible)"
         }
     }
 }
@@ -74,14 +76,19 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
     public var showStatsHUD: Bool
     public var autoPlayNextChannel: Bool
     public var hardwareAcceleration: Bool
+    /// Records live channels on the device so people can pause and rewind up to 10 minutes.
+    /// Off by default: it must download about 3 segments before playback starts, which is
+    /// slow on some providers, and it uses the account's only connection.
+    public var liveRewind: Bool
 
     public init(
         bufferProfile: BufferProfile = .balanced,
-        preferredFormat: StreamFormatPreference = .hls,
+        preferredFormat: StreamFormatPreference = .ts,
         defaultAspectRatio: VideoAspectRatio = .fit,
         showStatsHUD: Bool = false,
         autoPlayNextChannel: Bool = true,
-        hardwareAcceleration: Bool = true
+        hardwareAcceleration: Bool = true,
+        liveRewind: Bool = false
     ) {
         self.bufferProfile = bufferProfile
         self.preferredFormat = preferredFormat
@@ -89,5 +96,34 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
         self.showStatsHUD = showStatsHUD
         self.autoPlayNextChannel = autoPlayNextChannel
         self.hardwareAcceleration = hardwareAcceleration
+        self.liveRewind = liveRewind
+    }
+
+    /// Missing keys use the defaults, so settings saved by an older version still load.
+    public init(from decoder: Decoder) throws {
+        let defaults = PlayerSettings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bufferProfile = (try? container.decodeIfPresent(BufferProfile.self, forKey: .bufferProfile)) ?? defaults.bufferProfile
+        preferredFormat = (try? container.decodeIfPresent(StreamFormatPreference.self, forKey: .preferredFormat)) ?? defaults.preferredFormat
+        defaultAspectRatio = (try? container.decodeIfPresent(VideoAspectRatio.self, forKey: .defaultAspectRatio)) ?? defaults.defaultAspectRatio
+        showStatsHUD = (try? container.decodeIfPresent(Bool.self, forKey: .showStatsHUD)) ?? defaults.showStatsHUD
+        autoPlayNextChannel = (try? container.decodeIfPresent(Bool.self, forKey: .autoPlayNextChannel)) ?? defaults.autoPlayNextChannel
+        hardwareAcceleration = (try? container.decodeIfPresent(Bool.self, forKey: .hardwareAcceleration)) ?? defaults.hardwareAcceleration
+        liveRewind = (try? container.decodeIfPresent(Bool.self, forKey: .liveRewind)) ?? defaults.liveRewind
+    }
+
+    private static let storageKey = "brutv.playerSettings"
+
+    public static func load(from defaults: UserDefaults = .standard) -> PlayerSettings {
+        guard let data = defaults.data(forKey: storageKey),
+              let settings = try? JSONDecoder().decode(PlayerSettings.self, from: data) else {
+            return PlayerSettings()
+        }
+        return settings
+    }
+
+    public func save(to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.storageKey)
     }
 }
