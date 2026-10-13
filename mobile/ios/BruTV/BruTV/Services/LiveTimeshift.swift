@@ -2,6 +2,10 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import os
+
+/// Relay and recorder diagnostics. Messages never contain URLs, because they hold credentials.
+let relayLog = Logger(subsystem: "com.bvolpato.brutv", category: "live-relay")
 
 struct LiveTimeshiftLimits: Sendable {
     var seconds: Double = 600
@@ -580,4 +584,62 @@ actor LiveTimeshiftRecorder {
         stopped = true
         ring.stop()
     }
+
+    private var relayFailure: Error?
+    private var relaySequence: Int64 = 0
+    private var relayDiscontinuity: Int64 = 0
+
+    /// Reads a continuous MPEG-TS response and records it as HLS segments until stopped.
+    /// It reconnects after a dropped response and gives up after 3 failures in a row.
+    /// `transportStreamFailure()` returns the reason after it gives up.
+    func captureTransportStream(
+        _ url: URL,
+        open: @Sendable (URL) -> AsyncThrowingStream<Data, Error> = { TransportStreamRequest.stream($0) }
+    ) async {
+        var failures = 0
+        while !stopped, !Task.isCancelled {
+            var segmenter = MPEGTSSegmenter()
+            var bytes = 0
+            relayLog.info("relay connecting, attempt \(failures + 1, privacy: .public)")
+            do {
+                for try await chunk in open(url) {
+                    guard !stopped, !Task.isCancelled else { return }
+                    bytes += chunk.count
+                    for segment in segmenter.append(chunk) {
+                        let recorded = RecordedHLSSegment(sequence: relaySequence, discontinuity: relayDiscontinuity,
+                                                          duration: segment.duration, url: url,
+                                                          programDateTime: nil, gap: false)
+                        do {
+                            try ring.append(recorded, data: segment.data, target: max(2, ceil(segment.duration)), now: clock())
+                        } catch {
+                            relayLog.error("relay buffer rejected a segment: \(String(describing: error), privacy: .public)")
+                            relayFailure = error
+                            return
+                        }
+                        relayLog.debug("relay segment \(self.relaySequence, privacy: .public): \(segment.duration, privacy: .public)s, \(segment.data.count, privacy: .public) bytes")
+                        relaySequence += 1
+                        failures = 0
+                    }
+                    if bytes > 4 * 1024 * 1024, !segmenter.hasProgram {
+                        relayFailure = LiveTimeshiftError.unsupported("The provider's .ts stream is not MPEG-TS video.")
+                        return
+                    }
+                }
+                throw LiveTimeshiftError.network(0)
+            } catch {
+                if stopped || Task.isCancelled { return }
+                relayLog.error("relay response ended after \(bytes, privacy: .public) bytes: \(String(describing: error), privacy: .public)")
+                failures += 1
+                if failures >= 3 {
+                    relayFailure = error
+                    return
+                }
+            }
+            // A new response restarts the timeline, so mark a discontinuity.
+            relayDiscontinuity += 1
+            try? await Task.sleep(nanoseconds: UInt64(failures) * 1_000_000_000)
+        }
+    }
+
+    func transportStreamFailure() -> Error? { relayFailure }
 }

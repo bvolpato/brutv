@@ -94,8 +94,11 @@ public struct SettingsView: View {
                 Toggle("Hardware Acceleration", isOn: $playback.settings.hardwareAcceleration)
             }
 
-            Section(header: Text("LIVE REWIND"), footer: Text("Pause keeps capturing supported HLS streams while BruTV is active. Up to 10 minutes is retained within a 256 MiB total temporary-file limit, including recently served segments. The retained window can be shorter for high-bitrate streams. iPhone and iPad may suspend capture when paused in the background or when locked. Closing playback or changing channels deletes the buffer.")) {
-                Label("10 minutes / 256 MiB maximum", systemImage: "clock.arrow.circlepath")
+            Section(header: Text("LIVE REWIND"), footer: Text("When on, BruTV records live channels on this device so you can pause and rewind. Channels take longer to start, because BruTV records about 30 seconds first, and some providers are too slow for it. When off, channels start right away, and you can pause briefly within the provider's own live window. Up to 10 minutes is kept within a 256 MiB temporary-file limit. Closing playback or changing channels deletes the recording.")) {
+                Toggle(isOn: $playback.settings.liveRewind) {
+                    Label("Pause & Rewind Live TV", systemImage: "clock.arrow.circlepath")
+                }
+                .accessibilityIdentifier("liveRewindToggle")
             }
 
             // Cache & Maintenance

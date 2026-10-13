@@ -28,7 +28,9 @@ BruTV does not include any channels, video content, or subscriptions. To watch, 
 
 ### Key Features
 
-- **Low-Latency Buffering:**
+- **Low-Latency Buffering & MPEG-TS Relay:**
+  - **MPEG-TS Relay:** Xtream channels play through a local relay that reads continuous `.ts` streams, cuts at keyframes, and falls back to HLS automatically.
+  - **Live Edge Priority:** Keeps playback at the live edge after stalls, stepping down bitrate when needed.
   - **Ultra Low Latency (1.5s buffer):** keeps live sports and news close to real time.
   - **Balanced (4.0s buffer):** the default. Fast channel changes with protection against network jitter.
   - **High Stability (10.0s buffer):** a deeper buffer for weak or cellular connections.
@@ -37,6 +39,7 @@ BruTV does not include any channels, video content, or subscriptions. To watch, 
 - **Instant Channel Zapping:**
   - Swipe left or right on the video to change channels.
   - The in-player channel guide shows logos while the stream keeps playing.
+  - The mini player keeps live video playing while you browse the channel list.
 
 - **Stream Telemetry HUD:**
   - See the buffer ahead of the playhead, network bitrate, resolution, frame rate, dropped frames, and stalls.
@@ -44,6 +47,7 @@ BruTV does not include any channels, video content, or subscriptions. To watch, 
 - **Designed for iPhone, iPad, and Mac:**
   - Sidebar layout on iPad and Mac. Tab bar on iPhone.
   - Picture-in-Picture and background audio.
+  - Double-click to toggle full screen on Mac, and press Esc to exit full screen.
   - Keyboard shortcuts on Mac and iPad.
 
 - **Channel Browsing:**
@@ -61,7 +65,8 @@ BruTV does not include any channels, video content, or subscriptions. To watch, 
   - Save several profiles and switch between them.
 
 - **QR Code Sign-In:**
-  - Share your sign-in as a QR code from Settings. Family members scan it with the Camera, and BruTV signs in automatically. Nobody has to type a server, username, or password.
+  - Tap the camera icon on the login screen to scan a QR code with the device camera or select a QR image from Photos.
+  - Share your sign-in as a QR code from Settings. Family members can scan it to sign in without typing passwords.
 
 ---
 
@@ -121,7 +126,7 @@ To test without an account, use a public, legal playlist of free-to-air channels
 4. Tap "Load Playlist". About 400 channels load in a few seconds.
 5. Tap any channel to play it. Use the "Channels" button, Close, Minimize, or swipe down to go back.
 
-QR code sign-in: Settings > Share Sign-In QR Code. Scanning the code with the Camera opens a brutv://login link, and BruTV signs in automatically.
+QR code sign-in: Settings > Share Sign-In QR Code displays a sign-in QR code. Scanning the code with the Camera app opens a brutv://login link, and BruTV signs in automatically. Users can also tap the camera button on the login screen to scan a code directly in the app or choose a QR screenshot from Photos.
 
 Some public channels can be offline at any time. If one does not play, try another.
 

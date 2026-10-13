@@ -257,7 +257,7 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public static let demo = ServerProfile(
         name: "Demo Account",
         serverURL: "http://example.invalid",
-        username: "REDACTED_USERNAMEp2",
+        username: "REDACTED_USERNAME",
         password: "REDACTED_PASSWORD",
         lastConnected: Date(),
         isActive: true

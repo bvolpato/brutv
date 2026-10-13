@@ -19,6 +19,7 @@ public struct LoginView: View {
     @State private var errorMessage: String?
     @State private var signInGeneration = UUID()
     @State private var signInTask: Task<Void, Never>?
+    @State private var showScanner = false
 
     public init() {}
 
@@ -132,18 +133,32 @@ public struct LoginView: View {
                         .accessibilityIdentifier("connectButton")
                         .padding(.top, 4)
 
-                        // Sign in from a shared link (Mac has no camera flow for QR codes)
-                        PasteButton(payloadType: String.self) { strings in
-                            guard let text = strings.first else { return }
-                            Task { @MainActor in signIn(withPasted: text) }
-                        }
-                        .buttonBorderShape(.capsule)
-                        .tint(.cyan)
-                        .labelStyle(.titleAndIcon)
-                        .accessibilityHint("Paste a BruTV sign-in link or playlist URL.")
-                        .accessibilityIdentifier("pasteLoginLinkButton")
+                        // Sign in from a QR code or a shared link
+                        HStack(spacing: 10) {
+                            Button {
+                                showScanner = true
+                            } label: {
+                                Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .tint(.cyan)
+                            .accessibilityHint("Scan a BruTV sign-in QR code with the camera or from a photo.")
+                            .accessibilityIdentifier("scanQRButton")
 
-                        Text("Got a BruTV QR code? Scan it with the Camera app. Got a link? Copy it, then tap Paste.")
+                            PasteButton(payloadType: String.self) { strings in
+                                guard let text = strings.first else { return }
+                                Task { @MainActor in signIn(withPasted: text) }
+                            }
+                            .buttonBorderShape(.capsule)
+                            .tint(.cyan)
+                            .labelStyle(.titleAndIcon)
+                            .accessibilityHint("Paste a BruTV sign-in link or playlist URL.")
+                            .accessibilityIdentifier("pasteLoginLinkButton")
+                        }
+
+                        Text("Got a BruTV QR code? Tap Scan QR Code. Got a link? Copy it, then tap Paste.")
                             .font(.system(size: 11))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
@@ -222,6 +237,11 @@ public struct LoginView: View {
 
                     Spacer(minLength: 40)
                 }
+            }
+        }
+        .sheet(isPresented: $showScanner) {
+            LoginQRScannerView { link in
+                signIn(withScanned: link)
             }
         }
     }
@@ -361,7 +381,12 @@ public struct LoginView: View {
             errorMessage = "The clipboard does not contain a BruTV link or playlist URL."
             return
         }
-        // Show what was pasted so people can see which account they are joining.
+        signIn(withScanned: link)
+    }
+
+    /// Fills the form from a link, then signs in. Showing the values lets people see
+    /// which account they are joining.
+    private func signIn(withScanned link: LoginLink) {
         switch link {
         case let .xtream(server, user, pass):
             mode = .xtream

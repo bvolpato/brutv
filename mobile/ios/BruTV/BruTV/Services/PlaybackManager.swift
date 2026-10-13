@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import AVKit
 import Combine
+import MediaPlayer
 
 public enum PlaybackState: Equatable, Sendable {
     case idle
@@ -10,6 +11,18 @@ public enum PlaybackState: Equatable, Sendable {
     case paused
     case buffering
     case failed(String)
+
+    /// A short name that UI tests read from the video view.
+    public var testDescription: String {
+        switch self {
+        case .idle: return "idle"
+        case .loading: return "loading"
+        case .playing: return "playing"
+        case .paused: return "paused"
+        case .buffering: return "buffering"
+        case .failed: return "failed"
+        }
+    }
 }
 
 @MainActor
@@ -24,7 +37,9 @@ public final class PlaybackManager: ObservableObject {
     @Published public private(set) var isPlaybackRequested = false
     @Published public private(set) var telemetry: StreamTelemetry = StreamTelemetry()
     @Published public var aspectRatio: VideoAspectRatio = .fit
-    @Published public var settings: PlayerSettings = PlayerSettings()
+    @Published public var settings: PlayerSettings = PlayerSettings.load() {
+        didSet { if settings != oldValue { settings.save() } }
+    }
     @Published public var isMuted: Bool = false {
         didSet { player.isMuted = isMuted }
     }
@@ -45,6 +60,7 @@ public final class PlaybackManager: ObservableObject {
     private var pendingLiveRecordedPosition: Double?
     private var pendingLiveDate: Date?
     private var explicitlyRewound = false
+    private var liveJumpInProgress = false
     private var originalLiveURL: URL?
     private var codecFallback = LiveTimeshiftCodecFallback()
 
@@ -57,9 +73,14 @@ public final class PlaybackManager: ObservableObject {
 
     private var itemObservers: Set<AnyCancellable> = []
     private var accountObserver: AnyCancellable?
+    private var nowPlayingObserver: AnyCancellable?
     private var telemetryTimer: Timer?
     private var stallCount: Int = 0
     private var recovery = PlaybackRecoveryPolicy()
+    private var quality = QualityStepDownPolicy()
+    /// The provider URL of what is playing. With live rewind on, AVPlayer reads a local
+    /// copy instead, so this is the URL to hand to another player app.
+    @Published public private(set) var providerURL: URL?
     private var sessionGeneration: UInt64 = 0
     private var itemGeneration: UInt64 = 0
     private var currentPlaybackURL: URL?
@@ -80,6 +101,7 @@ public final class PlaybackManager: ObservableObject {
             Self.hasCleanedLiveBuffers = true
         }
         setupAudioSession()
+        setupNowPlaying()
         accountObserver = AccountStore.shared.$currentProfile
             .map { $0?.id }
             .removeDuplicates()
@@ -94,6 +116,55 @@ public final class PlaybackManager: ObservableObject {
         } catch {
             print("Failed to configure the playback audio session.")
         }
+    }
+
+    /// Shows the channel or title on the Lock Screen and in Control Center, and
+    /// handles the play, pause, and next or previous channel commands there.
+    private func setupNowPlaying() {
+        let center = MPRemoteCommandCenter.shared()
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self, self.currentStream != nil || self.currentVOD != nil else { return .noActionableNowPlayingItem }
+            self.togglePlayPause()
+            return .success
+        }
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self, self.currentStream != nil || self.currentVOD != nil else { return .noActionableNowPlayingItem }
+            if !self.isPlaybackRequested { self.togglePlayPause() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self, self.currentStream != nil || self.currentVOD != nil else { return .noActionableNowPlayingItem }
+            if self.isPlaybackRequested { self.togglePlayPause() }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self, self.currentStream != nil, !self.activePlaylist.isEmpty else { return .noActionableNowPlayingItem }
+            self.nextChannel()
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self, self.currentStream != nil, !self.activePlaylist.isEmpty else { return .noActionableNowPlayingItem }
+            self.previousChannel()
+            return .success
+        }
+
+        nowPlayingObserver = Publishers.CombineLatest3($currentStream, $currentVOD, $isPlaybackRequested)
+            .receive(on: DispatchQueue.main)
+            .sink { stream, vod, playing in
+                let info = MPNowPlayingInfoCenter.default()
+                guard let title = stream?.name ?? vod?.name else {
+                    info.nowPlayingInfo = nil
+                    info.playbackState = .stopped
+                    return
+                }
+                info.nowPlayingInfo = [
+                    MPMediaItemPropertyTitle: title,
+                    MPMediaItemPropertyArtist: "BruTV",
+                    MPNowPlayingInfoPropertyIsLiveStream: stream != nil,
+                    MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0
+                ]
+                info.playbackState = playing ? .playing : .paused
+            }
     }
 
     private func setupPlayerObservers(for item: AVPlayerItem, session: UInt64, generation: UInt64) {
@@ -177,6 +248,8 @@ public final class PlaybackManager: ObservableObject {
         self.playbackState = .loading
         self.stallCount = 0
         self.currentFormat = .hls
+        // For live TV, a lower quality that keeps up beats a better picture that stalls.
+        self.quality = QualityStepDownPolicy(stallsToStepDown: 1)
 
         // Record in history
         FavoritesStore.shared.addRecent(channelID: stream.id)
@@ -190,7 +263,7 @@ public final class PlaybackManager: ObservableObject {
                 failPlayback(with: "Invalid stream URL.")
                 return
             }
-            startBufferedLivePlayback(url: url)
+            startLive(url: url)
             return
         }
 
@@ -199,7 +272,79 @@ public final class PlaybackManager: ObservableObject {
             return
         }
 
-        startBufferedLivePlayback(url: url)
+        startLive(url: url)
+    }
+
+    /// Plays a live URL.
+    ///
+    /// With the MPEG-TS protocol (the default), Xtream channels play through the local relay,
+    /// which reads the provider's continuous `.ts` stream like IPTV Smarters does. If the relay
+    /// cannot start, playback falls back to the provider's HLS. With live rewind on and HLS
+    /// chosen, a local recorder captures the HLS stream first. Otherwise AVPlayer reads the
+    /// provider's HLS directly.
+    private func startLive(url: URL) {
+        providerURL = url
+        if settings.preferredFormat == .ts, let relayURL = TransportStreamRelayPolicy.relayURL(for: url) {
+            startRelayedLivePlayback(relayURL: relayURL, fallbackURL: url)
+        } else if settings.liveRewind {
+            startBufferedLivePlayback(url: url)
+        } else {
+            prepareAndPlay(url: url)
+        }
+    }
+
+    private func startRelayedLivePlayback(relayURL: URL, fallbackURL: URL) {
+        // Used by the codec fallback when AVPlayer cannot decode the relayed segments.
+        originalLiveURL = fallbackURL
+        let session = sessionGeneration
+        liveCaptureTask = Task { [weak self] in
+            guard let self else { return }
+            var capture: Task<Void, Never>?
+            defer { capture?.cancel() }
+            do {
+                let recorder = try LiveTimeshiftRecorder()
+                self.liveRecorder = recorder
+                let server = LiveTimeshiftServer(recorder: recorder)
+                self.liveServer = server
+                capture = Task { await recorder.captureTransportStream(relayURL) }
+                var ready = false
+                let deadline = Date().addingTimeInterval(15)
+                while !Task.isCancelled, self.sessionGeneration == session {
+                    if let failure = await recorder.transportStreamFailure() { throw failure }
+                    let snapshot = await recorder.snapshot()
+                    guard !Task.isCancelled, self.liveRecorder === recorder else { return }
+                    self.liveBuffer = snapshot
+                    // Two short segments are enough to start; more arrive while it plays.
+                    if !ready, snapshot.duration >= max(4, snapshot.targetDuration * 2) {
+                        let localURL = try await server.start()
+                        guard !Task.isCancelled, self.liveRecorder === recorder else { server.stop(); return }
+                        ready = true
+                        relayLog.info("relay ready with \(snapshot.duration, privacy: .public)s buffered")
+                        self.prepareAndPlay(url: localURL)
+                    }
+                    if !ready, Date() > deadline { throw LiveTimeshiftError.startupTimeout }
+                    try await Task.sleep(nanoseconds: ready ? 1_000_000_000 : 250_000_000)
+                }
+            } catch {
+                guard !Task.isCancelled, self.sessionGeneration == session else { return }
+                capture?.cancel()
+                capture = nil
+                relayLog.error("relay failed, playing HLS: \(String(describing: error), privacy: .public)")
+                let reason = (error as? LiveTimeshiftError)?.errorDescription ?? "The MPEG-TS relay could not read this channel."
+                // Let the relay close its provider connection first: many accounts allow only one.
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled, self.sessionGeneration == session else { return }
+                // This cancels the current task, so play the fallback right after it.
+                self.stopLiveBuffer()
+                self.liveBufferUnavailable = reason
+                self.prepareAndPlay(url: fallbackURL)
+            }
+        }
+    }
+
+    /// True for playlists served by BruTV's own local server (relay or recorder).
+    nonisolated static func isLocalPlaylist(_ url: URL) -> Bool {
+        url.host == "127.0.0.1"
     }
 
     /// AVPlayer cannot play raw MPEG-TS over HTTP. Xtream-style playlist entries
@@ -217,6 +362,7 @@ public final class PlaybackManager: ObservableObject {
         beginPlaybackSession()
 
         self.currentVOD = vod
+        self.quality = QualityStepDownPolicy(stallsToStepDown: 2)
         self.currentStream = nil
         self.playbackState = .loading
         self.stallCount = 0
@@ -226,6 +372,7 @@ public final class PlaybackManager: ObservableObject {
             return
         }
 
+        providerURL = url
         prepareAndPlay(url: url)
     }
 
@@ -241,6 +388,8 @@ public final class PlaybackManager: ObservableObject {
         cancelWatchdog()
         cancelRetry()
         recovery.reset()
+        quality.reset()
+        providerURL = nil
         isPlaybackRequested = true
         currentPlaybackURL = nil
         pendingResumePosition = nil
@@ -262,7 +411,8 @@ public final class PlaybackManager: ObservableObject {
                 self.liveServer = server
                 var pollDelay: Double = 1
                 var failures = 0
-                let deadline = Date().addingTimeInterval(35)
+                // Past this, play the provider directly instead of making people wait.
+                let deadline = Date().addingTimeInterval(15)
                 while !Task.isCancelled, self.sessionGeneration == session {
                     do {
                         if ready {
@@ -352,6 +502,21 @@ public final class PlaybackManager: ObservableObject {
             with: settings.bufferProfile,
             hardwareAccelerated: settings.hardwareAcceleration
         )
+        if quality.peakBitRate > 0 {
+            playerItem.preferredPeakBitRate = quality.peakBitRate
+        }
+        // The local relay and recorder serve a short live playlist from memory. With a fixed
+        // forward buffer, AVPlayer never becomes ready on it, even with seconds of media
+        // available. The automatic buffer (0) starts at once.
+        if Self.isLocalPlaylist(url) {
+            playerItem.preferredForwardBufferDuration = 0
+        }
+        // Staying live matters more than quality: after a stall, jump ahead to keep the same
+        // distance from the live edge instead of playing further and further behind.
+        // With live rewind on, people choose where to watch, so keep their position.
+        if currentStream != nil, !settings.liveRewind {
+            playerItem.automaticallyPreservesTimeOffsetFromLive = true
+        }
 
         player.pause()
         player.replaceCurrentItem(with: playerItem)
@@ -381,7 +546,11 @@ public final class PlaybackManager: ObservableObject {
             self.handlePlaybackFailure(.timedOut, item: playerItem, session: session, generation: generation)
         }
         watchdogWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: workItem)
+        // Before any media arrives, wait longer: some providers take about 40 seconds to
+        // deliver the first segment of a channel nobody is watching, and a retry starts that
+        // wait again. After media has played, a 20 second stall is a real failure.
+        let hasMedia = playerItem.status == .readyToPlay && !playerItem.loadedTimeRanges.isEmpty
+        DispatchQueue.main.asyncAfter(deadline: .now() + (hasMedia ? 20.0 : 45.0), execute: workItem)
     }
 
     private func cancelWatchdog() {
@@ -430,6 +599,7 @@ public final class PlaybackManager: ObservableObject {
                       self.isPlaybackRequested, self.retryWorkItem == nil else { return }
                 self.stallCount += 1
                 self.recovery.recordInterruption()
+                self.stepDownQualityAfterStall(playerItem)
                 self.playbackState = .buffering
                 self.startWatchdog(for: playerItem, session: session, generation: generation)
             }
@@ -526,6 +696,8 @@ public final class PlaybackManager: ObservableObject {
 
     private func handlePlaybackFailure(_ failure: PlaybackFailure, item: AVPlayerItem, session: UInt64, generation: UInt64) {
         guard isCurrent(item, session: session, generation: generation), isPlaybackRequested, retryWorkItem == nil else { return }
+        let itemError = item.error as NSError?
+        relayLog.error("playback failure \(String(describing: failure), privacy: .public): \(itemError?.domain ?? "none", privacy: .public) \(itemError?.code ?? 0, privacy: .public)")
         if let url = originalLiveURL,
            codecFallback.consume(for: failure, recording: liveRecorder != nil) {
             fallbackToOriginalLivePlayback(url: url)
@@ -684,6 +856,14 @@ public final class PlaybackManager: ObservableObject {
         playbackState = .paused
     }
 
+    /// After repeated stalls, caps the peak bitrate so AVPlayer switches to a lower variant.
+    /// Streams with one variant (most Xtream channels) have nothing lower to switch to.
+    private func stepDownQualityAfterStall(_ item: AVPlayerItem) {
+        let indicated = item.accessLog()?.events.last?.indicatedBitrate ?? 0
+        guard let cap = quality.recordStall(at: ProcessInfo.processInfo.systemUptime, currentBitrate: indicated) else { return }
+        item.preferredPeakBitRate = cap
+    }
+
     public func stop() {
         stopLiveBuffer()
         originalLiveURL = nil
@@ -693,6 +873,8 @@ public final class PlaybackManager: ObservableObject {
         cancelWatchdog()
         cancelRetry()
         recovery.reset()
+        quality.reset()
+        providerURL = nil
         player.currentItem?.cancelPendingSeeks()
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -726,10 +908,48 @@ public final class PlaybackManager: ObservableObject {
                     self.resumePlayback(for: currentItem, session: self.sessionGeneration, generation: self.itemGeneration)
                 }
                 self.updateLiveTimeline(for: currentItem)
+                self.keepLive(currentItem)
                 var t = HLSBufferEngine.shared.extractTelemetry(from: currentItem, currentStallCount: self.stallCount)
                 t.playbackRate = self.player.rate
                 t.isLive = self.currentVOD == nil
                 self.telemetry = t
+            }
+        }
+    }
+
+    /// Live TV prefers staying live over a smooth picture. See `LiveEdgePolicy`.
+    private func keepLive(_ item: AVPlayerItem) {
+        if currentStream != nil {
+            relayLog.debug("""
+                live state item=\(item.status.rawValue, privacy: .public) control=\(self.player.timeControlStatus.rawValue, privacy: .public) \
+                reason=\(self.player.reasonForWaitingToPlay?.rawValue ?? "-", privacy: .public) \
+                time=\(CMTimeGetSeconds(item.currentTime()), privacy: .public) \
+                ahead=\(HLSBufferEngine.shared.calculateBufferDuration(for: item), privacy: .public) \
+                size=\(item.presentationSize.width, privacy: .public)x\(item.presentationSize.height, privacy: .public)
+                """)
+        }
+        guard currentStream != nil, isPlaybackRequested, retryWorkItem == nil, pendingResumePosition == nil,
+              !resumeSeekInProgress, !liveJumpInProgress, !explicitlyRewound, item.status == .readyToPlay else { return }
+        let range = liveSeekableRange(for: item)
+        let current = CMTimeGetSeconds(item.currentTime())
+        let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            && player.reasonForWaitingToPlay == .toMinimizeStalls
+        let action = LiveEdgePolicy.action(waitingToMinimizeStalls: waiting,
+                                           bufferedAhead: HLSBufferEngine.shared.calculateBufferDuration(for: item),
+                                           behindLive: range.map { $0.end - current },
+                                           rewindEnabled: settings.liveRewind)
+        switch action {
+        case .none:
+            break
+        case .resume:
+            relayLog.info("playing buffered media after a stall")
+            player.playImmediately(atRate: 1)
+        case .jumpToLive:
+            guard let range else { return }
+            relayLog.info("jumping \(range.end - current, privacy: .public)s ahead to live")
+            liveJumpInProgress = true
+            item.seek(to: CMTime(seconds: range.end, preferredTimescale: 600)) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.liveJumpInProgress = false }
             }
         }
     }

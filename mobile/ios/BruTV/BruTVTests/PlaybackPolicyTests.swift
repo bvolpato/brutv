@@ -108,4 +108,77 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(PlaybackPolicy.vodResumePosition(42, duration: .nan), 42)
         XCTAssertEqual(PlaybackPolicy.vodResumePosition(42, duration: 20) ?? 0, 19.9, accuracy: 0.001)
     }
+
+    // MARK: - Quality step-down
+
+    func testOneStallKeepsQualityAndTwoStallsCapBelowThePlayingVariant() {
+        var policy = QualityStepDownPolicy()
+        XCTAssertNil(policy.recordStall(at: 100, currentBitrate: 4_000_000))
+        XCTAssertEqual(policy.recordStall(at: 120, currentBitrate: 4_000_000) ?? 0, 2_800_000, accuracy: 1)
+        XCTAssertEqual(policy.peakBitRate, 2_800_000, accuracy: 1)
+    }
+
+    func testStallsOutsideTheWindowDoNotStepDown() {
+        var policy = QualityStepDownPolicy(stallsToStepDown: 2, window: 60)
+        XCTAssertNil(policy.recordStall(at: 0, currentBitrate: 4_000_000))
+        XCTAssertNil(policy.recordStall(at: 61, currentBitrate: 4_000_000))
+    }
+
+    func testRepeatedStepDownsKeepLoweringUntilTheFloor() {
+        var policy = QualityStepDownPolicy(stallsToStepDown: 1, window: 60, floor: 1_000_000)
+        XCTAssertEqual(policy.recordStall(at: 0, currentBitrate: 2_000_000) ?? 0, 1_400_000, accuracy: 1)
+        XCTAssertEqual(policy.recordStall(at: 1, currentBitrate: 1_400_000) ?? 0, 1_000_000, accuracy: 1)
+        XCTAssertNil(policy.recordStall(at: 2, currentBitrate: 1_000_000), "Must not go below the floor")
+    }
+
+    func testUnknownVariantBitrateDoesNotCapQuality() {
+        // Single-variant Xtream playlists report no bitrate (-1).
+        var policy = QualityStepDownPolicy(stallsToStepDown: 1)
+        XCTAssertNil(policy.recordStall(at: 0, currentBitrate: -1))
+        XCTAssertEqual(policy.peakBitRate, 0)
+    }
+
+    // MARK: - Live edge
+
+    func testStallWithBufferedMediaResumesInsteadOfWaiting() {
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: true, bufferedAhead: 3.2,
+                                             behindLive: 10, rewindEnabled: false), .resume)
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: true, bufferedAhead: 1,
+                                             behindLive: 10, rewindEnabled: false), .none)
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: false, bufferedAhead: 8,
+                                             behindLive: 10, rewindEnabled: false), .none)
+    }
+
+    func testFarBehindLiveJumpsToLiveUnlessRewindIsOn() {
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: false, bufferedAhead: 0,
+                                             behindLive: 31, rewindEnabled: false), .jumpToLive)
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: false, bufferedAhead: 0,
+                                             behindLive: 31, rewindEnabled: true), .none)
+        XCTAssertEqual(LiveEdgePolicy.action(waitingToMinimizeStalls: false, bufferedAhead: 0,
+                                             behindLive: nil, rewindEnabled: false), .none)
+    }
+
+    // MARK: - Player settings
+
+    func testSettingsSavedBeforeLiveRewindExistedStillLoadWithItOff() throws {
+        let old = Data(#"{"bufferProfile":"high_stability","preferredFormat":"m3u8","defaultAspectRatio":"fill","showStatsHUD":true,"autoPlayNextChannel":false,"hardwareAcceleration":true}"#.utf8)
+        let settings = try JSONDecoder().decode(PlayerSettings.self, from: old)
+        XCTAssertEqual(settings.bufferProfile, .highStability)
+        XCTAssertEqual(settings.defaultAspectRatio, .fill)
+        XCTAssertTrue(settings.showStatsHUD)
+        XCTAssertFalse(settings.liveRewind)
+    }
+
+    func testSettingsRoundTripThroughUserDefaults() throws {
+        let suite = "brutv.tests.settings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(PlayerSettings.load(from: defaults), PlayerSettings())
+
+        var settings = PlayerSettings()
+        settings.liveRewind = true
+        settings.bufferProfile = .ultraLowLatency
+        settings.save(to: defaults)
+        XCTAssertEqual(PlayerSettings.load(from: defaults), settings)
+    }
 }

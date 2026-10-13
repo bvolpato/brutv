@@ -21,6 +21,7 @@ let package = Package(
                 "Services/LoginLink.swift", "Services/M3UPlaylistParser.swift",
                 "Services/XtreamCodesClient.swift",
                 "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift", "Services/LiveTimeshift.swift",
+                "Services/MPEGTSRelay.swift",
             ]
         ),
         .testTarget(
@@ -34,6 +35,7 @@ let package = Package(
                 "SourceLoginTests.swift", "XtreamCodesClientTests.swift",
                 "SourceRegressionTests.swift",
                 "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift", "LiveTimeshiftTests.swift",
+                "MPEGTSRelayTests.swift",
             ]
         ),
     ],
