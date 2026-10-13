@@ -27,6 +27,67 @@ final class XtreamCodesClientTests: XCTestCase {
         XCTAssertEqual(vodURL?.absoluteString, "http://provider.example.test/movie/fixture-user/fixture-password/1325116.mp4")
     }
 
+    func testSeriesStreamURLGeneration() {
+        let client = XtreamCodesClient(
+            serverURLString: "http://provider.example.test",
+            username: "fixture-user",
+            password: "fixture-password"
+        )
+
+        let seriesURL = client.seriesStreamURL(streamID: 22615, containerExtension: "mp4")
+        XCTAssertEqual(seriesURL?.absoluteString, "http://provider.example.test/series/fixture-user/fixture-password/22615.mp4")
+    }
+
+    func testSeriesDetailsDecoding() throws {
+        let json = """
+        {
+          "seasons": [],
+          "info": {
+            "name": "Altered Carbon",
+            "cover": "http://img.example.test/cover.jpg",
+            "plot": "In a futuristic world where consciousness is digitized...",
+            "cast": "Joel Kinnaman",
+            "director": "Laeta Kalogridis",
+            "genre": "Sci-Fi",
+            "rating": "8.0"
+          },
+          "episodes": {
+            "1": [
+              {
+                "id": "22615",
+                "episode_num": "1",
+                "title": "Out of the Past",
+                "container_extension": "mp4",
+                "season": "1",
+                "info": {
+                  "duration": "55m",
+                  "duration_secs": "3300",
+                  "movie_image": "http://img.example.test/ep1.jpg",
+                  "plot": "Takeshi Kovacs is awakened...",
+                  "rating": "8.5"
+                }
+              }
+            ]
+          }
+        }
+        """.data(using: .utf8)!
+
+        let details = try JSONDecoder().decode(SeriesDetails.self, from: json)
+        XCTAssertEqual(details.info?.name, "Altered Carbon")
+        XCTAssertEqual(details.info?.rating, "8.0")
+        XCTAssertEqual(details.episodes.count, 1)
+
+        let season1 = try XCTUnwrap(details.episodes["1"])
+        XCTAssertEqual(season1.count, 1)
+        XCTAssertEqual(season1[0].id, 22615)
+        XCTAssertEqual(season1[0].episodeNum, 1)
+        XCTAssertEqual(season1[0].title, "Out of the Past")
+        XCTAssertEqual(season1[0].containerExtension, "mp4")
+        XCTAssertEqual(season1[0].season, 1)
+        XCTAssertEqual(season1[0].info?.duration, "55m")
+        XCTAssertEqual(season1[0].info?.durationSecs, 3300)
+    }
+
     func testAuthResponseDecoding() throws {
         let expiration = Int(Date().timeIntervalSince1970) + 3_600
         let json = """

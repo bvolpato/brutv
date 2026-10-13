@@ -522,6 +522,18 @@ public final class XtreamCodesClient: @unchecked Sendable {
         }
     }
 
+    public func fetchSeriesDetails(seriesID: Int) async throws -> SeriesDetails {
+        let source = snapshot()
+        if source.playlistURLString != nil { return SeriesDetails(info: nil, episodes: [:]) }
+        guard seriesID > 0 else { throw XtreamError.networkError("Invalid series ID") }
+        let data = try await requestData(for: source, action: "get_series_info", queryParams: ["series_id": "\(seriesID)"], timeout: 25.0)
+        do {
+            return try JSONDecoder().decode(SeriesDetails.self, from: data)
+        } catch {
+            throw XtreamError.decodingError(error.localizedDescription)
+        }
+    }
+
     private func normalizedCategoryID(_ rawID: String) -> String? {
         guard let id = Int(rawID), id > 0 else { return nil }
         return String(id)

@@ -376,6 +376,40 @@ public final class PlaybackManager: ObservableObject {
         prepareAndPlay(url: url)
     }
 
+    public func playEpisode(episode: SeriesEpisode, seriesName: String) {
+        beginPlaybackSession()
+
+        let titleFormatted: String
+        if episode.title.hasPrefix("Episode") || episode.title.hasPrefix("E") {
+            titleFormatted = "\(seriesName) - \(episode.title)"
+        } else {
+            titleFormatted = "\(seriesName) - S\(episode.season)E\(episode.episodeNum): \(episode.title)"
+        }
+
+        let vod = VODStream(
+            id: episode.id,
+            name: titleFormatted,
+            iconURLString: episode.info?.movieImage,
+            rating: episode.info?.rating,
+            categoryId: "\(episode.season)",
+            containerExtension: episode.containerExtension,
+            streamType: "series"
+        )
+        self.currentVOD = vod
+        self.quality = QualityStepDownPolicy(stallsToStepDown: 2)
+        self.currentStream = nil
+        self.playbackState = .loading
+        self.stallCount = 0
+
+        guard let url = AccountStore.shared.client.seriesStreamURL(streamID: episode.id, containerExtension: episode.containerExtension) else {
+            failPlayback(with: "Invalid episode URL.")
+            return
+        }
+
+        providerURL = url
+        prepareAndPlay(url: url)
+    }
+
     private func beginPlaybackSession() {
         stopLiveBuffer()
         originalLiveURL = nil
