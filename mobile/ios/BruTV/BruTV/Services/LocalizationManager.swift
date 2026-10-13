@@ -362,7 +362,8 @@ public final class LocalizationManager: ObservableObject {
         "Failed to load media.": "Falha ao carregar mídia.",
         "The server returned an invalid response.": "O servidor retornou uma resposta inválida.",
         "Network connection timed out.": "Tempo limite de conexão esgotado.",
-        "The stream could not be loaded.": "Não foi possível carregar a transmissão."
+        "The stream could not be loaded.": "Não foi possível carregar a transmissão.",
+        "Buffering rewind…": "Preparando retrocesso…"
     ]
 
     private let translationsEN: [String: String] = [:]

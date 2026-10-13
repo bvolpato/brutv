@@ -135,6 +135,8 @@ private actor MovingHLSFixture {
 
     init(head: Int64 = 2, window: Int64 = 3) { self.head = head; self.window = window }
 
+    func resetHead(to newHead: Int64) { head = newHead }
+
     func fetch(_ url: URL, maximumBytes: Int) throws -> (Data, URL) {
         if url.pathExtension == "m3u8" {
             let first = max(0, head - window + 1)
@@ -299,9 +301,29 @@ extension LiveTimeshiftTests {
         XCTAssertEqual(requests, [48, 49, 50])
         let snapshot = await recorder.snapshot()
         XCTAssertEqual(snapshot.duration, 6)
+        XCTAssertTrue(snapshot.canRewind)
         _ = try await recorder.capture(URL(string: "https://provider.example/live.m3u8")!)
         let later = await source.segmentRequests
         XCTAssertEqual(later, [48, 49, 50, 51])
+        await recorder.stop()
+    }
+
+    func testRecorderRecoversAcrossProviderSequenceResetWithoutDroppingBuffer() async throws {
+        let source = MovingHLSFixture(head: 20, window: 2)
+        let recorder = try LiveTimeshiftRecorder(fetch: { try await source.fetch($0, maximumBytes: $1) })
+        let url = URL(string: "https://provider.example/live.m3u8")!
+        _ = try await recorder.capture(url)
+        let initial = await recorder.snapshot()
+        XCTAssertEqual(initial.duration, 4)
+        XCTAssertTrue(initial.canRewind)
+
+        // Simulate upstream provider restarting its HLS media sequence back to 1
+        await source.resetHead(to: 1)
+        _ = try await recorder.capture(url)
+        let recovered = await recorder.snapshot()
+        XCTAssertEqual(recovered.duration, 8)
+        let manifest = String(data: try await recorder.playlist(), encoding: .utf8)!
+        XCTAssertTrue(manifest.contains("#EXT-X-DISCONTINUITY"))
         await recorder.stop()
     }
 }

@@ -52,7 +52,11 @@ public final class PlaybackManager: ObservableObject {
     @Published public private(set) var telemetry: StreamTelemetry = StreamTelemetry()
     @Published public var aspectRatio: VideoAspectRatio = .fit
     @Published public var settings: PlayerSettings = PlayerSettings.load() {
-        didSet { if settings != oldValue { settings.save() } }
+        didSet {
+            guard settings != oldValue else { return }
+            settings.save()
+            handleSettingsChanged(from: oldValue, to: settings)
+        }
     }
     @Published public var isMuted: Bool = false {
         didSet { player.isMuted = isMuted }
@@ -69,6 +73,7 @@ public final class PlaybackManager: ObservableObject {
 
     @Published private(set) var liveBuffer = LiveTimeshiftSnapshot()
     @Published private(set) var liveBufferUnavailable: String?
+    @Published public private(set) var isRecoveringLiveBuffer = false
     @Published private(set) var liveBehindSeconds: Double = 0
     @Published private(set) var liveSeekStart: Double = 0
     @Published private(set) var liveSeekEnd: Double = 0
@@ -76,6 +81,8 @@ public final class PlaybackManager: ObservableObject {
     private var liveRecorder: LiveTimeshiftRecorder?
     private var liveServer: LiveTimeshiftServer?
     private var liveCaptureTask: Task<Void, Never>?
+    private var liveRecoveryTask: Task<Void, Never>?
+    private var liveRecoveryBlockedForSession = false
     private var pausedLivePosition: Double?
     private var pendingLiveRecordedPosition: Double?
     private var pendingLiveDate: Date?
@@ -84,7 +91,13 @@ public final class PlaybackManager: ObservableObject {
     private var originalLiveURL: URL?
     private var codecFallback = LiveTimeshiftCodecFallback()
 
-    var canSeekLive: Bool { liveRecorder != nil && liveBuffer.canRewind && liveSeekEnd > liveSeekStart }
+    var canSeekLive: Bool {
+        guard currentStream != nil, settings.liveRewind else { return false }
+        if liveRecorder != nil {
+            return liveBuffer.canRewind && liveSeekEnd > liveSeekStart
+        }
+        return (liveSeekEnd - liveSeekStart) >= 1.5
+    }
     var shouldShowGoLive: Bool { canSeekLive && (liveBehindSeconds > 15 || ((!isPlaybackRequested || explicitlyRewound) && liveBehindSeconds > 1)) }
 
     // Active playlist for fast zapping
@@ -308,8 +321,28 @@ public final class PlaybackManager: ObservableObject {
     /// cannot start, playback falls back to the provider's HLS. With live rewind on and HLS
     /// chosen, a local recorder captures the HLS stream first. Otherwise AVPlayer reads the
     /// provider's HLS directly.
+    private func handleSettingsChanged(from oldValue: PlayerSettings, to newValue: PlayerSettings) {
+        guard currentStream != nil else { return }
+        if !oldValue.liveRewind && newValue.liveRewind {
+            liveRecoveryBlockedForSession = false
+            scheduleLiveBufferRecovery()
+        } else if oldValue.liveRewind && !newValue.liveRewind {
+            cancelLiveBufferRecovery()
+            if liveRecorder != nil, let directURL = originalLiveURL ?? providerURL {
+                let wasPlaying = isPlaybackRequested
+                stopLiveBuffer()
+                prepareAndPlay(url: directURL)
+                if !wasPlaying {
+                    pausePlaybackIntent()
+                    player.pause()
+                }
+            }
+        }
+    }
+
     private func startLive(url: URL) {
         providerURL = url
+        originalLiveURL = url
         guard !url.isFileURL else {
             prepareAndPlay(url: url)
             return
@@ -326,6 +359,7 @@ public final class PlaybackManager: ObservableObject {
     private func startRelayedLivePlayback(relayURL: URL, fallbackURL: URL) {
         // Used by the codec fallback when AVPlayer cannot decode the relayed segments.
         originalLiveURL = fallbackURL
+        cancelLiveBufferRecovery()
         let session = sessionGeneration
         liveCaptureTask = Task { [weak self] in
             guard let self else { return }
@@ -338,9 +372,22 @@ public final class PlaybackManager: ObservableObject {
                 self.liveServer = server
                 capture = Task { await recorder.captureTransportStream(relayURL) }
                 var ready = false
-                let deadline = Date().addingTimeInterval(5)
+                let deadline = Date().addingTimeInterval(6)
                 while !Task.isCancelled, self.sessionGeneration == session {
-                    if let failure = await recorder.transportStreamFailure() { throw failure }
+                    if let failure = await recorder.transportStreamFailure() {
+                        if ready {
+                            // Keep the existing rewind buffer alive and reconnect in the background.
+                            self.liveBuffer.notice = "The provider connection was interrupted. Capture is retrying."
+                            capture?.cancel()
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else { return }
+                            await recorder.clearTransportStreamFailure()
+                            capture = Task { await recorder.captureTransportStream(relayURL) }
+                            continue
+                        } else {
+                            throw failure
+                        }
+                    }
                     let snapshot = await recorder.snapshot()
                     guard !Task.isCancelled, self.liveRecorder === recorder else { return }
                     self.liveBuffer = snapshot
@@ -369,6 +416,9 @@ public final class PlaybackManager: ObservableObject {
                 self.stopLiveBuffer()
                 self.liveBufferUnavailable = reason
                 self.prepareAndPlay(url: fallbackURL)
+                if self.settings.liveRewind {
+                    self.scheduleLiveBufferRecovery()
+                }
             }
         }
     }
@@ -476,7 +526,9 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func beginPlaybackSession() {
+        cancelLiveBufferRecovery()
         stopLiveBuffer()
+        liveRecoveryBlockedForSession = false
         originalLiveURL = nil
         codecFallback = LiveTimeshiftCodecFallback()
         sessionGeneration &+= 1
@@ -505,6 +557,7 @@ public final class PlaybackManager: ObservableObject {
 
     private func startBufferedLivePlayback(url: URL) {
         originalLiveURL = url
+        cancelLiveBufferRecovery()
         let session = sessionGeneration
         liveCaptureTask = Task { [weak self] in
             guard let self else { return }
@@ -517,7 +570,7 @@ public final class PlaybackManager: ObservableObject {
                 var pollDelay: Double = 1
                 var failures = 0
                 // Past this, play the provider directly instead of making people wait.
-                let deadline = Date().addingTimeInterval(5)
+                let deadline = Date().addingTimeInterval(6)
                 while !Task.isCancelled, self.sessionGeneration == session {
                     do {
                         if ready {
@@ -529,6 +582,7 @@ public final class PlaybackManager: ObservableObject {
                         let snapshot = await recorder.snapshot()
                         guard !Task.isCancelled, self.liveRecorder === recorder else { return }
                         self.liveBuffer = snapshot
+                        self.liveBufferUnavailable = nil
                         if !ready, snapshot.duration > 0 {
                             let localURL = try await server.start()
                             guard !Task.isCancelled, self.liveRecorder === recorder else { server.stop(); return }
@@ -538,12 +592,19 @@ public final class PlaybackManager: ObservableObject {
                     } catch {
                         if Task.isCancelled { throw error }
                         if let failure = error as? LiveTimeshiftError {
-                            guard case .network(let status) = failure, status == 408 || status == 429 || status >= 500 else { throw error }
+                            switch failure {
+                            case .unsupported, .stopped, .bufferLimit:
+                                throw error
+                            default:
+                                if !ready {
+                                    guard case .network(let status) = failure, status == 408 || status == 429 || status >= 500 else { throw error }
+                                }
+                            }
                         }
                         failures += 1
-                        if failures >= 3 { throw error }
+                        if !ready, failures >= 3 { throw error }
                         self.liveBuffer.notice = "The provider connection was interrupted. Capture is retrying."
-                        pollDelay = 2
+                        pollDelay = min(15, Double(2 * min(failures, 5)))
                     }
                     if !ready, Date() > deadline { throw LiveTimeshiftError.startupTimeout }
                     let delay = ready ? pollDelay : min(pollDelay, 1)
@@ -552,11 +613,142 @@ public final class PlaybackManager: ObservableObject {
             } catch {
                 guard !Task.isCancelled, self.sessionGeneration == session else { return }
                 let isTimeout = (error as? LiveTimeshiftError) == .startupTimeout
+                if case .unsupported = error as? LiveTimeshiftError {
+                    self.liveRecoveryBlockedForSession = true
+                }
                 let reason = isTimeout ? nil : ((error as? LiveTimeshiftError)?.errorDescription ?? "The live buffer could not connect to this provider.")
                 self.stopLiveBuffer()
                 self.liveBufferUnavailable = reason
                 // Failed recorder requests are cancelled before AVPlayer connects directly.
                 self.prepareAndPlay(url: url)
+                if self.settings.liveRewind, !self.liveRecoveryBlockedForSession {
+                    self.scheduleLiveBufferRecovery()
+                }
+            }
+        }
+    }
+
+    private func cancelLiveBufferRecovery() {
+        liveRecoveryTask?.cancel()
+        liveRecoveryTask = nil
+        isRecoveringLiveBuffer = false
+    }
+
+    /// When startup falls back to playing the provider directly (for example after a slow
+    /// cold-start channel or transient relay hiccup), periodically attempts to bring up
+    /// the local timeshift recorder in the background so full rewind/forward is restored.
+    private func scheduleLiveBufferRecovery() {
+        guard currentStream != nil, settings.liveRewind, !liveRecoveryBlockedForSession,
+              liveRecorder == nil, liveCaptureTask == nil, liveRecoveryTask == nil,
+              let hlsURL = originalLiveURL ?? providerURL, !hlsURL.isFileURL else { return }
+        let session = sessionGeneration
+        liveRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.sessionGeneration == session {
+                    self.isRecoveringLiveBuffer = false
+                    self.liveRecoveryTask = nil
+                }
+            }
+            var attempt = 0
+            while !Task.isCancelled, self.sessionGeneration == session,
+                  self.currentStream != nil, self.settings.liveRewind,
+                  self.liveRecorder == nil, !self.liveRecoveryBlockedForSession {
+                let waitSeconds = min(25.0, Double(5 + attempt * 5))
+                try? await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
+                guard !Task.isCancelled, self.sessionGeneration == session,
+                      self.currentStream != nil, self.settings.liveRewind,
+                      self.liveRecorder == nil, !self.liveRecoveryBlockedForSession else { return }
+                guard self.playbackState == .playing || self.playbackState == .paused else {
+                    continue
+                }
+                attempt += 1
+                self.isRecoveringLiveBuffer = true
+                relayLog.info("attempting background live buffer recovery (attempt \(attempt, privacy: .public))")
+                if await self.attemptBackgroundLiveRecovery(url: hlsURL, session: session) {
+                    return
+                }
+                self.isRecoveringLiveBuffer = false
+            }
+        }
+    }
+
+    private func attemptBackgroundLiveRecovery(url: URL, session: UInt64) async -> Bool {
+        do {
+            let recorder = try LiveTimeshiftRecorder()
+            let server = LiveTimeshiftServer(recorder: recorder)
+            do {
+                let firstDelay = try await recorder.capture(url, timeout: 12)
+                let snapshot = await recorder.snapshot()
+                guard !Task.isCancelled, self.sessionGeneration == session,
+                      self.currentStream != nil, self.settings.liveRewind,
+                      self.liveRecorder == nil, snapshot.duration > 0 else {
+                    server.stop()
+                    await recorder.stop()
+                    return false
+                }
+                let localURL = try await server.start()
+                guard !Task.isCancelled, self.sessionGeneration == session,
+                      self.currentStream != nil, self.settings.liveRewind,
+                      self.liveRecorder == nil else {
+                    server.stop()
+                    await recorder.stop()
+                    return false
+                }
+                self.liveRecorder = recorder
+                self.liveServer = server
+                self.liveBuffer = snapshot
+                self.liveBufferUnavailable = nil
+                self.isRecoveringLiveBuffer = false
+                self.startOngoingBufferedCaptureLoop(recorder: recorder, url: url, initialDelay: firstDelay, session: session)
+                let wasPlaying = self.isPlaybackRequested
+                relayLog.info("background live buffer recovered with \(snapshot.duration, privacy: .public)s buffered")
+                self.prepareAndPlay(url: localURL)
+                if !wasPlaying {
+                    self.pausePlaybackIntent()
+                    self.player.pause()
+                }
+                return true
+            } catch {
+                server.stop()
+                await recorder.stop()
+                if case .unsupported(let reason) = error as? LiveTimeshiftError {
+                    self.liveRecoveryBlockedForSession = true
+                    self.liveBufferUnavailable = reason
+                }
+                return false
+            }
+        } catch {
+            return false
+        }
+    }
+
+    private func startOngoingBufferedCaptureLoop(recorder: LiveTimeshiftRecorder, url: URL, initialDelay: Double, session: UInt64) {
+        liveCaptureTask?.cancel()
+        liveCaptureTask = Task { [weak self] in
+            guard let self else { return }
+            var pollDelay = max(1, initialDelay)
+            var failures = 0
+            while !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder {
+                try? await Task.sleep(nanoseconds: UInt64(pollDelay * 1_000_000_000))
+                guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else { return }
+                do {
+                    pollDelay = try await recorder.capture(url)
+                    failures = 0
+                    let snapshot = await recorder.snapshot()
+                    guard !Task.isCancelled, self.liveRecorder === recorder else { return }
+                    self.liveBuffer = snapshot
+                    self.liveBufferUnavailable = nil
+                } catch {
+                    if Task.isCancelled { return }
+                    if let failure = error as? LiveTimeshiftError {
+                        if case .stopped = failure { return }
+                        if case .bufferLimit = failure { return }
+                    }
+                    failures += 1
+                    self.liveBuffer.notice = "The provider connection was interrupted. Capture is retrying."
+                    pollDelay = min(15, Double(2 * min(failures, 5)))
+                }
             }
         }
     }
@@ -683,6 +875,7 @@ public final class PlaybackManager: ObservableObject {
                 switch playerItem.status {
                 case .readyToPlay:
                     self.updateMediaTracks(for: playerItem)
+                    self.updateLiveTimeline(for: playerItem)
                     if self.currentVOD != nil {
                         let dur = CMTimeGetSeconds(playerItem.duration)
                         if dur.isFinite && !dur.isNaN && dur > 0 {
@@ -750,11 +943,12 @@ public final class PlaybackManager: ObservableObject {
             return
         }
         let seconds: Double
-        if liveRecorder != nil, let range = liveSeekableRange(for: item) {
+        if (liveRecorder != nil || (currentStream != nil && settings.liveRewind && !(currentPlaybackURL?.isFileURL ?? false))),
+           let range = liveSeekableRange(for: item) {
             let restored: Double
             if let date = pendingLiveDate, let currentDate = item.currentDate() {
                 restored = CMTimeGetSeconds(item.currentTime()) + date.timeIntervalSince(currentDate)
-            } else if let anchor = pendingLiveRecordedPosition {
+            } else if liveRecorder != nil, let anchor = pendingLiveRecordedPosition {
                 restored = LiveTimeshiftSeekPolicy.restoredPosition(recordedPosition: anchor, recordedEnd: liveBuffer.recordedEnd,
                                                                    seekableStart: range.start, seekableEnd: range.end) ?? range.start
             } else { restored = position }
@@ -843,6 +1037,8 @@ public final class PlaybackManager: ObservableObject {
     private func fallbackToOriginalLivePlayback(url: URL) {
         let recorder = liveRecorder
         let session = sessionGeneration
+        liveRecoveryBlockedForSession = true
+        cancelLiveBufferRecovery()
         cancelWatchdog()
         cancelRetry()
         itemGeneration &+= 1
@@ -872,12 +1068,12 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func currentPlaybackResumePosition() -> Double? {
-        if liveRecorder != nil, let item = player.currentItem {
+        if (liveRecorder != nil || canSeekLive), let item = player.currentItem {
             let position = pausedLivePosition ?? CMTimeGetSeconds(item.currentTime())
             let itemPosition = CMTimeGetSeconds(item.currentTime())
             pendingLiveDate = position.isFinite && itemPosition.isFinite
                 ? item.currentDate()?.addingTimeInterval(position - itemPosition) : nil
-            if let range = liveSeekableRange(for: item), position.isFinite {
+            if liveRecorder != nil, let range = liveSeekableRange(for: item), position.isFinite {
                 pendingLiveRecordedPosition = liveBuffer.recordedEnd - (range.end - position)
             }
             return position.isFinite ? position : nil
@@ -946,7 +1142,10 @@ public final class PlaybackManager: ObservableObject {
     public func togglePlayPause() {
         guard currentStream != nil || currentVOD != nil else { return }
         if isPlaybackRequested {
-            if liveRecorder != nil { pausedLivePosition = CMTimeGetSeconds(player.currentTime()) }
+            if (liveRecorder != nil || canSeekLive), pendingResumePosition == nil,
+               player.currentItem?.status == .readyToPlay {
+                pausedLivePosition = CMTimeGetSeconds(player.currentTime())
+            }
             pausePlaybackIntent()
             player.pause()
         } else if case .failed = playbackState {
@@ -957,11 +1156,12 @@ public final class PlaybackManager: ObservableObject {
             isPlaybackRequested = true
             playbackState = player.currentItem?.status == .readyToPlay ? .buffering : .loading
             if let item = player.currentItem {
-                if liveRecorder != nil, let position = pausedLivePosition,
+                if (liveRecorder != nil || canSeekLive), let position = pausedLivePosition,
                    let range = liveSeekableRange(for: item) {
                     pendingResumePosition = LiveTimeshiftSeekPolicy.clamp(position, start: range.start, end: range.end)
+                    let targetDur = effectiveLiveTargetDuration(for: range)
                     let livePosition = LiveTimeshiftSeekPolicy.livePosition(start: range.start, end: range.end,
-                                                                          targetDuration: liveBuffer.targetDuration) ?? range.end
+                                                                          targetDuration: targetDur) ?? range.end
                     explicitlyRewound = position < livePosition - 1
                     pausedLivePosition = nil
                 }
@@ -971,7 +1171,10 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func pausePlaybackIntent() {
-        if liveRecorder != nil, pausedLivePosition == nil { pausedLivePosition = CMTimeGetSeconds(player.currentTime()) }
+        if (liveRecorder != nil || canSeekLive), pausedLivePosition == nil,
+           pendingResumePosition == nil, player.currentItem?.status == .readyToPlay {
+            pausedLivePosition = CMTimeGetSeconds(player.currentTime())
+        }
         isPlaybackRequested = false
         cancelWatchdog()
         cancelRetry()
@@ -989,7 +1192,9 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func stop() {
+        cancelLiveBufferRecovery()
         stopLiveBuffer()
+        liveRecoveryBlockedForSession = false
         originalLiveURL = nil
         codecFallback = LiveTimeshiftCodecFallback()
         sessionGeneration &+= 1
@@ -1040,6 +1245,11 @@ public final class PlaybackManager: ObservableObject {
                 }
                 if self.pendingResumePosition != nil, !self.resumeSeekInProgress, self.isPlaybackRequested {
                     self.resumePlayback(for: currentItem, session: self.sessionGeneration, generation: self.itemGeneration)
+                }
+                if self.currentStream != nil, self.settings.liveRewind,
+                   self.liveRecorder == nil, self.liveCaptureTask == nil,
+                   self.liveRecoveryTask == nil, !self.liveRecoveryBlockedForSession {
+                    self.scheduleLiveBufferRecovery()
                 }
                 self.updateLiveTimeline(for: currentItem)
                 self.keepLive(currentItem)
@@ -1097,28 +1307,41 @@ public final class PlaybackManager: ObservableObject {
         return (start, end)
     }
 
+    private func effectiveLiveTargetDuration(for range: (start: Double, end: Double)) -> Double {
+        if liveRecorder != nil, liveBuffer.targetDuration > 0 {
+            return liveBuffer.targetDuration
+        }
+        return max(2, min(6, (range.end - range.start) * 0.25))
+    }
+
     private func updateLiveTimeline(for item: AVPlayerItem) {
-        guard liveRecorder != nil, let range = liveSeekableRange(for: item) else { return }
+        guard currentStream != nil, settings.liveRewind,
+              liveRecorder != nil || !(currentPlaybackURL?.isFileURL ?? false),
+              let range = liveSeekableRange(for: item) else { return }
         liveSeekStart = range.start
         liveSeekEnd = range.end
         let position = pausedLivePosition ?? CMTimeGetSeconds(item.currentTime())
         livePlayhead = LiveTimeshiftSeekPolicy.clamp(position, start: range.start, end: range.end) ?? range.start
+        let targetDur = effectiveLiveTargetDuration(for: range)
         let livePosition = LiveTimeshiftSeekPolicy.livePosition(start: range.start, end: range.end,
-                                                              targetDuration: liveBuffer.targetDuration) ?? range.end
+                                                              targetDuration: targetDur) ?? range.end
         liveBehindSeconds = max(0, livePosition - livePlayhead)
         if liveBehindSeconds <= 1 { explicitlyRewound = false }
         if !isPlaybackRequested, let position = pausedLivePosition, position < range.start {
             pausedLivePosition = range.start
             item.seek(to: CMTime(seconds: range.start, preferredTimescale: 600))
-            liveBuffer.notice = "The paused position expired. Resume from the oldest retained content."
+            if liveRecorder != nil {
+                liveBuffer.notice = "The paused position expired. Resume from the oldest retained content."
+            }
         }
     }
 
     func seekLive(to position: Double) {
         guard canSeekLive, let item = player.currentItem, let range = liveSeekableRange(for: item),
               let position = LiveTimeshiftSeekPolicy.clamp(position, start: range.start, end: range.end) else { return }
+        let targetDur = effectiveLiveTargetDuration(for: range)
         let livePosition = LiveTimeshiftSeekPolicy.livePosition(start: range.start, end: range.end,
-                                                              targetDuration: liveBuffer.targetDuration) ?? range.end
+                                                              targetDuration: targetDur) ?? range.end
         explicitlyRewound = position < livePosition - 1
         let playing = isPlaybackRequested
         if !playing { pausedLivePosition = position }
@@ -1130,9 +1353,10 @@ public final class PlaybackManager: ObservableObject {
     func seekLive(by seconds: Double) { seekLive(to: livePlayhead + seconds) }
 
     func goLive() {
-        guard canSeekLive, let item = player.currentItem, let range = liveSeekableRange(for: item),
-              let position = LiveTimeshiftSeekPolicy.livePosition(start: range.start, end: range.end,
-                                                               targetDuration: liveBuffer.targetDuration) else { return }
+        guard canSeekLive, let item = player.currentItem, let range = liveSeekableRange(for: item) else { return }
+        let targetDur = effectiveLiveTargetDuration(for: range)
+        guard let position = LiveTimeshiftSeekPolicy.livePosition(start: range.start, end: range.end,
+                                                                 targetDuration: targetDur) else { return }
         isPlaybackRequested = true
         pausedLivePosition = nil
         seekLive(to: position)
