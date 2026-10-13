@@ -1,6 +1,7 @@
 import SwiftUI
 
 public enum NavigationSection: String, CaseIterable, Identifiable {
+    case home = "Home"
     case liveTV = "Live TV"
     case movies = "Movies"
     case series = "Series"
@@ -11,6 +12,7 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
 
     public var iconName: String {
         switch self {
+        case .home: return "house.fill"
         case .liveTV: return "tv.fill"
         case .movies: return "film.fill"
         case .series: return "play.tv.fill"
@@ -25,12 +27,12 @@ public struct MainContentView: View {
     @ObservedObject private var account = AccountStore.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    @State private var selectedSection: NavigationSection? = .liveTV
+    @State private var selectedSection: NavigationSection? = .home
     @State private var isPlayerFullScreen: Bool = false
 
     private var tabSelection: Binding<NavigationSection> {
         Binding(
-            get: { selectedSection ?? .liveTV },
+            get: { selectedSection ?? .home },
             set: { selectedSection = $0 }
         )
     }
@@ -76,66 +78,125 @@ public struct MainContentView: View {
         }
     }
 
-    // iPad Multi-Column Sidebar Layout
+    // iPad / Mac Multi-Column Persistent Navigation Rail Layout
     private var ipadLayout: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
+            // Fixed Navigation Rail (cannot be collapsed or accidentally hidden)
             VStack(spacing: 0) {
-                List(selection: $selectedSection) {
-                    Section {
-                        ForEach(NavigationSection.allCases) { section in
-                            NavigationLink(value: section) {
+                // Top brand mark / Home button
+                Button {
+                    selectedSection = .home
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "play.tv.fill")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.cyan, Color(hex: "#0077ED")],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        Text("BruTV")
+                            .font(.system(size: 11, weight: .heavy, design: .rounded))
+                            .foregroundColor(selectedSection == .home ? .cyan : .white)
+                    }
+                    .frame(width: 76, height: 58)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(selectedSection == .home ? Color.cyan.opacity(0.18) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(selectedSection == .home ? Color.cyan.opacity(0.35) : Color.clear, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 14)
+                .padding(.bottom, 12)
+
+                Divider()
+                    .padding(.horizontal, 10)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach(NavigationSection.allCases.filter { $0 != .home }) { section in
+                            Button {
+                                selectedSection = section
+                            } label: {
                                 VStack(spacing: 5) {
                                     Image(systemName: section.iconName)
-                                        .font(.system(size: 24, weight: .semibold))
-                                        .frame(width: 32, height: 28)
+                                        .font(.system(size: 22, weight: .semibold))
+                                        .frame(width: 32, height: 26)
                                         .foregroundColor(selectedSection == section ? .cyan : .secondary)
 
                                     Text(section.rawValue)
                                         .font(.system(size: 11, weight: selectedSection == section ? .bold : .medium))
-                                        .foregroundColor(selectedSection == section ? .white : .primary)
+                                        .foregroundColor(selectedSection == section ? .white : .secondary)
                                         .multilineTextAlignment(.center)
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.8)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 6)
+                                .frame(width: 76, height: 58)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(selectedSection == section ? Color.cyan.opacity(0.18) : Color.clear)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(selectedSection == section ? Color.cyan.opacity(0.35) : Color.clear, lineWidth: 1)
+                                )
                             }
-                            .tag(section)
+                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 6)
                 }
-                .listStyle(.sidebar)
+
+                Spacer()
 
                 if let profile = account.currentProfile {
                     Divider()
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 10)
 
-                    VStack(spacing: 3) {
+                    VStack(spacing: 4) {
                         Circle()
                             .fill(Color.cyan)
                             .frame(width: 7, height: 7)
 
                         Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected" : profile.username) : profile.name)
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.secondary)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 12)
                 }
             }
-            .navigationTitle("")
-            .navigationSplitViewColumnWidth(min: 80, ideal: 92, max: 115)
-        } detail: {
+            .frame(width: 88)
+            .background(Color(hex: "#0e1422"))
+
+            Divider()
+
             NavigationStack {
-                detailView(for: selectedSection ?? .liveTV)
+                detailView(for: selectedSection ?? .home)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
     // iPhone Tab View Layout
     private var iphoneLayout: some View {
         TabView(selection: tabSelection) {
+            NavigationStack {
+                HomeView()
+            }
+            .tabItem {
+                Label("BruTV", systemImage: "play.tv.fill")
+            }
+            .tag(NavigationSection.home)
+
             NavigationStack {
                 LiveTVView()
             }
@@ -182,6 +243,8 @@ public struct MainContentView: View {
     @ViewBuilder
     private func detailView(for section: NavigationSection) -> some View {
         switch section {
+        case .home:
+            HomeView()
         case .liveTV:
             LiveTVView()
         case .movies:
