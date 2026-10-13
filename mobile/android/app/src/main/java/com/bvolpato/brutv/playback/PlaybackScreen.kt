@@ -7,8 +7,12 @@ import android.os.Build
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -62,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -199,10 +207,29 @@ fun PlaybackScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var lastInteractionNanos by remember { mutableLongStateOf(System.nanoTime()) }
+    fun pokeControls() {
+        controlsVisible = true
+        lastInteractionNanos = System.nanoTime()
+    }
+
+    LaunchedEffect(current.id) {
+        pokeControls()
+    }
+
+    LaunchedEffect(controlsVisible, lastInteractionNanos, snapshot.isPlaying) {
+        if (controlsVisible && snapshot.isPlaying) {
+            delay(2800L)
+            controlsVisible = false
+        }
+    }
+
     BackHandler {
         when {
             guideOpen -> guideOpen = false
             trackDialog != C.TRACK_TYPE_UNKNOWN -> trackDialog = C.TRACK_TYPE_UNKNOWN
+            !controlsVisible -> pokeControls()
             else -> close()
         }
     }
@@ -211,6 +238,7 @@ fun PlaybackScreen(
         Box(
             Modifier.fillMaxSize().then(if (isInPip) Modifier else Modifier.safeDrawingPadding()).onPreviewKeyEvent { event ->
                 if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                pokeControls()
                 when (event.nativeKeyEvent.keyCode) {
                     KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_NEXT -> { changeChannel(1); true }
                     KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { changeChannel(-1); true }
@@ -225,104 +253,182 @@ fun PlaybackScreen(
                 }
             },
         ) {
-            Column(Modifier.fillMaxSize()) {
-                if (!isInPip) {
+            AndroidView(
+                factory = { viewContext ->
+                    PlayerView(viewContext).apply {
+                        player = controller.player
+                        useController = false
+                        resizeMode = aspect
+                        isFocusable = true
+                        if (isTv) requestFocus()
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable {
+                        if (controlsVisible) controlsVisible = false else pokeControls()
+                    },
+                update = { view ->
+                    view.player = controller.player
+                    view.resizeMode = aspect
+                    view.useController = false
+                    view.keepScreenOn = snapshot.isPlaying || snapshot.buffering || snapshot.recovering
+                },
+                onRelease = { view ->
+                    view.keepScreenOn = false
+                    view.player = null
+                },
+            )
+
+            AnimatedVisibility(
+                visible = (controlsVisible || !snapshot.isPlaying) && !isInPip,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(Modifier.fillMaxSize()) {
                     Row(
-                        Modifier.fillMaxWidth().background(Color(0xE61A1D24)).padding(horizontal = if (isTv) 32.dp else 8.dp, vertical = 4.dp),
+                        Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .background(Brush.verticalGradient(listOf(Color(0xE6101A20), Color.Transparent)))
+                            .padding(horizontal = if (isTv) 32.dp else 12.dp, vertical = if (isTv) 16.dp else 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         PlayerButton("Back", Icons.AutoMirrored.Outlined.ArrowBack) { close() }
                         Text(
                             current.name,
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                             color = Color.White,
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         if (current.kind == MediaKind.LIVE && snapshot.canGoLive) {
-                            PlayerButton("Go live", Icons.Outlined.LiveTv) { controller.goLive() }
-                        }
-                    }
-                }
-                AndroidView(
-                    factory = { viewContext ->
-                        PlayerView(viewContext).apply {
-                            player = controller.player
-                            useController = true
-                            controllerAutoShow = true
-                            controllerShowTimeoutMs = if (isTv) 8_000 else 5_000
-                            setShowNextButton(false)
-                            setShowPreviousButton(false)
-                            setShowFastForwardButton(true)
-                            setShowRewindButton(true)
-                            setShowSubtitleButton(false)
-                            resizeMode = aspect
-                            isFocusable = true
-                            if (isTv) requestFocus()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    update = { view ->
-                        view.player = controller.player
-                        view.resizeMode = aspect
-                        view.useController = !isInPip
-                        view.keepScreenOn = snapshot.isPlaying || snapshot.buffering || snapshot.recovering
-                    },
-                    onRelease = { view ->
-                        view.keepScreenOn = false
-                        view.player = null
-                    },
-                )
-                if (!isInPip) {
-                    if (current.kind == MediaKind.LIVE) {
-                        val message = snapshot.timeShiftNotice ?: if (snapshot.timeShiftAvailable) {
-                            "Live buffer ${snapshot.timeShiftDurationMs / 60_000}:${(snapshot.timeShiftDurationMs / 1000 % 60).toString().padStart(2, '0')} · " +
-                                "${snapshot.timeShiftBytes / (1024 * 1024)} MiB · " +
-                                if (snapshot.timeShiftRecording) "Recording${if (!snapshot.playWhenReady) " while paused" else ""}" else "Recording stopped"
-                        } else "Preparing the temporary live buffer…"
-                        Text(message, color = Color(0xFFCBD0D8), style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.fillMaxWidth().background(Color(0xE61A1D24)).padding(horizontal = if (isTv) 32.dp else 12.dp, vertical = 4.dp))
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().background(Color(0xE61A1D24))
-                            .horizontalScroll(rememberScrollState()).padding(horizontal = if (isTv) 32.dp else 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        PlayerButton(
-                            if (snapshot.playWhenReady) "Pause" else "Play",
-                            if (snapshot.playWhenReady) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                            primary = true,
-                        ) { controller.togglePlayPause() }
-                        if (snapshot.liveSeekable) {
-                            PlayerButton("Back 10s", Icons.Outlined.Replay10) { controller.seekBy(-10_000) }
-                            PlayerButton("Forward 10s", Icons.Outlined.Forward10) { controller.seekBy(10_000) }
-                        }
-                        if (queue.size > 1) {
-                            PlayerButton("Previous", Icons.Outlined.SkipPrevious) { changeChannel(-1) }
-                            PlayerButton("Next", Icons.Outlined.SkipNext) { changeChannel(1) }
-                        }
-                        if (queue.isNotEmpty()) PlayerButton("Guide", Icons.AutoMirrored.Outlined.ViewList) { guideOpen = true }
-                        val favorite = remember(current.id, favoriteRefresh, isFavorite) { isFavorite(current.id) }
-                        PlayerButton(if (favorite) "Unfavorite" else "Favorite", if (favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder) {
-                            onToggleFavorite(current)
-                            favoriteRefresh += 1
-                        }
-                        PlayerButton("Aspect: ${aspectLabel(aspect)}", Icons.Outlined.AspectRatio) {
-                            aspect = when (aspect) {
-                                AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            PlayerButton("Go live", Icons.Outlined.LiveTv) {
+                                pokeControls()
+                                controller.goLive()
                             }
                         }
-                        PlayerButton("Audio", Icons.AutoMirrored.Outlined.VolumeUp, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSupported }) {
-                            trackDialog = C.TRACK_TYPE_AUDIO
+                    }
+
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6101A20))))
+                            .padding(bottom = if (isTv) 20.dp else 10.dp),
+                    ) {
+                        if (current.kind == MediaKind.LIVE) {
+                            val message = snapshot.timeShiftNotice ?: if (snapshot.timeShiftAvailable) {
+                                "Live buffer ${snapshot.timeShiftDurationMs / 60_000}:${(snapshot.timeShiftDurationMs / 1000 % 60).toString().padStart(2, '0')} · " +
+                                    "${snapshot.timeShiftBytes / (1024 * 1024)} MiB · " +
+                                    if (snapshot.timeShiftRecording) "Recording${if (!snapshot.playWhenReady) " while paused" else ""}" else "Recording stopped"
+                            } else "Preparing the temporary live buffer…"
+                            Text(
+                                message,
+                                color = Color(0xFFCBD0D8),
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = if (isTv) 32.dp else 14.dp, vertical = 3.dp),
+                            )
+                        } else if (snapshot.durationMs > 0) {
+                            val currentPos = snapshot.positionMs
+                            val duration = snapshot.durationMs
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = if (isTv) 32.dp else 14.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(formatTime(currentPos), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color(0x55FFFFFF)),
+                                ) {
+                                    val fraction = (currentPos.toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(fraction)
+                                            .fillMaxHeight()
+                                            .background(Color(0xFF38D9CA)),
+                                    )
+                                }
+                                Text(formatTime(duration), color = Color(0xFFCBD0D8), style = MaterialTheme.typography.labelSmall)
+                            }
                         }
-                        PlayerButton("Subtitles", Icons.Outlined.Subtitles, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSupported }) {
-                            trackDialog = C.TRACK_TYPE_TEXT
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = if (isTv) 32.dp else 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            PlayerButton(
+                                if (snapshot.playWhenReady) "Pause" else "Play",
+                                if (snapshot.playWhenReady) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                primary = true,
+                            ) {
+                                pokeControls()
+                                controller.togglePlayPause()
+                            }
+                            if (snapshot.liveSeekable || current.kind != MediaKind.LIVE) {
+                                PlayerButton("Back 10s", Icons.Outlined.Replay10) {
+                                    pokeControls()
+                                    controller.seekBy(-10_000)
+                                }
+                                PlayerButton("Forward 10s", Icons.Outlined.Forward10) {
+                                    pokeControls()
+                                    controller.seekBy(10_000)
+                                }
+                            }
+                            if (queue.size > 1) {
+                                PlayerButton("Previous", Icons.Outlined.SkipPrevious) {
+                                    pokeControls()
+                                    changeChannel(-1)
+                                }
+                                PlayerButton("Next", Icons.Outlined.SkipNext) {
+                                    pokeControls()
+                                    changeChannel(1)
+                                }
+                            }
+                            if (queue.isNotEmpty()) {
+                                PlayerButton("Guide", Icons.AutoMirrored.Outlined.ViewList) {
+                                    pokeControls()
+                                    guideOpen = true
+                                }
+                            }
+                            val favorite = remember(current.id, favoriteRefresh, isFavorite) { isFavorite(current.id) }
+                            PlayerButton(if (favorite) "Unfavorite" else "Favorite", if (favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder) {
+                                pokeControls()
+                                onToggleFavorite(current)
+                                favoriteRefresh += 1
+                            }
+                            PlayerButton("Aspect: ${aspectLabel(aspect)}", Icons.Outlined.AspectRatio) {
+                                pokeControls()
+                                aspect = when (aspect) {
+                                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                }
+                            }
+                            PlayerButton("Audio", Icons.AutoMirrored.Outlined.VolumeUp, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_AUDIO && it.isSupported }) {
+                                pokeControls()
+                                trackDialog = C.TRACK_TYPE_AUDIO
+                            }
+                            PlayerButton("Subtitles", Icons.Outlined.Subtitles, enabled = snapshot.tracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSupported }) {
+                                pokeControls()
+                                trackDialog = C.TRACK_TYPE_TEXT
+                            }
+                            PlayerButton(if (statsVisible) "Hide stats" else "Stats", Icons.Outlined.Equalizer) {
+                                pokeControls()
+                                statsVisible = !statsVisible
+                            }
                         }
-                        PlayerButton(if (statsVisible) "Hide stats" else "Stats", Icons.Outlined.Equalizer) { statsVisible = !statsVisible }
                     }
                 }
             }
@@ -513,6 +619,18 @@ private fun Stat(label: String, value: String) {
     Row {
         Text(label, color = Color(0xFFCBD0D8), style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(96.dp))
         Text(value, color = Color.White, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun formatTime(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
     }
 }
 

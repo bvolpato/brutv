@@ -5,6 +5,10 @@ import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -181,6 +185,13 @@ fun BruTvApp(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var pasteLinkOpen by remember { mutableStateOf(false) }
+    var splashDismissed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        delay(1400)
+        splashDismissed = true
+    }
+
     val playlistPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importLocalPlaylist(uri)
     }
@@ -214,7 +225,8 @@ fun BruTvApp(
                 return@Surface
             }
 
-            if (state.page == BruTvPage.SIGN_IN || state.page == BruTvPage.LOGIN_QR || pasteLinkOpen) PrivateScreen()
+            Box(Modifier.fillMaxSize()) {
+                if (state.page == BruTvPage.SIGN_IN || state.page == BruTvPage.LOGIN_QR || pasteLinkOpen) PrivateScreen()
 
             when {
                 state.page == BruTvPage.SCAN_QR -> Box(Modifier.fillMaxSize()) {
@@ -313,8 +325,18 @@ fun BruTvApp(
                     accepted
                 },
             )
+
+            val showSplash = (!splashDismissed || !state.initialized)
+            AnimatedVisibility(
+                visible = showSplash,
+                enter = fadeIn(),
+                exit = fadeOut(animationSpec = tween(350)),
+            ) {
+                BruTvSplashScreen(isTv = isTv)
+            }
         }
     }
+}
 }
 
 @Composable
@@ -414,7 +436,7 @@ private fun WelcomePage(
             horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
         ) {
             BrandMark()
-            Text("IPTV that just works.", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text("Connect your TV provider", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Text("Bring your own provider or playlist. BruTV does not include channels, demos, or provider accounts.", color = Muted, style = MaterialTheme.typography.bodyLarge)
             if (state.pageError != null) InlineError(state.pageError)
             if (!state.initialized) {
@@ -624,19 +646,54 @@ private fun NavigationRail(
 @Composable
 private fun PhoneNavigationBar(selected: BruTvDestination, onSelect: (BruTvDestination) -> Unit) {
     val current = if (selected == BruTvDestination.RECENTS) BruTvDestination.FAVORITES else selected
-    Row(
-        Modifier.fillMaxWidth().background(Color(0xFF101A20)).windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+    Surface(
+        color = Color(0xFF101A20),
+        border = BorderStroke(1.dp, Color(0xFF16252C)),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        listOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES, BruTvDestination.FAVORITES, BruTvDestination.SETTINGS).forEach { destination ->
-            val item = navItems.first { it.destination == destination }
-            Column(
-                Modifier.clip(RoundedCornerShape(14.dp)).clickable { onSelect(destination) }.padding(horizontal = 11.dp, vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Icon(item.icon, contentDescription = item.label, tint = if (current == destination) Aqua else Muted, modifier = Modifier.size(21.dp))
-                Text(item.shortLabel, color = if (current == destination) Aqua else Muted, fontSize = 10.sp, maxLines = 1)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf(
+                BruTvDestination.LIVE,
+                BruTvDestination.MOVIES,
+                BruTvDestination.SERIES,
+                BruTvDestination.FAVORITES,
+                BruTvDestination.SETTINGS,
+            ).forEach { destination ->
+                val item = navItems.first { it.destination == destination }
+                val isSelected = current == destination
+                Surface(
+                    onClick = { onSelect(destination) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isSelected) Color(0xFF163C43) else Color.Transparent,
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp)),
+                ) {
+                    Column(
+                        Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Icon(
+                            item.icon,
+                            contentDescription = item.label,
+                            tint = if (isSelected) Aqua else Muted,
+                            modifier = Modifier.size(19.dp),
+                        )
+                        Text(
+                            item.shortLabel,
+                            color = if (isSelected) Aqua else Muted,
+                            fontSize = 10.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
         }
     }
@@ -683,63 +740,24 @@ private fun AppHeader(
     onPair: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    if (isTv) {
-        BoxWithConstraints(
-            Modifier.fillMaxWidth().background(Color(0xFF0E1A20)).padding(horizontal = 30.dp, vertical = 12.dp),
-        ) {
-            val showQr = source != null && source.isShareable()
-            if (maxWidth < 1000.dp) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        HeaderIdentity(source, Modifier.weight(1f))
-                        HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, true)
-                        HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, true)
-                        HeaderTextButton("Add", Icons.Outlined.Add, onAdd, true, primary = true)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, true)
-                        HeaderTextButton("Pair phone", Icons.Outlined.Devices, onPair, true)
-                    }
-                }
-            } else {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    HeaderIdentity(source, Modifier.weight(1f))
-                    if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, true)
-                    HeaderTextButton("Pair phone", Icons.Outlined.Devices, onPair, true)
-                    HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, true)
-                    HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, true)
-                    HeaderTextButton("Add", Icons.Outlined.Add, onAdd, true, primary = true)
-                }
-            }
+    val showQr = source != null && source.isShareable()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF0E1A20))
+            .padding(horizontal = if (isTv) 28.dp else 12.dp, vertical = if (isTv) 10.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(if (isTv) 10.dp else 6.dp),
+    ) {
+        HeaderIdentity(source, Modifier.weight(1f))
+        HeaderActionButton("Add", Icons.Outlined.Add, onAdd, isTv = isTv, primary = true)
+        if (showQr) {
+            HeaderActionButton(if (isTv) "Login QR" else "QR", Icons.Outlined.QrCode2, onShare, isTv = isTv)
         }
-    } else {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val showQr = source != null && source.isShareable()
-            val narrowWithQr = maxWidth < 440.dp && showQr
-            Column(
-                Modifier.fillMaxWidth().background(Color(0xFF0E1A20)).padding(horizontal = 14.dp, vertical = 9.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HeaderIdentity(source, Modifier.weight(1f))
-                    HeaderTextButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, false)
-                    HeaderTextButton("Settings", Icons.Outlined.Settings, onSettings, false)
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (showQr) HeaderTextButton("Show login QR", Icons.Outlined.QrCode2, onShare, false)
-                    HeaderTextButton("Pair TV", Icons.Outlined.Devices, onPair, false)
-                    if (!narrowWithQr) HeaderTextButton("Add provider", Icons.Outlined.Add, onAdd, false, primary = true)
-                }
-                if (narrowWithQr) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        HeaderTextButton("Add provider", Icons.Outlined.Add, onAdd, false, primary = true)
-                    }
-                }
-            }
+        HeaderActionButton(if (isTv) "Pair phone" else "Pair TV", Icons.Outlined.Devices, onPair, isTv = isTv)
+        HeaderActionButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, isTv = isTv)
+        if (isTv) {
+            HeaderActionButton("Settings", Icons.Outlined.Settings, onSettings, isTv = true)
         }
     }
 }
@@ -747,7 +765,7 @@ private fun AppHeader(
 @Composable
 private fun HeaderIdentity(source: SourceConfig?, modifier: Modifier = Modifier) {
     Column(modifier) {
-        Text("BruTV", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("BruTV", style = MaterialTheme.typography.titleMedium, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(source?.name ?: "No provider selected", style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -1282,7 +1300,7 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
         }
         Text("Privacy", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         Text("BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
-        Text("BruTV • IPTV that just works", color = Muted, style = MaterialTheme.typography.bodySmall)
+        Text("BruTV • Version 1.0.0 (3)", color = Muted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -1472,8 +1490,58 @@ private fun ActionButtonContent(label: String, icon: ImageVector?, isTv: Boolean
 }
 
 @Composable
+private fun HeaderActionButton(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    isTv: Boolean = false,
+    primary: Boolean = false,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Surface(
+        onClick = onClick,
+        modifier = modifier
+            .onFocusChanged { focused = it.isFocused }
+            .clip(RoundedCornerShape(10.dp)),
+        shape = RoundedCornerShape(10.dp),
+        color = when {
+            primary -> Aqua
+            focused -> Color(0xFF163C43)
+            else -> Color(0xFF142229)
+        },
+        contentColor = if (primary) Color(0xFF06201F) else Color.White,
+        border = BorderStroke(
+            if (focused) 2.dp else 1.dp,
+            when {
+                focused -> Color.White
+                primary -> Aqua
+                else -> Color(0xFF243B45)
+            },
+        ),
+    ) {
+        Row(
+            Modifier.padding(
+                horizontal = if (isTv) 12.dp else 8.dp,
+                vertical = if (isTv) 8.dp else 5.dp,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(icon, contentDescription = label, modifier = Modifier.size(if (isTv) 18.dp else 15.dp))
+            Text(
+                label,
+                fontSize = if (isTv) 14.sp else 11.sp,
+                fontWeight = if (primary) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
 private fun HeaderTextButton(label: String, icon: ImageVector, onClick: () -> Unit, isTv: Boolean, primary: Boolean = false) {
-    ActionButton(label, onClick, icon = icon, primary = primary, isTv = isTv)
+    HeaderActionButton(label, icon, onClick, isTv = isTv, primary = primary)
 }
 
 @Composable
@@ -1482,9 +1550,65 @@ private fun BrandMark(compact: Boolean = false) {
         Box(Modifier.size(35.dp).clip(RoundedCornerShape(11.dp)).background(Aqua), contentAlignment = Alignment.Center) {
             Icon(Icons.Outlined.PlayArrow, contentDescription = null, tint = Color(0xFF06201F), modifier = Modifier.size(26.dp))
         }
-        if (!compact) Column {
+        if (!compact) {
             Text("BruTV", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-            Text("IPTV that just works", color = Muted, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun BruTvSplashScreen(isTv: Boolean) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Canvas),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(if (isTv) 20.dp else 16.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(if (isTv) 80.dp else 68.dp)
+                    .clip(RoundedCornerShape(if (isTv) 24.dp else 20.dp))
+                    .background(
+                        Brush.linearGradient(
+                            listOf(Color(0xFF55E2D1), Color(0xFF167E74))
+                        )
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.PlayArrow,
+                    contentDescription = null,
+                    tint = Color(0xFF06201F),
+                    modifier = Modifier.size(if (isTv) 52.dp else 44.dp),
+                )
+            }
+            Text(
+                "BruTV",
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = if (isTv) 40.sp else 32.sp,
+                    letterSpacing = (-0.5).sp,
+                ),
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White,
+            )
+            Text(
+                "IPTV that just works.",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = if (isTv) 18.sp else 15.sp,
+                ),
+                fontWeight = FontWeight.Medium,
+                color = Aqua,
+            )
+            Spacer(Modifier.height(8.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                color = Aqua.copy(alpha = 0.85f),
+                strokeWidth = 2.5.dp,
+            )
         }
     }
 }

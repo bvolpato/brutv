@@ -9,14 +9,17 @@ import java.util.Locale
 /** Parses and creates the same `brutv://login` links as the iOS app. */
 object LoginLinks {
     fun parse(input: String): SourceConfig? {
-        val text = input.trim()
+        val text = input.trim().trim('"', '\'')
         if (text.isEmpty()) return null
-        val uri = runCatching { URI(text) }.getOrNull() ?: return null
-        return when (uri.scheme?.lowercase(Locale.ROOT)) {
-            "brutv" -> parseDeepLink(uri)
-            "http", "https" -> parsePlaylistOrXtream(uri, text)
-            else -> null
+
+        if (text.regionMatches(0, "brutv:", 0, 6, ignoreCase = true)) {
+            return parseDeepLink(text)
         }
+        if (text.regionMatches(0, "http://", 0, 7, ignoreCase = true) ||
+            text.regionMatches(0, "https://", 0, 8, ignoreCase = true)) {
+            return parsePlaylistOrXtream(text)
+        }
+        return null
     }
 
     fun encode(source: SourceConfig): String {
@@ -39,13 +42,19 @@ object LoginLinks {
         }
     }
 
-    private fun parseDeepLink(uri: URI): SourceConfig? {
-        if (!uri.host.equals("login", ignoreCase = true)) return null
-        val values = parseQuery(uri.rawQuery)
+    private fun parseDeepLink(raw: String): SourceConfig? {
+        val afterScheme = raw.substring(6).trimStart('/')
+        val pathAndHost = afterScheme.substringBefore('?').substringBefore('#').trimEnd('/')
+        if (!pathAndHost.equals("login", ignoreCase = true)) return null
+
+        val query = if ('?' in afterScheme) {
+            afterScheme.substringAfter('?').substringBefore('#')
+        } else ""
+        val values = parseQuery(query)
         val playlist = values.firstValue("m3u")
         if (!playlist.isNullOrBlank()) {
-            val playlistUri = runCatching { URI(playlist) }.getOrNull() ?: return null
-            if (!playlistUri.scheme.equals("http", true) && !playlistUri.scheme.equals("https", true)) return null
+            if (!playlist.startsWith("http://", ignoreCase = true) &&
+                !playlist.startsWith("https://", ignoreCase = true)) return null
             return m3uSource(playlist)
         }
         val server = values.firstValue("server") ?: return null
@@ -56,31 +65,31 @@ object LoginLinks {
         }.getOrNull()
     }
 
-    private fun parsePlaylistOrXtream(uri: URI, original: String): SourceConfig? {
-        if (uri.host.isNullOrBlank()) return null
-        val isGetPhp = uri.path?.endsWith("get.php", ignoreCase = true) == true
+    private fun parsePlaylistOrXtream(original: String): SourceConfig? {
+        val isGetPhp = original.contains("get.php", ignoreCase = true)
         if (isGetPhp) {
-            val values = parseQuery(uri.rawQuery)
+            val query = original.substringAfter('?', "").substringBefore('#')
+            val values = parseQuery(query)
             val username = values.firstValue("username")
             val password = values.firstValue("password")
             if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
-                val parent = uri.path.substringBeforeLast('/').trimEnd('/')
-                val server = buildString {
-                    append(uri.scheme.lowercase(Locale.ROOT)).append("://").append(uri.rawAuthority)
-                    if (parent.isNotEmpty()) append(parent)
+                val beforeQuery = original.substringBefore('?')
+                val parent = beforeQuery.substringBeforeLast("get.php", beforeQuery).trimEnd('/')
+                if (parent.startsWith("http://", ignoreCase = true) || parent.startsWith("https://", ignoreCase = true)) {
+                    return runCatching {
+                        SourceConfig(name = username, server = parent, username = username, password = password).normalized()
+                    }.getOrNull()
                 }
-                return runCatching {
-                    SourceConfig(name = username, server = server, username = username, password = password).normalized()
-                }.getOrNull()
             }
         }
         return m3uSource(original)
     }
 
     private fun m3uSource(url: String): SourceConfig? = runCatching {
-        val parsed = URI(url)
-        val name = parsed.host?.takeIf(String::isNotBlank) ?: "M3U Playlist"
-        SourceConfig(name = name, type = SourceType.M3U, playlistUrl = url).normalized()
+        val clean = url.trim()
+        val uri = runCatching { URI(clean) }.getOrNull()
+        val name = uri?.host?.takeIf(String::isNotBlank) ?: "M3U Playlist"
+        SourceConfig(name = name, type = SourceType.M3U, playlistUrl = clean).normalized()
     }.getOrNull()
 
     private fun parseQuery(query: String?): List<Pair<String, String>> = query.orEmpty()
