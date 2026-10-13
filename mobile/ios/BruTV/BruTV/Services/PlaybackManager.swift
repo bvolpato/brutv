@@ -25,6 +25,20 @@ public enum PlaybackState: Equatable, Sendable {
     }
 }
 
+public struct MediaTrackOption: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let displayName: String
+    public let language: String?
+    public let isSelected: Bool
+
+    public init(id: String, displayName: String, language: String? = nil, isSelected: Bool = false) {
+        self.id = id
+        self.displayName = displayName
+        self.language = language
+        self.isSelected = isSelected
+    }
+}
+
 @MainActor
 public final class PlaybackManager: ObservableObject {
     public static let shared = PlaybackManager()
@@ -43,6 +57,12 @@ public final class PlaybackManager: ObservableObject {
     @Published public var isMuted: Bool = false {
         didSet { player.isMuted = isMuted }
     }
+    @Published public private(set) var vodCurrentTime: Double = 0
+    @Published public private(set) var vodDuration: Double = 0
+    @Published public private(set) var availableAudioTracks: [MediaTrackOption] = []
+    @Published public private(set) var selectedAudioTrackID: String?
+    @Published public private(set) var availableSubtitles: [MediaTrackOption] = []
+    @Published public private(set) var selectedSubtitleID: String?
     @Published public var volume: Float = 1.0 {
         didSet { player.volume = volume }
     }
@@ -429,6 +449,12 @@ public final class PlaybackManager: ObservableObject {
         pendingResumePosition = nil
         resumeSeekInProgress = false
         lastVODPosition = 0
+        vodCurrentTime = 0
+        vodDuration = 0
+        availableAudioTracks = []
+        selectedAudioTrackID = nil
+        availableSubtitles = []
+        selectedSubtitleID = nil
         telemetry = StreamTelemetry()
     }
 
@@ -610,6 +636,13 @@ public final class PlaybackManager: ObservableObject {
                       self.isPlaybackRequested, self.retryWorkItem == nil else { return }
                 switch playerItem.status {
                 case .readyToPlay:
+                    self.updateMediaTracks(for: playerItem)
+                    if self.currentVOD != nil {
+                        let dur = CMTimeGetSeconds(playerItem.duration)
+                        if dur.isFinite && !dur.isNaN && dur > 0 {
+                            self.vodDuration = dur
+                        }
+                    }
                     if self.pendingResumePosition != nil {
                         DispatchQueue.main.async { [weak self, weak playerItem] in
                             guard let self, let playerItem else { return }
@@ -829,11 +862,18 @@ public final class PlaybackManager: ObservableObject {
             prepareAndPlay(url: url, resumePosition: resumePosition)
         } else if let stream = currentStream {
             startPlayback(for: stream, format: currentFormat)
-        } else if let vod = currentVOD,
-                  let url = AccountStore.shared.client.vodStreamURL(streamID: vod.id, containerExtension: vod.containerExtension) {
-            prepareAndPlay(url: url, resumePosition: resumePosition)
-        } else {
-            failPlayback(with: "Invalid movie URL.")
+        } else if let vod = currentVOD {
+            let streamURL: URL?
+            if vod.streamType == "series" {
+                streamURL = AccountStore.shared.client.seriesStreamURL(streamID: vod.id, containerExtension: vod.containerExtension)
+            } else {
+                streamURL = AccountStore.shared.client.vodStreamURL(streamID: vod.id, containerExtension: vod.containerExtension)
+            }
+            if let streamURL {
+                prepareAndPlay(url: streamURL, resumePosition: resumePosition)
+            } else {
+                failPlayback(with: vod.streamType == "series" ? "Invalid episode URL." : "Invalid movie URL.")
+            }
         }
     }
 
@@ -938,6 +978,16 @@ public final class PlaybackManager: ObservableObject {
                 } else {
                     self.recovery.recordInterruption()
                 }
+                if self.currentVOD != nil {
+                    let currentSeconds = CMTimeGetSeconds(currentItem.currentTime())
+                    if currentSeconds.isFinite && !currentSeconds.isNaN {
+                        self.vodCurrentTime = max(0, currentSeconds)
+                    }
+                    let durationSeconds = CMTimeGetSeconds(currentItem.duration)
+                    if durationSeconds.isFinite && !durationSeconds.isNaN && durationSeconds > 0 {
+                        self.vodDuration = durationSeconds
+                    }
+                }
                 if self.pendingResumePosition != nil, !self.resumeSeekInProgress, self.isPlaybackRequested {
                     self.resumePlayback(for: currentItem, session: self.sessionGeneration, generation: self.itemGeneration)
                 }
@@ -1039,6 +1089,107 @@ public final class PlaybackManager: ObservableObject {
         player.play()
         liveBehindSeconds = 0
         explicitlyRewound = false
+    }
+
+    public func seek(to seconds: Double) {
+        guard let item = player.currentItem else { return }
+        let target = max(0, min(seconds, vodDuration > 0 ? vodDuration : seconds))
+        vodCurrentTime = target
+        lastVODPosition = target
+        item.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.lastVODPosition = target
+            }
+        }
+    }
+
+    public func seekRelative(_ deltaSeconds: Double) {
+        let target = max(0, vodCurrentTime + deltaSeconds)
+        seek(to: target)
+    }
+
+    public func updateMediaTracks(for item: AVPlayerItem) {
+        let asset = item.asset
+
+        // Audio tracks
+        if let audioGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+            let currentSelected = item.currentMediaSelection.selectedMediaOption(in: audioGroup)
+            var audioTracks: [MediaTrackOption] = []
+            for option in audioGroup.options {
+                let id = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+                let isSel = (currentSelected == option)
+                audioTracks.append(MediaTrackOption(
+                    id: id,
+                    displayName: option.displayName,
+                    language: option.extendedLanguageTag ?? option.locale?.localizedString(forIdentifier: option.locale?.identifier ?? ""),
+                    isSelected: isSel
+                ))
+                if isSel {
+                    self.selectedAudioTrackID = id
+                }
+            }
+            self.availableAudioTracks = audioTracks
+        } else {
+            self.availableAudioTracks = []
+            self.selectedAudioTrackID = nil
+        }
+
+        // Subtitles
+        if let subGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+            let currentSelected = item.currentMediaSelection.selectedMediaOption(in: subGroup)
+            var subTracks: [MediaTrackOption] = []
+            for option in subGroup.options {
+                let id = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+                let isSel = (currentSelected == option)
+                subTracks.append(MediaTrackOption(
+                    id: id,
+                    displayName: option.displayName,
+                    language: option.extendedLanguageTag ?? option.locale?.localizedString(forIdentifier: option.locale?.identifier ?? ""),
+                    isSelected: isSel
+                ))
+                if isSel {
+                    self.selectedSubtitleID = id
+                }
+            }
+            self.availableSubtitles = subTracks
+        } else {
+            self.availableSubtitles = []
+            self.selectedSubtitleID = nil
+        }
+    }
+
+    public func selectAudioTrack(id: String) {
+        guard let item = player.currentItem,
+              let audioGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) else { return }
+        for option in audioGroup.options {
+            let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+            if optionID == id {
+                item.select(option, in: audioGroup)
+                selectedAudioTrackID = id
+                updateMediaTracks(for: item)
+                break
+            }
+        }
+    }
+
+    public func selectSubtitle(id: String?) {
+        guard let item = player.currentItem,
+              let subGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else { return }
+        if let id {
+            for option in subGroup.options {
+                let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+                if optionID == id {
+                    item.select(option, in: subGroup)
+                    selectedSubtitleID = id
+                    updateMediaTracks(for: item)
+                    break
+                }
+            }
+        } else {
+            item.select(nil, in: subGroup)
+            selectedSubtitleID = nil
+            updateMediaTracks(for: item)
+        }
     }
 
     private func stopTelemetryMonitoring() {

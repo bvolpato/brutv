@@ -2,7 +2,7 @@ import SwiftUI
 
 public struct SeriesView: View {
     @State private var categories: [SeriesCategory] = []
-    @State private var selectedCategoryID: String = ""
+    @State private var selectedCategoryID: String = "all"
     @State private var seriesList: [SeriesItem] = []
     @State private var searchText: String = ""
     @State private var isLoading: Bool = false
@@ -165,11 +165,13 @@ public struct SeriesView: View {
         do {
             let cats = try await client.fetchSeriesCategories()
             await MainActor.run {
-                self.categories = cats
-                if let first = cats.first {
-                    self.selectedCategoryID = first.id
-                    loadSeries(categoryID: first.id)
+                var allCategories = [SeriesCategory(id: "all", name: "All Series")]
+                allCategories.append(contentsOf: cats)
+                self.categories = allCategories
+                if self.selectedCategoryID.isEmpty {
+                    self.selectedCategoryID = "all"
                 }
+                loadSeries(categoryID: self.selectedCategoryID)
             }
         } catch {
             print("Failed to fetch series categories: \(error)")
@@ -180,7 +182,8 @@ public struct SeriesView: View {
         isLoading = true
         Task {
             do {
-                let items = try await client.fetchSeries(categoryID: categoryID)
+                let catArg = categoryID == "all" ? nil : categoryID
+                let items = try await client.fetchSeries(categoryID: catArg)
                 await MainActor.run {
                     self.seriesList = items
                     self.isLoading = false

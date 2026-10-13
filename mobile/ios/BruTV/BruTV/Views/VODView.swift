@@ -4,7 +4,7 @@ public struct VODView: View {
     @ObservedObject private var playback = PlaybackManager.shared
 
     @State private var categories: [VODCategory] = []
-    @State private var selectedCategoryID: String = ""
+    @State private var selectedCategoryID: String = "all"
     @State private var movies: [VODStream] = []
     @State private var searchText: String = ""
     @State private var isLoading: Bool = false
@@ -157,11 +157,9 @@ public struct VODView: View {
         do {
             let cats = try await client.fetchVODCategories()
             await MainActor.run {
-                self.categories = cats
-                if let first = cats.first {
-                    self.selectedCategoryID = first.id
-                    loadMovies(categoryID: first.id)
-                }
+                let allCat = VODCategory(id: "all", name: "All Movies")
+                self.categories = [allCat] + cats
+                loadMovies(categoryID: self.selectedCategoryID)
             }
         } catch {
             print("Failed to fetch VOD categories: \(error)")
@@ -172,7 +170,7 @@ public struct VODView: View {
         isLoading = true
         Task {
             do {
-                let items = try await client.fetchVODStreams(categoryID: categoryID)
+                let items = try await client.fetchVODStreams(categoryID: categoryID == "all" ? nil : categoryID)
                 await MainActor.run {
                     self.movies = items
                     self.isLoading = false
