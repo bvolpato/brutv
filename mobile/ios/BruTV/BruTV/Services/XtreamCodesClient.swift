@@ -44,7 +44,13 @@ public final class XtreamCodesClient: @unchecked Sendable {
         let cachedLiveStreams: [String: [LiveStream]]
         let cachedAllLiveStreams: [LiveStream]?
         let cachedVODCategories: [VODCategory]?
+        let cachedVODStreams: [String: [VODStream]]
+        let cachedAllVODStreams: [VODStream]?
         let cachedSeriesCategories: [SeriesCategory]?
+        let cachedSeries: [String: [SeriesItem]]
+        let cachedAllSeries: [SeriesItem]?
+        let cachedVODDetails: [Int: VODDetails]
+        let cachedSeriesDetails: [Int: SeriesDetails]
         let cachedPlaylistChannels: [LiveStream]?
     }
 
@@ -77,7 +83,13 @@ public final class XtreamCodesClient: @unchecked Sendable {
     private var cachedLiveStreams: [String: [LiveStream]] = [:] // category_id -> streams
     private var cachedAllLiveStreams: [LiveStream]?
     private var cachedVODCategories: [VODCategory]?
+    private var cachedVODStreams: [String: [VODStream]] = [:]
+    private var cachedAllVODStreams: [VODStream]?
     private var cachedSeriesCategories: [SeriesCategory]?
+    private var cachedSeries: [String: [SeriesItem]] = [:]
+    private var cachedAllSeries: [SeriesItem]?
+    private var cachedVODDetails: [Int: VODDetails] = [:]
+    private var cachedSeriesDetails: [Int: SeriesDetails] = [:]
 
     // M3U playlist mode. When set, live channels come from the playlist and VOD/series are empty.
     private var _playlistURLString: String?
@@ -124,7 +136,13 @@ public final class XtreamCodesClient: @unchecked Sendable {
         cachedLiveStreams = adopted.cachedLiveStreams
         cachedAllLiveStreams = adopted.cachedAllLiveStreams
         cachedVODCategories = adopted.cachedVODCategories
+        cachedVODStreams = adopted.cachedVODStreams
+        cachedAllVODStreams = adopted.cachedAllVODStreams
         cachedSeriesCategories = adopted.cachedSeriesCategories
+        cachedSeries = adopted.cachedSeries
+        cachedAllSeries = adopted.cachedAllSeries
+        cachedVODDetails = adopted.cachedVODDetails
+        cachedSeriesDetails = adopted.cachedSeriesDetails
         cachedPlaylistChannels = adopted.cachedPlaylistChannels
     }
 
@@ -140,7 +158,13 @@ public final class XtreamCodesClient: @unchecked Sendable {
             cachedLiveStreams: cachedLiveStreams,
             cachedAllLiveStreams: cachedAllLiveStreams,
             cachedVODCategories: cachedVODCategories,
+            cachedVODStreams: cachedVODStreams,
+            cachedAllVODStreams: cachedAllVODStreams,
             cachedSeriesCategories: cachedSeriesCategories,
+            cachedSeries: cachedSeries,
+            cachedAllSeries: cachedAllSeries,
+            cachedVODDetails: cachedVODDetails,
+            cachedSeriesDetails: cachedSeriesDetails,
             cachedPlaylistChannels: cachedPlaylistChannels
         )
     }
@@ -206,7 +230,13 @@ public final class XtreamCodesClient: @unchecked Sendable {
         cachedLiveStreams.removeAll()
         cachedAllLiveStreams = nil
         cachedVODCategories = nil
+        cachedVODStreams.removeAll()
+        cachedAllVODStreams = nil
         cachedSeriesCategories = nil
+        cachedSeries.removeAll()
+        cachedAllSeries = nil
+        cachedVODDetails.removeAll()
+        cachedSeriesDetails.removeAll()
         cachedPlaylistChannels = nil
     }
 
@@ -475,12 +505,33 @@ public final class XtreamCodesClient: @unchecked Sendable {
     public func fetchVODStreams(categoryID: String? = nil) async throws -> [VODStream] {
         let source = snapshot()
         if source.playlistURLString != nil { return [] }
+        let effectiveCategoryID = categoryID.flatMap { $0.isEmpty || $0.lowercased() == "all" ? nil : $0 }
+        if let cached = cachedValue(for: source, {
+            if let effectiveCategoryID {
+                if let catCached = cachedVODStreams[effectiveCategoryID] { return catCached }
+                if let allCached = cachedAllVODStreams { return allCached.filter { $0.categoryId == effectiveCategoryID } }
+                return nil
+            }
+            return cachedAllVODStreams
+        }) { return cached }
+
         var query: [String: String] = [:]
-        if let categoryID, !categoryID.isEmpty, categoryID != "all" { query["category_id"] = categoryID }
+        if let effectiveCategoryID { query["category_id"] = effectiveCategoryID }
         let data = try await requestData(for: source, action: "get_vod_streams", queryParams: query, timeout: 20.0)
         do {
             let decoded = try JSONDecoder().decode([VODStream].self, from: data)
-            return uniqueByID(decoded.filter { $0.id > 0 }, id: \VODStream.id)
+            let streams = uniqueByID(decoded.filter { $0.id > 0 }, id: \VODStream.id)
+            try Task.checkCancellation()
+            commitCache(for: source) {
+                if let effectiveCategoryID {
+                    cachedVODStreams[effectiveCategoryID] = streams
+                } else {
+                    cachedAllVODStreams = streams
+                }
+            }
+            return streams
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw XtreamError.decodingError(error.localizedDescription)
         }
@@ -511,12 +562,33 @@ public final class XtreamCodesClient: @unchecked Sendable {
     public func fetchSeries(categoryID: String? = nil) async throws -> [SeriesItem] {
         let source = snapshot()
         if source.playlistURLString != nil { return [] }
+        let effectiveCategoryID = categoryID.flatMap { $0.isEmpty || $0.lowercased() == "all" ? nil : $0 }
+        if let cached = cachedValue(for: source, {
+            if let effectiveCategoryID {
+                if let catCached = cachedSeries[effectiveCategoryID] { return catCached }
+                if let allCached = cachedAllSeries { return allCached.filter { $0.categoryId == effectiveCategoryID } }
+                return nil
+            }
+            return cachedAllSeries
+        }) { return cached }
+
         var query: [String: String] = [:]
-        if let categoryID, !categoryID.isEmpty, categoryID != "all" { query["category_id"] = categoryID }
+        if let effectiveCategoryID { query["category_id"] = effectiveCategoryID }
         let data = try await requestData(for: source, action: "get_series", queryParams: query, timeout: 20.0)
         do {
             let decoded = try JSONDecoder().decode([SeriesItem].self, from: data)
-            return uniqueByID(decoded.filter { $0.id > 0 }, id: \SeriesItem.id)
+            let items = uniqueByID(decoded.filter { $0.id > 0 }, id: \SeriesItem.id)
+            try Task.checkCancellation()
+            commitCache(for: source) {
+                if let effectiveCategoryID {
+                    cachedSeries[effectiveCategoryID] = items
+                } else {
+                    cachedAllSeries = items
+                }
+            }
+            return items
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw XtreamError.decodingError(error.localizedDescription)
         }
@@ -526,9 +598,15 @@ public final class XtreamCodesClient: @unchecked Sendable {
         let source = snapshot()
         if source.playlistURLString != nil { return SeriesDetails(info: nil, episodes: [:]) }
         guard seriesID > 0 else { throw XtreamError.networkError("Invalid series ID") }
+        if let cached = cachedValue(for: source, { cachedSeriesDetails[seriesID] }) { return cached }
         let data = try await requestData(for: source, action: "get_series_info", queryParams: ["series_id": "\(seriesID)"], timeout: 25.0)
         do {
-            return try JSONDecoder().decode(SeriesDetails.self, from: data)
+            let details = try JSONDecoder().decode(SeriesDetails.self, from: data)
+            try Task.checkCancellation()
+            commitCache(for: source) { cachedSeriesDetails[seriesID] = details }
+            return details
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw XtreamError.decodingError(error.localizedDescription)
         }
@@ -538,9 +616,15 @@ public final class XtreamCodesClient: @unchecked Sendable {
         let source = snapshot()
         if source.playlistURLString != nil { return VODDetails(info: nil) }
         guard vodID > 0 else { throw XtreamError.networkError("Invalid VOD ID") }
+        if let cached = cachedValue(for: source, { cachedVODDetails[vodID] }) { return cached }
         let data = try await requestData(for: source, action: "get_vod_info", queryParams: ["vod_id": "\(vodID)"], timeout: 20.0)
         do {
-            return try JSONDecoder().decode(VODDetails.self, from: data)
+            let details = try JSONDecoder().decode(VODDetails.self, from: data)
+            try Task.checkCancellation()
+            commitCache(for: source) { cachedVODDetails[vodID] = details }
+            return details
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw XtreamError.decodingError(error.localizedDescription)
         }

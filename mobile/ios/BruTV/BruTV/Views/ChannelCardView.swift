@@ -7,6 +7,7 @@ public struct ChannelCardView: View {
 
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
+    @State private var isHovered: Bool = false
 
     public init(stream: LiveStream, isSelected: Bool = false, onSelect: @escaping () -> Void) {
         self.stream = stream
@@ -52,7 +53,7 @@ public struct ChannelCardView: View {
 
                             Text(stream.cleanName)
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundColor(isSelected ? .cyan : .white)
                                 .lineLimit(1)
 
                             Spacer()
@@ -69,9 +70,20 @@ public struct ChannelCardView: View {
                                 )
                         }
 
-                        Text("Live Broadcast".localized)
-                            .font(.system(size: 12))
-                            .foregroundColor(.gray)
+                        HStack(spacing: 5) {
+                            if isSelected {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.cyan)
+                                Text("Playing now".localized)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.cyan)
+                            } else {
+                                Text("Live Broadcast".localized)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.gray)
+                            }
+                        }
                     }
                 }
                 .padding(10)
@@ -103,12 +115,17 @@ public struct ChannelCardView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isSelected ? Color.cyan.opacity(0.2) : Color(white: 0.08))
+                .fill(isSelected ? Color.cyan.opacity(0.2) : (isHovered ? Color(white: 0.13) : Color(white: 0.08)))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(isSelected ? Color.cyan : Color.white.opacity(0.08), lineWidth: isSelected ? 1.5 : 1)
+                        .stroke(isSelected ? Color.cyan : (isHovered ? Color.cyan.opacity(0.45) : Color.white.opacity(0.08)), lineWidth: isSelected ? 1.5 : 1)
                 )
         )
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 

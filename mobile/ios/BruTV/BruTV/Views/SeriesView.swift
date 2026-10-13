@@ -7,7 +7,9 @@ public struct SeriesView: View {
     @State private var selectedCategoryID: String = "all"
     @State private var seriesList: [SeriesItem] = []
     @State private var searchText: String = ""
+    @State private var sortOrder: CatalogSortOrder = .defaultOrder
     @State private var isLoading: Bool = false
+    @State private var errorMessage: String?
     @State private var selectedSeries: SeriesItem?
 
     private let client = AccountStore.shared.client
@@ -15,15 +17,32 @@ public struct SeriesView: View {
     public init() {}
 
     private var filteredSeries: [SeriesItem] {
+        let base: [SeriesItem]
         if searchText.isEmpty {
-            return seriesList
+            base = seriesList
+        } else {
+            base = seriesList.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
         }
-        return seriesList.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+
+        switch sortOrder {
+        case .defaultOrder:
+            return base
+        case .topRated:
+            return base.sorted { parseRating($0.rating) > parseRating($1.rating) }
+        case .alphabetical:
+            return base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    private func parseRating(_ raw: String?) -> Double {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
+        let cleaned = raw.components(separatedBy: "/").first ?? raw
+        return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Search and Category bar
+            // Search, Category, and Sort bar
             VStack(spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
@@ -31,6 +50,7 @@ public struct SeriesView: View {
                     TextField("Search series...".localized, text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
+                        .accessibilityIdentifier("seriesSearchField")
                     if !searchText.isEmpty {
                         Button { searchText = "" } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -69,6 +89,47 @@ public struct SeriesView: View {
                         }
                     }
                 }
+
+                // Sort Pills & Series Count
+                HStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(CatalogSortOrder.allCases) { order in
+                                let isSelected = sortOrder == order
+                                Button {
+                                    sortOrder = order
+                                } label: {
+                                    Text(order.rawValue.localized)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .padding(.horizontal, 11)
+                                        .padding(.vertical, 5)
+                                        .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
+                                        .foregroundColor(isSelected ? .black : .white)
+                                        .clipShape(Capsule())
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .fixedSize()
+                            }
+                        }
+                    }
+
+                    Spacer(minLength: 4)
+
+                    HStack(spacing: 3) {
+                        Text("\(filteredSeries.count)")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.9))
+                        Text("series".localized)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.gray)
+                    }
+                    .lineLimit(1)
+                    .fixedSize()
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -78,20 +139,64 @@ public struct SeriesView: View {
 
             Group {
                 if isLoading {
-                    Spacer()
-                    ProgressView().tint(.cyan).scaleEffect(1.3)
-                    Spacer()
-                } else if filteredSeries.isEmpty {
-                    Spacer()
+                    VStack(spacing: 16) {
+                        Spacer()
+                        ProgressView().tint(.cyan).scaleEffect(1.3)
+                        Text("Loading series...".localized)
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                        Spacer()
+                    }
+                } else if let errorMessage {
                     VStack(spacing: 12) {
+                        Spacer()
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 36))
+                            .foregroundColor(.orange)
+                        Text(errorMessage)
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                        Button {
+                            loadSeries(categoryID: selectedCategoryID)
+                        } label: {
+                            Label("Retry".localized, systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.cyan)
+                        Spacer()
+                    }
+                } else if filteredSeries.isEmpty {
+                    VStack(spacing: 12) {
+                        Spacer()
                         Image(systemName: "play.tv")
                             .font(.system(size: 40))
                             .foregroundColor(.gray)
                         Text("No series found".localized)
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.white)
+                        Text("Try adjusting your search query or category filter.".localized)
+                            .font(.system(size: 13))
+                            .foregroundColor(.gray)
+                        if !searchText.isEmpty || selectedCategoryID != "all" {
+                            Button {
+                                searchText = ""
+                                if selectedCategoryID != "all" {
+                                    selectedCategoryID = "all"
+                                    loadSeries(categoryID: "all")
+                                }
+                            } label: {
+                                Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.cyan)
+                            .padding(.top, 4)
+                        }
+                        Spacer()
                     }
-                    Spacer()
                 } else {
                     ScrollView {
                         LazyVGrid(
@@ -131,6 +236,10 @@ public struct SeriesView: View {
                                                 .padding(6)
                                             }
                                         }
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                        )
 
                                         Text(item.name)
                                             .font(.system(size: 13, weight: .semibold))
@@ -150,6 +259,9 @@ public struct SeriesView: View {
                         }
                         .padding(16)
                     }
+                    .refreshable {
+                        await reloadAll()
+                    }
                 }
             }
         }
@@ -167,24 +279,30 @@ public struct SeriesView: View {
     }
 
     private func loadCategories() async {
+        let allSeriesCat = SeriesCategory(id: "all", name: "All Series")
         do {
             let cats = try await client.fetchSeriesCategories()
             await MainActor.run {
-                var allCategories = [SeriesCategory(id: "all", name: "All Series")]
-                allCategories.append(contentsOf: cats)
-                self.categories = allCategories
+                self.categories = [allSeriesCat] + cats
                 if self.selectedCategoryID.isEmpty {
                     self.selectedCategoryID = "all"
                 }
                 loadSeries(categoryID: self.selectedCategoryID)
             }
         } catch {
-            print("Failed to fetch series categories: \(error)")
+            await MainActor.run {
+                self.categories = [allSeriesCat]
+                if self.selectedCategoryID.isEmpty {
+                    self.selectedCategoryID = "all"
+                }
+                loadSeries(categoryID: self.selectedCategoryID)
+            }
         }
     }
 
     private func loadSeries(categoryID: String) {
         isLoading = true
+        errorMessage = nil
         Task {
             do {
                 let catArg = categoryID == "all" ? nil : categoryID
@@ -195,10 +313,16 @@ public struct SeriesView: View {
                 }
             } catch {
                 await MainActor.run {
+                    self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
             }
         }
+    }
+
+    private func reloadAll() async {
+        client.clearCache()
+        await loadCategories()
     }
 }
 
@@ -332,7 +456,7 @@ public struct SeriesDetailView: View {
                         Image(systemName: "star.fill")
                             .foregroundColor(.yellow)
                             .font(.system(size: 13))
-                        Text("\(rating)/10")
+                        Text(rating.contains("/") ? rating : "\(rating)/10")
                             .foregroundColor(.white)
                             .font(.system(size: 14, weight: .semibold))
                     }
@@ -348,6 +472,26 @@ public struct SeriesDetailView: View {
                     Text(String(format: "Director: %@".localized, director))
                         .font(.system(size: 12))
                         .foregroundColor(.gray)
+                }
+
+                if let firstEpisode = currentEpisodes.first {
+                    Button {
+                        playEpisode(firstEpisode)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 13, weight: .bold))
+                            Text("\("Watch Series".localized) • S\(firstEpisode.season)E\(firstEpisode.episodeNum)")
+                                .font(.system(size: 13, weight: .bold))
+                        }
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 9)
+                        .background(Color.cyan)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
                 }
             }
         }
@@ -441,7 +585,8 @@ public struct SeriesDetailView: View {
     }
 
     private func episodeRow(_ episode: SeriesEpisode) -> some View {
-        Button {
+        let isPlaying = playback.currentVOD?.id == episode.id && playback.currentVOD?.streamType == "series"
+        return Button {
             playEpisode(episode)
         } label: {
             HStack(alignment: .top, spacing: 14) {
@@ -462,7 +607,7 @@ public struct SeriesDetailView: View {
                     Circle()
                         .fill(Color.black.opacity(0.6))
                         .frame(width: 32, height: 32)
-                    Image(systemName: "play.fill")
+                    Image(systemName: isPlaying ? "waveform" : "play.fill")
                         .font(.system(size: 13))
                         .foregroundColor(.cyan)
                 }
@@ -471,15 +616,15 @@ public struct SeriesDetailView: View {
                     HStack(spacing: 6) {
                         Text("E\(episode.episodeNum)")
                             .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan)
+                            .foregroundColor(isPlaying ? .black : .cyan)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.cyan.opacity(0.15))
+                            .background(isPlaying ? Color.cyan : Color.cyan.opacity(0.15))
                             .cornerRadius(4)
 
                         Text(episode.title)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
+                            .foregroundColor(isPlaying ? .cyan : .white)
                             .lineLimit(1)
 
                         Spacer()
@@ -501,8 +646,12 @@ public struct SeriesDetailView: View {
                 }
             }
             .padding(10)
-            .background(Color(white: 0.10))
+            .background(isPlaying ? Color.cyan.opacity(0.10) : Color(white: 0.10))
             .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isPlaying ? Color.cyan.opacity(0.5) : Color.clear, lineWidth: 1)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -525,9 +674,11 @@ public struct SeriesDetailView: View {
     }
 
     private func playEpisode(_ episode: SeriesEpisode) {
+        let episodes = currentEpisodes
+        let seriesTitle = series.name
         selectedSeries = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            playback.playEpisode(episode: episode, seriesName: series.name)
+            playback.playEpisode(episode: episode, seriesName: seriesTitle, seasonEpisodes: episodes)
         }
     }
 

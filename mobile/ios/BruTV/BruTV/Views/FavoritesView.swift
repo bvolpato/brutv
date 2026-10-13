@@ -7,14 +7,62 @@ public struct FavoritesView: View {
 
     @State private var favoriteStreams: [LiveStream] = []
     @State private var recentStreams: [LiveStream] = []
+    @State private var searchText: String = ""
     @State private var isLoading: Bool = false
 
     private let client = AccountStore.shared.client
+    public var onNavigate: ((NavigationSection) -> Void)?
 
-    public init() {}
+    public init(onNavigate: ((NavigationSection) -> Void)? = nil) {
+        self.onNavigate = onNavigate
+    }
+
+    private var filteredFavoriteStreams: [LiveStream] {
+        guard !searchText.isEmpty else { return favoriteStreams }
+        return favoriteStreams.filter {
+            $0.cleanName.localizedCaseInsensitiveContains(searchText) ||
+            "\($0.num)".contains(searchText)
+        }
+    }
+
+    private var filteredRecentStreams: [LiveStream] {
+        guard !searchText.isEmpty else { return recentStreams }
+        return recentStreams.filter {
+            $0.cleanName.localizedCaseInsensitiveContains(searchText) ||
+            "\($0.num)".contains(searchText)
+        }
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
+            if !favoriteStreams.isEmpty || !recentStreams.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.gray)
+                    TextField("Filter favorites or recents...".localized, text: $searchText)
+                        .foregroundColor(.white)
+                        .autocorrectionDisabled()
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.gray)
+                                .frame(minWidth: 32, minHeight: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search".localized)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(white: 0.12))
+                .cornerRadius(12)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     // Favorites Section
@@ -26,13 +74,13 @@ public struct FavoritesView: View {
                                 .font(.system(size: 18, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
-                            Text("\(favoriteStreams.count)")
+                            Text("\(filteredFavoriteStreams.count)")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(.gray)
                         }
 
                         if favoriteStreams.isEmpty {
-                            VStack(spacing: 8) {
+                            VStack(spacing: 10) {
                                 Image(systemName: "heart.slash")
                                     .font(.system(size: 28))
                                     .foregroundColor(.gray)
@@ -42,22 +90,44 @@ public struct FavoritesView: View {
                                 Text("Tap the heart icon on any channel to pin it here.".localized)
                                     .font(.system(size: 12))
                                     .foregroundColor(.gray)
+
+                                if let onNavigate {
+                                    Button {
+                                        onNavigate(.liveTV)
+                                    } label: {
+                                        Text("Browse Live TV".localized)
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.cyan)
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 7)
+                                            .background(Color.cyan.opacity(0.15))
+                                            .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.top, 4)
+                                }
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 28)
                             .background(Color(white: 0.08))
                             .cornerRadius(14)
+                        } else if filteredFavoriteStreams.isEmpty {
+                            Text("No channels found".localized)
+                                .font(.system(size: 13))
+                                .foregroundColor(.gray)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
                         } else {
                             LazyVGrid(
                                 columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12)],
                                 spacing: 12
                             ) {
-                                ForEach(favoriteStreams) { stream in
+                                ForEach(filteredFavoriteStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
                                         isSelected: playback.currentStream?.id == stream.id
                                     ) {
-                                        playback.play(stream: stream, from: favoriteStreams)
+                                        playback.play(stream: stream, from: filteredFavoriteStreams)
                                     }
                                 }
                             }
@@ -101,17 +171,23 @@ public struct FavoritesView: View {
                             .padding(.vertical, 28)
                             .background(Color(white: 0.08))
                             .cornerRadius(14)
+                        } else if filteredRecentStreams.isEmpty {
+                            Text("No channels found".localized)
+                                .font(.system(size: 13))
+                                .foregroundColor(.gray)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
                         } else {
                             LazyVGrid(
                                 columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12)],
                                 spacing: 12
                             ) {
-                                ForEach(recentStreams) { stream in
+                                ForEach(filteredRecentStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
                                         isSelected: playback.currentStream?.id == stream.id
                                     ) {
-                                        playback.play(stream: stream, from: recentStreams)
+                                        playback.play(stream: stream, from: filteredRecentStreams)
                                     }
                                 }
                             }

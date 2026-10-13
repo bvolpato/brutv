@@ -17,6 +17,11 @@ final class ImageCache {
     func insert(_ image: UIImage, for url: URL) {
         cache.setObject(image, forKey: url as NSURL)
     }
+
+    func clear() {
+        cache.removeAllObjects()
+        URLCache.shared.removeAllCachedResponses()
+    }
 }
 
 public struct CachedAsyncImage<Placeholder: View>: View {

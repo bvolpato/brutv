@@ -5,10 +5,12 @@ public struct PlayerView: View {
     @Binding public var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var pictureInPicture = PictureInPictureModel.shared
     @ObservedObject private var localization = LocalizationManager.shared
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
+    @State private var guideSearchText: String = ""
     @State private var controlsTimer: Timer?
     /// True when a double-click in the player put the Mac window in full screen.
     @State private var enteredMacFullScreen: Bool = false
@@ -320,6 +322,44 @@ public struct PlayerView: View {
                     dismissPlayer(stop: true)
                 }
                 .keyboardShortcut("w", modifiers: [.command])
+
+                if !showGuideDrawer {
+                    Button("") {
+                        playback.togglePlayPause()
+                        scheduleControlsAutoHide()
+                    }
+                    .keyboardShortcut(.space, modifiers: [])
+
+                    Button("") {
+                        if playback.currentVOD != nil {
+                            playback.seekRelative(-10)
+                        } else if playback.canSeekLive {
+                            playback.seekLive(by: -10)
+                        } else {
+                            playback.previousChannel()
+                        }
+                        scheduleControlsAutoHide()
+                    }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+
+                    Button("") {
+                        if playback.currentVOD != nil {
+                            playback.seekRelative(10)
+                        } else if playback.canSeekLive {
+                            playback.seekLive(by: 10)
+                        } else {
+                            playback.nextChannel()
+                        }
+                        scheduleControlsAutoHide()
+                    }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+
+                    Button("") {
+                        playback.isMuted.toggle()
+                        scheduleControlsAutoHide()
+                    }
+                    .keyboardShortcut("m", modifiers: [])
+                }
             }
             .opacity(0)
         )
@@ -347,6 +387,22 @@ public struct PlayerView: View {
             backToChannelsButton
             channelTitle
             Spacer(minLength: 8)
+            if let stream = playback.currentStream {
+                let isFav = favorites.isFavorite(channelID: stream.id)
+                Button {
+                    favorites.toggleFavorite(channelID: stream.id)
+                    scheduleControlsAutoHide()
+                } label: {
+                    Image(systemName: isFav ? "heart.fill" : "heart")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(isFav ? .red : .white)
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(MediaControlButtonStyle(isActive: isFav, isCircular: true, size: 38))
+                .accessibilityLabel((isFav ? "Remove favorite" : "Add favorite").localized)
+                .help((isFav ? "Remove favorite" : "Add favorite").localized)
+                .accessibilityIdentifier("playerFavoriteButton")
+            }
             minimizeButton
             closeButton
         }
@@ -532,9 +588,37 @@ public struct PlayerView: View {
 
                 // Center playback group
                 HStack(spacing: 12) {
+                    if !playback.activeEpisodeList.isEmpty {
+                        Button {
+                            playback.previousEpisode()
+                            scheduleControlsAutoHide()
+                        } label: {
+                            Image(systemName: "backward.end.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 36))
+                        .disabled(!playback.hasPreviousEpisode)
+                        .opacity(playback.hasPreviousEpisode ? 1.0 : 0.35)
+                        .help("Previous Episode".localized)
+                    }
+
                     vodRewindButton
                     playPauseButton
                     vodForwardButton
+
+                    if !playback.activeEpisodeList.isEmpty {
+                        Button {
+                            playback.nextEpisode()
+                            scheduleControlsAutoHide()
+                        } label: {
+                            Image(systemName: "forward.end.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 36))
+                        .disabled(!playback.hasNextEpisode)
+                        .opacity(playback.hasNextEpisode ? 1.0 : 0.35)
+                        .help("Next Episode".localized)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -993,14 +1077,34 @@ public struct PlayerView: View {
         }
     }
 
+    private var filteredGuideChannels: [LiveStream] {
+        guard !guideSearchText.isEmpty else { return playback.activePlaylist }
+        return playback.activePlaylist.filter {
+            $0.cleanName.localizedCaseInsensitiveContains(guideSearchText) ||
+            "\($0.num)".contains(guideSearchText)
+        }
+    }
+
     private var quickChannelDrawer: some View {
-        HStack {
-            Spacer()
+        ZStack(alignment: .trailing) {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation { showGuideDrawer = false }
+                }
+
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Channel Guide".localized)
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(.white)
+                    Text("\(filteredGuideChannels.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.gray)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Capsule())
                     Spacer()
                     Button {
                         withAnimation { showGuideDrawer = false }
@@ -1015,26 +1119,63 @@ public struct PlayerView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
 
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.gray)
+                        .font(.system(size: 13))
+                    TextField("Search guide...".localized, text: $guideSearchText)
+                        .foregroundColor(.white)
+                        .font(.system(size: 13))
+                        .autocorrectionDisabled()
+                    if !guideSearchText.isEmpty {
+                        Button {
+                            guideSearchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.gray)
+                                .font(.system(size: 13))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(10)
+                .padding(.horizontal, 14)
+
                 Divider().background(Color.white.opacity(0.15))
 
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(playback.activePlaylist) { ch in
-                            ChannelCardView(
-                                stream: ch,
-                                isSelected: playback.currentStream?.id == ch.id
-                            ) {
-                                playback.play(stream: ch)
-                                withAnimation { showGuideDrawer = false }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(filteredGuideChannels) { ch in
+                                ChannelCardView(
+                                    stream: ch,
+                                    isSelected: playback.currentStream?.id == ch.id
+                                ) {
+                                    playback.play(stream: ch)
+                                    withAnimation { showGuideDrawer = false }
+                                }
+                                .id(ch.id)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 20)
+                    }
+                    .onAppear {
+                        if let currentID = playback.currentStream?.id {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                                withAnimation {
+                                    proxy.scrollTo(currentID, anchor: .center)
+                                }
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 20)
                 }
             }
-            .frame(width: 320)
-            .background(Color(white: 0.1).opacity(0.95))
+            .frame(width: 340)
+            .background(Color(white: 0.1).opacity(0.96))
             .transition(.move(edge: .trailing))
         }
     }
