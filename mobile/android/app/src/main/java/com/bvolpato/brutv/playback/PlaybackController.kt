@@ -20,6 +20,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -197,6 +199,9 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             val buffering = playbackState == Player.STATE_BUFFERING && player.playWhenReady
             if (buffering && previousState == Player.STATE_READY && hasPlayed) {
                 mutableState.value = mutableState.value.copy(stalls = mutableState.value.stalls + 1)
+                if (mutableState.value.entry?.kind == MediaKind.LIVE && player.totalBufferedDuration > 300) {
+                    player.play()
+                }
             }
             if (buffering) {
                 healthySince = 0
@@ -305,6 +310,12 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                 if (healthySince != 0L && SystemClock.elapsedRealtime() - healthySince >= 30_000) {
                     recovery.healthy()
                     expiredRecoveryAttempts = 0
+                }
+                if (mutableState.value.entry?.kind == MediaKind.LIVE && timeShift == null && !manuallyBehindLive && player.playWhenReady) {
+                    val behind = behindLiveDefaultPositionMs()
+                    if (behind != null && behind > 30_000L) {
+                        player.seekToDefaultPosition()
+                    }
                 }
                 delay(500)
             }
@@ -508,7 +519,12 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             .setConnectTimeoutMs(12_000)
             .setReadTimeoutMs(15_000)
             .setDefaultRequestProperties(if (timeShift == null) entry.requestHeaders else emptyMap())
-        val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(appContext, http))
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setTsExtractorFlags(
+                DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
+                DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
+            )
+        val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(appContext, http), extractorsFactory)
             .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(0) {
                 override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long = C.TIME_UNSET
                 override fun getFallbackSelectionFor(
