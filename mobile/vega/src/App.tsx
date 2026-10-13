@@ -1,11 +1,25 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {ActivityIndicator, BackHandler, FlatList, StyleSheet, Text, TextInput, View} from 'react-native';
+import {ActivityIndicator, Animated, BackHandler, FlatList, StyleSheet, Text, TextInput, View} from 'react-native';
 import {browse, Catalog, ContentItem, loadCatalog, loadEpisodes, Section} from './domain/catalog';
 import {LoginSource, parseLogin} from './domain/login';
 import {PlayerScreen} from './media/PlayerScreen';
 import {TVButton} from './TVButton';
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const splashOpacity = useRef(new Animated.Value(1)).current;
+  const splashScale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(splashOpacity, { toValue: 0, duration: 400, useNativeDriver: true }),
+        Animated.timing(splashScale, { toValue: 1.08, duration: 400, useNativeDriver: true }),
+      ]).start(() => setShowSplash(false));
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [splashOpacity, splashScale]);
+
   const [source, setSource] = useState<LoginSource>();
   const [catalog, setCatalog] = useState<Catalog>();
   const [input, setInput] = useState('');
@@ -128,6 +142,19 @@ export default function App() {
     </>}
     {loading && <View style={styles.row}><ActivityIndicator color="#5eead4"/><Text style={styles.help}>Loading your library…</Text><TVButton label="Cancel" onPress={signOut}/></View>}
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+    {showSplash && (
+      <Animated.View style={[styles.splashContainer, { opacity: splashOpacity, transform: [{ scale: splashScale }] }]}>
+        <View style={styles.splashGlow} />
+        <View style={styles.splashContent}>
+          <View style={styles.splashBadge}>
+            <Text style={styles.splashPlayIcon}>▶</Text>
+          </View>
+          <Text style={styles.splashBrand}>BruTV</Text>
+          <Text style={styles.splashTagline}>IPTV that just works.</Text>
+          <ActivityIndicator color="#5eead4" size="small" style={styles.splashSpinner} />
+        </View>
+      </Animated.View>
+    )}
   </View>;
 }
 
@@ -138,4 +165,57 @@ const styles = StyleSheet.create({
   form: {maxWidth: 950, alignSelf: 'center', width: '100%', paddingTop: 24}, input: {color: '#fff', fontSize: 22, borderWidth: 2, borderColor: '#49637f', borderRadius: 12, padding: 18, margin: 6},
   row: {flexDirection: 'row', alignItems: 'center'}, half: {flex: 1}, groups: {maxHeight: 92, flexGrow: 0}, card: {flex: 1, maxWidth: '33.333%'},
   detail: {padding: 20, backgroundColor: '#172233', borderRadius: 16}, error: {color: '#ffb4a8', fontSize: 21, margin: 12},
+  splashContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#080b11',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  splashGlow: {
+    position: 'absolute',
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    backgroundColor: '#167e74',
+    opacity: 0.18,
+  },
+  splashContent: {
+    alignItems: 'center',
+  },
+  splashBadge: {
+    width: 84,
+    height: 84,
+    borderRadius: 24,
+    backgroundColor: '#167e74',
+    borderWidth: 2,
+    borderColor: '#5eead4',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    shadowColor: '#5eead4',
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  splashPlayIcon: {
+    fontSize: 40,
+    color: '#06201f',
+    marginLeft: 4,
+  },
+  splashBrand: {
+    fontSize: 40,
+    color: '#ffffff',
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  splashTagline: {
+    fontSize: 18,
+    color: '#5eead4',
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  splashSpinner: {
+    marginTop: 20,
+  },
 });
