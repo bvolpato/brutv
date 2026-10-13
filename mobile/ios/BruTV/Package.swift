@@ -14,6 +14,7 @@ let package = Package(
                 "Info.plist", "Resources", "Views",
                 "Services/AccountStore.swift", "Services/FavoritesStore.swift",
                 "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift", "Services/LiveTimeshiftServer.swift",
+                "Services/LocalizationManager.swift",
             ],
             sources: [
                 "Models/AccountModels.swift", "Models/ChannelModels.swift",

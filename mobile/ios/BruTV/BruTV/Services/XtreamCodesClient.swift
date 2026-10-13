@@ -534,6 +534,18 @@ public final class XtreamCodesClient: @unchecked Sendable {
         }
     }
 
+    public func fetchVODDetails(vodID: Int) async throws -> VODDetails {
+        let source = snapshot()
+        if source.playlistURLString != nil { return VODDetails(info: nil) }
+        guard vodID > 0 else { throw XtreamError.networkError("Invalid VOD ID") }
+        let data = try await requestData(for: source, action: "get_vod_info", queryParams: ["vod_id": "\(vodID)"], timeout: 20.0)
+        do {
+            return try JSONDecoder().decode(VODDetails.self, from: data)
+        } catch {
+            throw XtreamError.decodingError(error.localizedDescription)
+        }
+    }
+
     private func normalizedCategoryID(_ rawID: String) -> String? {
         guard let id = Int(rawID), id > 0 else { return nil }
         return String(id)

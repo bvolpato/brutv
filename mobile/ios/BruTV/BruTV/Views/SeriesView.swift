@@ -1,6 +1,8 @@
 import SwiftUI
 
 public struct SeriesView: View {
+    @ObservedObject private var localization = LocalizationManager.shared
+
     @State private var categories: [SeriesCategory] = []
     @State private var selectedCategoryID: String = "all"
     @State private var seriesList: [SeriesItem] = []
@@ -26,7 +28,7 @@ public struct SeriesView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
-                    TextField("Search series...", text: $searchText)
+                    TextField("Search series...".localized, text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
                     if !searchText.isEmpty {
@@ -37,7 +39,7 @@ public struct SeriesView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Clear search")
+                        .accessibilityLabel("Clear search".localized)
                         .accessibilityHint("Removes the series search text.")
                     }
                 }
@@ -85,7 +87,7 @@ public struct SeriesView: View {
                         Image(systemName: "play.tv")
                             .font(.system(size: 40))
                             .foregroundColor(.gray)
-                        Text("No series found")
+                        Text("No series found".localized)
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.white)
                     }

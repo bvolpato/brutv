@@ -354,7 +354,8 @@ public final class PlaybackManager: ObservableObject {
                 capture?.cancel()
                 capture = nil
                 relayLog.error("relay failed, playing HLS: \(String(describing: error), privacy: .public)")
-                let reason = (error as? LiveTimeshiftError)?.errorDescription ?? "The MPEG-TS relay could not read this channel."
+                let isTimeout = (error as? LiveTimeshiftError) == .startupTimeout
+                let reason = isTimeout ? nil : ((error as? LiveTimeshiftError)?.errorDescription ?? "The MPEG-TS relay could not read this channel.")
                 // Let the relay close its provider connection first: many accounts allow only one.
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard !Task.isCancelled, self.sessionGeneration == session else { return }
@@ -510,7 +511,8 @@ public final class PlaybackManager: ObservableObject {
                 }
             } catch {
                 guard !Task.isCancelled, self.sessionGeneration == session else { return }
-                let reason = (error as? LiveTimeshiftError)?.errorDescription ?? "The live buffer could not connect to this provider."
+                let isTimeout = (error as? LiveTimeshiftError) == .startupTimeout
+                let reason = isTimeout ? nil : ((error as? LiveTimeshiftError)?.errorDescription ?? "The live buffer could not connect to this provider.")
                 self.stopLiveBuffer()
                 self.liveBufferUnavailable = reason
                 // Failed recorder requests are cancelled before AVPlayer connects directly.
