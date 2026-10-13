@@ -160,13 +160,13 @@ final class PlaybackPolicyTests: XCTestCase {
 
     // MARK: - Player settings
 
-    func testSettingsSavedBeforeLiveRewindExistedStillLoadWithItOff() throws {
+    func testSettingsSavedBeforeLiveRewindExistedStillLoadWithItOn() throws {
         let old = Data(#"{"bufferProfile":"high_stability","preferredFormat":"m3u8","defaultAspectRatio":"fill","showStatsHUD":true,"autoPlayNextChannel":false,"hardwareAcceleration":true}"#.utf8)
         let settings = try JSONDecoder().decode(PlayerSettings.self, from: old)
         XCTAssertEqual(settings.bufferProfile, .highStability)
         XCTAssertEqual(settings.defaultAspectRatio, .fill)
         XCTAssertTrue(settings.showStatsHUD)
-        XCTAssertFalse(settings.liveRewind)
+        XCTAssertTrue(settings.liveRewind)
     }
 
     func testSettingsRoundTripThroughUserDefaults() throws {
@@ -176,7 +176,7 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(PlayerSettings.load(from: defaults), PlayerSettings())
 
         var settings = PlayerSettings()
-        settings.liveRewind = true
+        settings.liveRewind = false
         settings.bufferProfile = .ultraLowLatency
         settings.save(to: defaults)
         XCTAssertEqual(PlayerSettings.load(from: defaults), settings)
