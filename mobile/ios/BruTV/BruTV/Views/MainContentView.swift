@@ -84,17 +84,21 @@ public struct MainContentView: View {
                     Section {
                         ForEach(NavigationSection.allCases) { section in
                             NavigationLink(value: section) {
-                                HStack(spacing: 12) {
+                                VStack(spacing: 5) {
                                     Image(systemName: section.iconName)
-                                        .font(.system(size: 21, weight: .semibold))
-                                        .frame(width: 28, height: 28)
+                                        .font(.system(size: 24, weight: .semibold))
+                                        .frame(width: 32, height: 28)
                                         .foregroundColor(selectedSection == section ? .cyan : .secondary)
 
                                     Text(section.rawValue)
-                                        .font(.system(size: 15, weight: selectedSection == section ? .bold : .medium))
+                                        .font(.system(size: 11, weight: selectedSection == section ? .bold : .medium))
                                         .foregroundColor(selectedSection == section ? .white : .primary)
+                                        .multilineTextAlignment(.center)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
                                 }
-                                .padding(.vertical, 3)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
                             }
                             .tag(section)
                         }
@@ -104,34 +108,24 @@ public struct MainContentView: View {
 
                 if let profile = account.currentProfile {
                     Divider()
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 6)
 
-                    HStack(spacing: 10) {
+                    VStack(spacing: 3) {
                         Circle()
                             .fill(Color.cyan)
-                            .frame(width: 8, height: 8)
+                            .frame(width: 7, height: 7)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected" : profile.username) : profile.name)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-
-                            if let host = URL(string: profile.serverURL)?.host {
-                                Text(host)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.gray)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer()
+                        Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected" : profile.username) : profile.name)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
                 }
             }
-            .navigationTitle("BruTV")
-            .navigationSplitViewColumnWidth(min: 155, ideal: 172, max: 195)
+            .navigationTitle("")
+            .navigationSplitViewColumnWidth(min: 80, ideal: 92, max: 115)
         } detail: {
             NavigationStack {
                 detailView(for: selectedSection ?? .liveTV)
