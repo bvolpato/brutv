@@ -7,6 +7,7 @@ public struct AppRootView: View {
     @State private var linkError: String?
     @State private var linkGeneration = UUID()
     @State private var linkTask: Task<Void, Never>?
+    @State private var showSplash = true
 
     public init() {}
 
@@ -36,10 +37,22 @@ public struct AppRootView: View {
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color(white: 0.1)))
                 .accessibilityIdentifier("linkSigningIn")
             }
+
+            if showSplash {
+                BruTVSplashScreen()
+                    .transition(.opacity)
+                    .zIndex(100)
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            showSplash = false
+                        }
+                    }
+            }
         }
         .preferredColorScheme(.dark)
         .onAppear {
             handleLaunchArguments()
+            scheduleSplashDismissal()
         }
         .onOpenURL { url in
             handle(url: url)
@@ -51,6 +64,22 @@ public struct AppRootView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(linkError ?? "")
+        }
+    }
+
+    private func scheduleSplashDismissal() {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("--no-splash") {
+            showSplash = false
+            return
+        }
+        #endif
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            withAnimation(.easeInOut(duration: 0.35)) {
+                showSplash = false
+            }
         }
     }
 
@@ -88,5 +117,53 @@ public struct AppRootView: View {
             isSigningInFromLink = false
             linkTask = nil
         }
+    }
+}
+
+public struct BruTVSplashScreen: View {
+    public init() {}
+
+    public var body: some View {
+        ZStack {
+            Color(hex: "#090D16")
+                .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                // Gradient badge with Play arrow matching Android & app icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: "#55E2D1"), Color(hex: "#167E74")],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 76, height: 76)
+                        .shadow(color: Color(hex: "#55E2D1").opacity(0.35), radius: 18, x: 0, y: 8)
+
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 38, weight: .bold))
+                        .foregroundColor(Color(hex: "#06201F"))
+                        .offset(x: 2)
+                }
+
+                Text("BruTV")
+                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+                    .tracking(-0.5)
+
+                Text("IPTV that just works.")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#55E2D1"))
+
+                Spacer().frame(height: 12)
+
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: Color(hex: "#55E2D1")))
+                    .scaleEffect(1.1)
+            }
+        }
+        .accessibilityIdentifier("splashScreen")
     }
 }

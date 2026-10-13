@@ -67,10 +67,6 @@ public struct LoginView: View {
                         Text("BruTV")
                             .font(.system(size: 34, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-
-                        Text("State-of-the-Art Live IPTV & Streaming")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.gray)
                     }
                     .padding(.top, 40)
 
