@@ -4,12 +4,14 @@ public struct HomeView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var recentStreams: [LiveStream] = []
     @State private var favoriteStreams: [LiveStream] = []
     @State private var topRatedMovies: [VODStream] = []
     @State private var topRatedSeries: [SeriesItem] = []
     @State private var featuredMovie: VODStream?
+    @State private var featuredMovieExcerpt: String?
     @State private var selectedSeries: SeriesItem?
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
@@ -64,6 +66,11 @@ public struct HomeView: View {
         .onChange(of: favorites.recentChannelIDs) { _, _ in
             Task { await refreshChannels() }
         }
+        .onChange(of: featuredMovie?.id) { _, _ in
+            if let movie = featuredMovie {
+                loadFeaturedExcerpt(for: movie)
+            }
+        }
     }
 
     // MARK: - Welcome Header
@@ -80,17 +87,18 @@ public struct HomeView: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                    Text("BruTV Home")
+                    Text("BruTV Home".localized)
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                 }
 
                 if let profile = account.currentProfile {
-                    Text("Welcome back, \(profile.name.isEmpty ? (profile.username.isEmpty ? "Viewer" : profile.username) : profile.name)")
+                    let viewerName = profile.name.isEmpty ? (profile.username.isEmpty ? "Viewer".localized : profile.username) : profile.name
+                    Text(String(format: "Welcome back, %@".localized, viewerName))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.gray)
                 } else {
-                    Text("Discover live channels, top movies and series")
+                    Text("Discover live channels, top movies and series".localized)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.gray)
                 }
@@ -138,7 +146,7 @@ public struct HomeView: View {
                         Color.clear
                     }
                     .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: 220)
+                    .frame(maxWidth: .infinity, maxHeight: 240)
                     .clipped()
                     .opacity(0.28)
                 }
@@ -162,7 +170,7 @@ public struct HomeView: View {
             // Content
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("FEATURED MOVIE")
+                    Text("FEATURED MOVIE".localized)
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .foregroundColor(.cyan)
                         .padding(.horizontal, 8)
@@ -191,6 +199,15 @@ public struct HomeView: View {
                     .foregroundColor(.white)
                     .lineLimit(1)
 
+                if let excerpt = featuredMovieExcerpt ?? movie.plot, !excerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(excerpt.trimmingCharacters(in: .whitespacesAndNewlines))
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(.white.opacity(0.85))
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: 680, alignment: .leading)
+                }
+
                 HStack(spacing: 12) {
                     Button {
                         playback.playVOD(vod: movie)
@@ -198,7 +215,7 @@ public struct HomeView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 13, weight: .bold))
-                            Text("Play Movie")
+                            Text("Play Movie".localized)
                                 .font(.system(size: 13, weight: .bold))
                         }
                         .foregroundColor(.black)
@@ -213,7 +230,7 @@ public struct HomeView: View {
             }
             .padding(18)
         }
-        .frame(height: 200)
+        .frame(minHeight: 210)
     }
 
     // MARK: - Recently Watched Channels
@@ -223,7 +240,7 @@ public struct HomeView: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundColor(.cyan)
                     .font(.system(size: 15, weight: .semibold))
-                Text("Recently Watched")
+                Text("Recently Watched".localized)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundColor(.white)
 
@@ -243,8 +260,8 @@ public struct HomeView: View {
             if recentStreams.isEmpty {
                 emptyShelfCard(
                     icon: "tv",
-                    title: "No channels watched yet",
-                    subtitle: "Tune into any Live TV channel to see your recent history here."
+                    title: "No channels watched yet".localized,
+                    subtitle: "Tune into any Live TV channel to see your recent history here.".localized
                 )
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -266,7 +283,7 @@ public struct HomeView: View {
                 Image(systemName: "heart.fill")
                     .foregroundColor(.red)
                     .font(.system(size: 15, weight: .semibold))
-                Text("Favorite Channels")
+                Text("Favorite Channels".localized)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundColor(.white)
 
@@ -286,8 +303,8 @@ public struct HomeView: View {
             if favoriteStreams.isEmpty {
                 emptyShelfCard(
                     icon: "heart.slash",
-                    title: "No favorites added yet",
-                    subtitle: "Tap the heart icon on any channel to pin it right to your home screen."
+                    title: "No favorites added yet".localized,
+                    subtitle: "Tap the heart icon on any channel to pin it right to your home screen.".localized
                 )
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -309,11 +326,11 @@ public struct HomeView: View {
                 Image(systemName: "film.fill")
                     .foregroundColor(.yellow)
                     .font(.system(size: 15, weight: .semibold))
-                Text("Top Rated Movies")
+                Text("Top Rated Movies".localized)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundColor(.white)
 
-                Text("High Ratings")
+                Text("High Ratings".localized)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.yellow)
                     .padding(.horizontal, 6)
@@ -342,11 +359,11 @@ public struct HomeView: View {
                 Image(systemName: "play.tv.fill")
                     .foregroundColor(Color(hex: "#A855F7"))
                     .font(.system(size: 15, weight: .semibold))
-                Text("Top Rated Series")
+                Text("Top Rated Series".localized)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundColor(.white)
 
-                Text("Popular")
+                Text("Popular".localized)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(Color(hex: "#C084FC"))
                     .padding(.horizontal, 6)
@@ -376,40 +393,40 @@ public struct HomeView: View {
         return Button {
             playback.play(stream: stream, from: playlist)
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(white: 0.12))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 54, height: 54)
 
                     CachedAsyncImage(url: stream.iconURL) {
                         Image(systemName: "tv")
-                            .font(.system(size: 16))
+                            .font(.system(size: 20))
                             .foregroundColor(.cyan)
                     }
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                 }
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(stream.cleanName)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(isCurrent ? .cyan : .white)
                         .lineLimit(1)
 
-                    HStack(spacing: 4) {
+                    HStack(spacing: 6) {
                         if stream.num > 0 {
                             Text("#\(stream.num)")
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.gray)
                         }
 
                         Text(stream.quality.rawValue)
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundColor(isCurrent ? .black : .cyan)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
                             .background(isCurrent ? Color.cyan : Color.cyan.opacity(0.18))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
 
@@ -417,18 +434,18 @@ public struct HomeView: View {
 
                 if isCurrent {
                     Image(systemName: "waveform")
-                        .font(.system(size: 14))
+                        .font(.system(size: 16))
                         .foregroundColor(.cyan)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(width: 200, height: 60)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(width: 260, height: 76)
             .background(Color(white: 0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(isCurrent ? Color.cyan : Color.white.opacity(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isCurrent ? Color.cyan : Color.white.opacity(0.1), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -584,6 +601,9 @@ public struct HomeView: View {
             }
 
             self.featuredMovie = self.topRatedMovies.first
+            if let first = self.featuredMovie {
+                self.loadFeaturedExcerpt(for: first)
+            }
 
             // Filter & sort series by rating
             let ratedSeries = allSeries
@@ -617,5 +637,20 @@ public struct HomeView: View {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
         let cleaned = raw.components(separatedBy: "/").first ?? raw
         return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    private func loadFeaturedExcerpt(for movie: VODStream) {
+        if let plot = movie.plot, !plot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            featuredMovieExcerpt = plot
+            return
+        }
+        Task {
+            if let details = try? await client.fetchVODDetails(vodID: movie.id),
+               let plot = details.info?.plot, !plot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await MainActor.run {
+                    self.featuredMovieExcerpt = plot
+                }
+            }
+        }
     }
 }

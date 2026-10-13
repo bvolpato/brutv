@@ -33,6 +33,15 @@ final class BufferEngineTests: XCTestCase {
         XCTAssertEqual(t.bufferDurationFormatted, "4.2s")
         XCTAssertEqual(t.observedBitrateFormatted, "4.50 Mbps")
         XCTAssertEqual(t.resolutionFormatted, "1920x1080")
+
+        // Prefers indicated stream bitrate over loopback throughput
+        t.indicatedBitrate = 3_200_000
+        t.observedBitrate = 3_600_000_000
+        XCTAssertEqual(t.observedBitrateFormatted, "3.20 Mbps")
+
+        // Suppresses extreme localhost socket burst speed when no indicated bitrate
+        t.indicatedBitrate = 0
+        XCTAssertEqual(t.observedBitrateFormatted, "Local Stream")
     }
 
     @MainActor

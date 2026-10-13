@@ -229,6 +229,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
     public let name: String
     public let iconURLString: String?
     public let rating: String?
+    public let plot: String?
     public let categoryId: String
     public let containerExtension: String
     public let streamType: String
@@ -238,9 +239,14 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         case name
         case iconURLString = "stream_icon"
         case rating
+        case plot
         case categoryId = "category_id"
         case containerExtension = "container_extension"
         case streamType = "stream_type"
+    }
+
+    private enum AltCodingKeys: String, CodingKey {
+        case description
     }
 
     public init(
@@ -248,6 +254,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         name: String,
         iconURLString: String? = nil,
         rating: String? = nil,
+        plot: String? = nil,
         categoryId: String = "",
         containerExtension: String = "mp4",
         streamType: String = "movie"
@@ -256,6 +263,7 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         self.name = name
         self.iconURLString = iconURLString
         self.rating = rating
+        self.plot = plot
         self.categoryId = categoryId
         self.containerExtension = containerExtension
         self.streamType = streamType
@@ -283,6 +291,9 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
             self.rating = nil
         }
 
+        let altContainer = try? decoder.container(keyedBy: AltCodingKeys.self)
+        self.plot = (try? container.decodeIfPresent(String.self, forKey: .plot)) ?? (try? altContainer?.decodeIfPresent(String.self, forKey: .description))
+
         if let stringCat = try? container.decode(String.self, forKey: .categoryId) {
             self.categoryId = stringCat
         } else if let intCat = try? container.decode(Int.self, forKey: .categoryId) {
@@ -304,6 +315,80 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
             return URL(string: encoded)
         }
         return nil
+    }
+}
+
+public struct VODInfo: Codable, Sendable {
+    public let name: String?
+    public let plot: String?
+    public let cast: String?
+    public let director: String?
+    public let genre: String?
+    public let rating: String?
+    public let duration: String?
+    public let backdropPath: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case plot
+        case cast
+        case director
+        case genre
+        case rating
+        case duration
+        case backdropPath = "backdrop_path"
+    }
+
+    public init(
+        name: String? = nil,
+        plot: String? = nil,
+        cast: String? = nil,
+        director: String? = nil,
+        genre: String? = nil,
+        rating: String? = nil,
+        duration: String? = nil,
+        backdropPath: [String]? = nil
+    ) {
+        self.name = name
+        self.plot = plot
+        self.cast = cast
+        self.director = director
+        self.genre = genre
+        self.rating = rating
+        self.duration = duration
+        self.backdropPath = backdropPath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try? container.decodeIfPresent(String.self, forKey: .name)
+        self.plot = try? container.decodeIfPresent(String.self, forKey: .plot)
+        self.cast = try? container.decodeIfPresent(String.self, forKey: .cast)
+        self.director = try? container.decodeIfPresent(String.self, forKey: .director)
+        self.genre = try? container.decodeIfPresent(String.self, forKey: .genre)
+        self.duration = try? container.decodeIfPresent(String.self, forKey: .duration)
+        if let stringRating = try? container.decode(String.self, forKey: .rating) {
+            self.rating = stringRating
+        } else if let doubleRating = try? container.decode(Double.self, forKey: .rating) {
+            self.rating = String(format: "%.1f", doubleRating)
+        } else {
+            self.rating = nil
+        }
+        if let paths = try? container.decode([String].self, forKey: .backdropPath) {
+            self.backdropPath = paths
+        } else if let single = try? container.decode(String.self, forKey: .backdropPath) {
+            self.backdropPath = [single]
+        } else {
+            self.backdropPath = nil
+        }
+    }
+}
+
+public struct VODDetails: Codable, Sendable {
+    public let info: VODInfo?
+
+    public init(info: VODInfo? = nil) {
+        self.info = info
     }
 }
 

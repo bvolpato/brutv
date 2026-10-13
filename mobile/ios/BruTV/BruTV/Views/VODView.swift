@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct VODView: View {
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var categories: [VODCategory] = []
     @State private var selectedCategoryID: String = "all"
@@ -28,7 +29,7 @@ public struct VODView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
-                    TextField("Search movies...", text: $searchText)
+                    TextField("Search movies...".localized, text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
                     if !searchText.isEmpty {
@@ -39,7 +40,7 @@ public struct VODView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Clear search")
+                        .accessibilityLabel("Clear search".localized)
                         .accessibilityHint("Removes the movie search text.")
                     }
                 }
@@ -87,7 +88,7 @@ public struct VODView: View {
                         Image(systemName: "film")
                             .font(.system(size: 40))
                             .foregroundColor(.gray)
-                        Text("No movies found")
+                        Text("No movies found".localized)
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.white)
                     }

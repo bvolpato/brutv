@@ -6,6 +6,7 @@ public struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var pictureInPicture = PictureInPictureModel.shared
+    @ObservedObject private var localization = LocalizationManager.shared
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
     @State private var controlsTimer: Timer?
@@ -169,30 +170,25 @@ public struct PlayerView: View {
                 )
                 #endif
 
-            // Buffering Indicator with Cancel Button
+            // Buffering Indicator
             if playback.playbackState == .buffering || playback.playbackState == .loading {
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     ProgressView()
                         .tint(.cyan)
-                        .scaleEffect(1.4)
-                    Text(playback.playbackState == .loading ? "Connecting to stream..." : "Buffering broadcast...")
+                        .scaleEffect(1.3)
+                    Text((playback.playbackState == .loading ? "Connecting to stream..." : "Buffering broadcast...").localized)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
-
-                    Button {
-                        dismissPlayer(stop: true)
-                    } label: {
-                        Label(playback.currentVOD != nil ? "Back" : "Back to Channels", systemImage: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
-                            .padding(.horizontal, 16)
-                    }
-                    .buttonStyle(MediaControlButtonStyle())
-                    .accessibilityIdentifier("playerLoadingBackButton")
+                        .foregroundColor(.white.opacity(0.92))
                 }
-                .padding(22)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 18)
                 .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.black.opacity(0.85))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.black.opacity(0.72))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        )
                 )
             }
 
@@ -202,7 +198,7 @@ public struct PlayerView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 40))
                         .foregroundColor(.orange)
-                    Text("Playback Error")
+                    Text("Playback Error".localized)
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
                     Text(msg)
@@ -217,7 +213,7 @@ public struct PlayerView: View {
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "chevron.left")
-                                Text(playback.currentVOD != nil ? "Back" : "Back to Channels")
+                                Text(playback.currentVOD != nil ? "Back".localized : "Back to Channels".localized)
                             }
                             .font(.system(size: 14, weight: .semibold))
                         }
@@ -228,7 +224,7 @@ public struct PlayerView: View {
                         Button {
                             playback.retryCurrentPlayback()
                         } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
+                            Label("Retry".localized, systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.bordered)
                         .tint(.white)
@@ -239,7 +235,7 @@ public struct PlayerView: View {
                         Button {
                             openInVLC()
                         } label: {
-                            Label("Open in VLC", systemImage: "arrow.up.forward.app")
+                            Label("Open in VLC".localized, systemImage: "arrow.up.forward.app")
                                 .font(.system(size: 13, weight: .semibold))
                         }
                         .buttonStyle(.borderless)
@@ -702,9 +698,9 @@ public struct PlayerView: View {
 
     private var audioSubtitleMenu: some View {
         Menu {
-            Section("Audio Track") {
+            Section("Audio Track".localized) {
                 if playback.availableAudioTracks.isEmpty {
-                    Text("Default Audio")
+                    Text("Default Audio".localized)
                 } else {
                     ForEach(playback.availableAudioTracks) { track in
                         Button {
@@ -720,14 +716,14 @@ public struct PlayerView: View {
                 }
             }
 
-            Section("Subtitles") {
+            Section("Subtitles".localized) {
                 Button {
                     playback.selectSubtitle(id: nil)
                 } label: {
                     if playback.selectedSubtitleID == nil {
-                        Label("Off", systemImage: "checkmark")
+                        Label("Off".localized, systemImage: "checkmark")
                     } else {
-                        Text("Off")
+                        Text("Off".localized)
                     }
                 }
 
@@ -977,18 +973,18 @@ public struct PlayerView: View {
                         } else {
                             HStack(spacing: 4) {
                                 Circle().fill(Color.green).frame(width: 5, height: 5)
-                                Text("LIVE")
+                                Text("LIVE".localized)
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundColor(.green)
                             }
                         }
                     }
                 }
-            } else if let reason = playback.liveBufferUnavailable {
+            } else if let reason = playback.liveBufferUnavailable, !reason.contains("too long") {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.circle")
                         .font(.system(size: 11))
-                    Text(reason)
+                    Text(reason.localized)
                         .font(.system(size: 11))
                         .lineLimit(1)
                 }
@@ -1002,7 +998,7 @@ public struct PlayerView: View {
             Spacer()
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Channel Guide")
+                    Text("Channel Guide".localized)
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(.white)
                     Spacer()
@@ -1013,7 +1009,7 @@ public struct PlayerView: View {
                             .font(.system(size: 17, weight: .semibold))
                     }
                     .buttonStyle(MediaControlButtonStyle())
-                    .accessibilityLabel("Close Guide")
+                    .accessibilityLabel("Close Guide".localized)
                     .accessibilityIdentifier("guideCloseButton")
                 }
                 .padding(.horizontal, 16)

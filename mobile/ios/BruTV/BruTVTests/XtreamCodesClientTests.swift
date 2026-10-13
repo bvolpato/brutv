@@ -144,4 +144,40 @@ final class XtreamCodesClientTests: XCTestCase {
         XCTAssertEqual(sdStream.quality, .sd)
         XCTAssertEqual(sdStream.cleanName, "Band")
     }
+
+    func testVODDetailsDecodingAndPlot() throws {
+        let json = """
+        {
+          "info": {
+            "name": "Inception",
+            "plot": "A thief who steals corporate secrets through dream-sharing technology...",
+            "cast": "Leonardo DiCaprio",
+            "director": "Christopher Nolan",
+            "genre": "Action, Sci-Fi",
+            "rating": "8.8"
+          }
+        }
+        """.data(using: .utf8)!
+
+        let details = try JSONDecoder().decode(VODDetails.self, from: json)
+        XCTAssertEqual(details.info?.name, "Inception")
+        XCTAssertEqual(details.info?.director, "Christopher Nolan")
+        XCTAssertEqual(details.info?.rating, "8.8")
+        XCTAssertTrue(details.info?.plot?.contains("dream-sharing") == true)
+
+        let streamJSON = """
+        {
+          "stream_id": 991,
+          "name": "Inception",
+          "stream_icon": "http://img.example.test/inception.jpg",
+          "rating": 8.8,
+          "plot": "A thief who steals corporate secrets..."
+        }
+        """.data(using: .utf8)!
+        let stream = try JSONDecoder().decode(VODStream.self, from: streamJSON)
+        XCTAssertEqual(stream.id, 991)
+        XCTAssertEqual(stream.name, "Inception")
+        XCTAssertEqual(stream.rating, "8.8")
+        XCTAssertEqual(stream.plot, "A thief who steals corporate secrets...")
+    }
 }

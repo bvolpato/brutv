@@ -3,6 +3,7 @@ import SwiftUI
 public struct LiveTVView: View {
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var categories: [LiveCategory] = []
     @State private var selectedCategoryID: String = "ALL"
@@ -39,7 +40,7 @@ public struct LiveTVView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
-                    TextField("Search channels...", text: $searchText)
+                    TextField("Search channels...".localized, text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
                         .accessibilityIdentifier("channelSearchField")
@@ -53,7 +54,7 @@ public struct LiveTVView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Clear search")
+                        .accessibilityLabel("Clear search".localized)
                         .accessibilityHint("Removes the channel search text.")
                     }
                 }
@@ -65,7 +66,7 @@ public struct LiveTVView: View {
                 // Category Filter Scroll View
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        categoryChip(id: "ALL", name: "All Channels")
+                        categoryChip(id: "ALL", name: "All Channels".localized)
 
                         ForEach(categories) { cat in
                             categoryChip(id: cat.id, name: cat.name)
@@ -89,7 +90,7 @@ public struct LiveTVView: View {
                         Text("\(filteredStreams.count)")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(.cyan.opacity(0.9))
-                        Text("channels")
+                        Text("channels".localized)
                             .font(.system(size: 11, weight: .regular))
                             .foregroundColor(.gray)
                     }
@@ -111,7 +112,7 @@ public struct LiveTVView: View {
                         ProgressView()
                             .tint(.cyan)
                             .scaleEffect(1.3)
-                        Text("Loading channels...")
+                        Text("Loading channels...".localized)
                             .font(.system(size: 14))
                             .foregroundColor(.gray)
                         Spacer()
@@ -130,7 +131,7 @@ public struct LiveTVView: View {
                         Button {
                             loadChannels(categoryID: selectedCategoryID)
                         } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
+                            Label("Retry".localized, systemImage: "arrow.clockwise")
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.borderedProminent)
@@ -143,10 +144,10 @@ public struct LiveTVView: View {
                         Image(systemName: "tv.slash")
                             .font(.system(size: 40))
                             .foregroundColor(.gray)
-                        Text("No channels found")
+                        Text("No channels found".localized)
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.white)
-                        Text("Try adjusting your search query or category filter.")
+                        Text("Try adjusting your search query or category filter.".localized)
                             .font(.system(size: 13))
                             .foregroundColor(.gray)
                         Spacer()

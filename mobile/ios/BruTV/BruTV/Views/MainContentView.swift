@@ -10,6 +10,10 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
 
     public var id: String { rawValue }
 
+    public var title: String {
+        rawValue.localized
+    }
+
     public var iconName: String {
         switch self {
         case .home: return "house.fill"
@@ -25,6 +29,7 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
 public struct MainContentView: View {
     @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var selectedSection: NavigationSection? = .home
@@ -130,7 +135,7 @@ public struct MainContentView: View {
                                         .frame(width: 32, height: 26)
                                         .foregroundColor(selectedSection == section ? .cyan : .secondary)
 
-                                    Text(section.rawValue)
+                                    Text(section.title)
                                         .font(.system(size: 11, weight: selectedSection == section ? .bold : .medium))
                                         .foregroundColor(selectedSection == section ? .white : .secondary)
                                         .multilineTextAlignment(.center)
@@ -201,7 +206,7 @@ public struct MainContentView: View {
                 LiveTVView()
             }
             .tabItem {
-                Label("Live TV", systemImage: "tv.fill")
+                Label("Live TV".localized, systemImage: "tv.fill")
             }
             .tag(NavigationSection.liveTV)
 
@@ -209,7 +214,7 @@ public struct MainContentView: View {
                 VODView()
             }
             .tabItem {
-                Label("Movies", systemImage: "film.fill")
+                Label("Movies".localized, systemImage: "film.fill")
             }
             .tag(NavigationSection.movies)
 
@@ -217,7 +222,7 @@ public struct MainContentView: View {
                 SeriesView()
             }
             .tabItem {
-                Label("Series", systemImage: "play.tv.fill")
+                Label("Series".localized, systemImage: "play.tv.fill")
             }
             .tag(NavigationSection.series)
 
@@ -225,7 +230,7 @@ public struct MainContentView: View {
                 FavoritesView()
             }
             .tabItem {
-                Label("Favorites", systemImage: "heart.fill")
+                Label("Favorites".localized, systemImage: "heart.fill")
             }
             .tag(NavigationSection.favorites)
 
@@ -233,7 +238,7 @@ public struct MainContentView: View {
                 SettingsView()
             }
             .tabItem {
-                Label("Settings", systemImage: "gearshape.fill")
+                Label("Settings".localized, systemImage: "gearshape.fill")
             }
             .tag(NavigationSection.settings)
         }

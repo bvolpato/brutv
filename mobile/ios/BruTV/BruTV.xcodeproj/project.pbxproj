@@ -32,6 +32,7 @@
 		APPBF023 /* MainContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC023; };
 		APPBF038 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC038; };
 		APPBF039 /* InteractiveTimelineScrubber.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC039; };
+		APPBF040 /* LocalizationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC040; };
 		APPBF024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
 		APPBF025 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
 		APPBF030 /* LoginLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC030; };
@@ -101,6 +102,7 @@
 		APPSRC023 /* MainContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainContentView.swift; sourceTree = "<group>"; };
 		APPSRC038 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		APPSRC039 /* InteractiveTimelineScrubber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractiveTimelineScrubber.swift; sourceTree = "<group>"; };
+		APPSRC040 /* LocalizationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationManager.swift; sourceTree = "<group>"; };
 		APPSRC030 /* LoginLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginLink.swift; sourceTree = "<group>"; };
 		APPSRC031 /* M3UPlaylistParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UPlaylistParser.swift; sourceTree = "<group>"; };
 		APPSRC032 /* LoginQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginQRCodeView.swift; sourceTree = "<group>"; };
@@ -214,6 +216,7 @@
 				APPSRC011 /* PlaybackManager.swift */,
 				APPSRC030 /* LoginLink.swift */,
 				APPSRC031 /* M3UPlaylistParser.swift */,
+				APPSRC040 /* LocalizationManager.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -442,6 +445,7 @@
 				APPBF023 /* MainContentView.swift in Sources */,
 				APPBF038 /* HomeView.swift in Sources */,
 				APPBF039 /* InteractiveTimelineScrubber.swift in Sources */,
+				APPBF040 /* LocalizationManager.swift in Sources */,
 				APPBF030 /* LoginLink.swift in Sources */,
 				APPBF031 /* M3UPlaylistParser.swift in Sources */,
 				APPBF032 /* LoginQRCodeView.swift in Sources */,

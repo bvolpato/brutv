@@ -16,12 +16,16 @@ public struct StreamTelemetry: Equatable, Sendable {
     }
 
     public var observedBitrateFormatted: String {
-        if observedBitrate <= 0 { return "Analyzing..." }
-        let mbps = observedBitrate / 1_000_000.0
+        let rate = indicatedBitrate > 0 ? indicatedBitrate : observedBitrate
+        if rate <= 0 { return "Analyzing..." }
+        if rate >= 150_000_000 {
+            return "Local Stream"
+        }
+        let mbps = rate / 1_000_000.0
         if mbps >= 1.0 {
             return String(format: "%.2f Mbps", mbps)
         } else {
-            let kbps = observedBitrate / 1_000.0
+            let kbps = rate / 1_000.0
             return String(format: "%.0f kbps", kbps)
         }
     }
@@ -75,11 +79,26 @@ public final class HLSBufferEngine: @unchecked Sendable {
         }
 
         if let accessLog = playerItem.accessLog(), let lastEvent = accessLog.events.last {
-            telemetry.observedBitrate = lastEvent.observedBitrate
             telemetry.indicatedBitrate = lastEvent.indicatedBitrate
             telemetry.droppedFrames = lastEvent.numberOfDroppedVideoFrames
             if lastEvent.numberOfStalls > 0 {
                 telemetry.stallCount = max(telemetry.stallCount, lastEvent.numberOfStalls)
+            }
+
+            // Prefer indicatedBitrate (manifest advertised stream bitrate).
+            // When streaming via localhost (loopback timeshift / relay), observedBitrate measures
+            // instantaneous memory socket throughput (~3.6 Gbps) rather than stream bitrate.
+            if lastEvent.indicatedBitrate > 0 {
+                telemetry.observedBitrate = lastEvent.indicatedBitrate
+            } else if lastEvent.segmentsDownloadedDuration > 0 && lastEvent.numberOfBytesTransferred > 0 {
+                let calculated = (Double(lastEvent.numberOfBytesTransferred) * 8.0) / lastEvent.segmentsDownloadedDuration
+                if calculated > 0 && calculated < 150_000_000 {
+                    telemetry.observedBitrate = calculated
+                } else if lastEvent.observedBitrate > 0 && lastEvent.observedBitrate < 150_000_000 {
+                    telemetry.observedBitrate = lastEvent.observedBitrate
+                }
+            } else if lastEvent.observedBitrate > 0 && lastEvent.observedBitrate < 150_000_000 {
+                telemetry.observedBitrate = lastEvent.observedBitrate
             }
         }
 

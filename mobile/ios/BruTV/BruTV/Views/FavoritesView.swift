@@ -3,6 +3,7 @@ import SwiftUI
 public struct FavoritesView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var favoriteStreams: [LiveStream] = []
     @State private var recentStreams: [LiveStream] = []
@@ -21,7 +22,7 @@ public struct FavoritesView: View {
                         HStack {
                             Image(systemName: "heart.fill")
                                 .foregroundColor(.red)
-                            Text("Favorite Channels")
+                            Text("Favorite Channels".localized)
                                 .font(.system(size: 18, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
@@ -35,10 +36,10 @@ public struct FavoritesView: View {
                                 Image(systemName: "heart.slash")
                                     .font(.system(size: 28))
                                     .foregroundColor(.gray)
-                                Text("No favorites added yet")
+                                Text("No favorites added yet".localized)
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(.white)
-                                Text("Tap the heart icon on any channel to pin it here.")
+                                Text("Tap the heart icon on any channel to pin it here.".localized)
                                     .font(.system(size: 12))
                                     .foregroundColor(.gray)
                             }
@@ -68,7 +69,7 @@ public struct FavoritesView: View {
                         HStack {
                             Image(systemName: "clock.arrow.circlepath")
                                 .foregroundColor(.cyan)
-                            Text("Recently Watched")
+                            Text("Recently Watched".localized)
                                 .font(.system(size: 18, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
@@ -77,7 +78,7 @@ public struct FavoritesView: View {
                                     favorites.clearRecents()
                                     recentStreams.removeAll()
                                 } label: {
-                                    Label("Clear", systemImage: "trash")
+                                    Label("Clear".localized, systemImage: "trash")
                                         .font(.system(size: 13))
                                         .foregroundColor(.gray)
                                         .padding(.horizontal, 8)
@@ -92,7 +93,7 @@ public struct FavoritesView: View {
                                 Image(systemName: "tv")
                                     .font(.system(size: 28))
                                     .foregroundColor(.gray)
-                                Text("No recently watched channels")
+                                Text("No recently watched channels".localized)
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(.white)
                             }
