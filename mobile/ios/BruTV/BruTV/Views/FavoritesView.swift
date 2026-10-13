@@ -121,7 +121,8 @@ public struct FavoritesView: View {
             }
         }
         .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("Favorites & History")
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadStreams()
         }

@@ -73,36 +73,33 @@ public struct LiveTVView: View {
                     }
                 }
 
-                // Quality Filter Pills
+                // Quality Filter Pills & Channel Count
                 HStack(spacing: 8) {
-                    Text("Quality:")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.gray)
-
-                    ForEach(StreamQuality.allCases, id: \.self) { quality in
-                        Button {
-                            selectedQuality = quality
-                        } label: {
-                            Text(quality.rawValue)
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(selectedQuality == quality ? Color.cyan : Color(white: 0.14))
-                                .foregroundColor(selectedQuality == quality ? .black : .white)
-                                .cornerRadius(8)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(StreamQuality.allCases, id: \.self) { quality in
+                                qualityPill(quality)
+                            }
                         }
                     }
 
-                    Spacer()
+                    Spacer(minLength: 4)
 
-                    Text("\(filteredStreams.count) channels")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.gray)
+                    HStack(spacing: 3) {
+                        Text("\(filteredStreams.count)")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.9))
+                        Text("channels")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.gray)
+                    }
+                    .lineLimit(1)
+                    .fixedSize()
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color(white: 0.06))
+            .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
 
             Divider().background(Color.white.opacity(0.1))
 
@@ -178,7 +175,8 @@ public struct LiveTVView: View {
             }
         }
         .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("Live TV")
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             if categories.isEmpty {
                 await loadCategories()
@@ -187,6 +185,27 @@ public struct LiveTVView: View {
                 loadChannels(categoryID: selectedCategoryID)
             }
         }
+    }
+
+    private func qualityPill(_ quality: StreamQuality) -> some View {
+        let isSelected = selectedQuality == quality
+        return Button {
+            selectedQuality = quality
+        } label: {
+            Text(quality.rawValue)
+                .font(.system(size: 11, weight: .bold))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 5)
+                .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
+                .foregroundColor(isSelected ? .black : .white)
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
     }
 
     private func categoryChip(id: String, name: String) -> some View {
@@ -203,6 +222,8 @@ public struct LiveTVView: View {
                 .foregroundColor(isSelected ? .black : .white)
                 .cornerRadius(20)
         }
+        .buttonStyle(.plain)
+        .fixedSize()
     }
 
     private func loadCategories() async {
