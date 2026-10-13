@@ -476,7 +476,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
         let source = snapshot()
         if source.playlistURLString != nil { return [] }
         var query: [String: String] = [:]
-        if let categoryID, !categoryID.isEmpty { query["category_id"] = categoryID }
+        if let categoryID, !categoryID.isEmpty, categoryID != "all" { query["category_id"] = categoryID }
         let data = try await requestData(for: source, action: "get_vod_streams", queryParams: query, timeout: 20.0)
         do {
             let decoded = try JSONDecoder().decode([VODStream].self, from: data)
@@ -512,7 +512,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
         let source = snapshot()
         if source.playlistURLString != nil { return [] }
         var query: [String: String] = [:]
-        if let categoryID, !categoryID.isEmpty { query["category_id"] = categoryID }
+        if let categoryID, !categoryID.isEmpty, categoryID != "all" { query["category_id"] = categoryID }
         let data = try await requestData(for: source, action: "get_series", queryParams: query, timeout: 20.0)
         do {
             let decoded = try JSONDecoder().decode([SeriesItem].self, from: data)
