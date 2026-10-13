@@ -6,6 +6,7 @@ public struct ChannelCardView: View {
     public let onSelect: () -> Void
 
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     public init(stream: LiveStream, isSelected: Bool = false, onSelect: @escaping () -> Void) {
         self.stream = stream
@@ -68,7 +69,7 @@ public struct ChannelCardView: View {
                                 )
                         }
 
-                        Text("Live Broadcast")
+                        Text("Live Broadcast".localized)
                             .font(.system(size: 12))
                             .foregroundColor(.gray)
                     }
@@ -77,8 +78,8 @@ public struct ChannelCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Play \(stream.cleanName)")
-            .accessibilityValue(stream.num > 0 ? "Channel \(stream.num), \(stream.quality.rawValue)" : stream.quality.rawValue)
+            .accessibilityLabel(String(format: "Play %@".localized, stream.cleanName))
+            .accessibilityValue(stream.num > 0 ? String(format: "Channel %d, %@".localized, stream.num, stream.quality.rawValue) : stream.quality.rawValue)
             .accessibilityIdentifier("channelCard")
 
             Button {
@@ -96,8 +97,8 @@ public struct ChannelCardView: View {
             }
             .buttonStyle(.plain)
             .padding(.trailing, 10)
-            .accessibilityLabel(isFav ? "Remove \(stream.cleanName) from Favorites" : "Add \(stream.cleanName) to Favorites")
-            .help(isFav ? "Remove favorite" : "Add favorite")
+            .accessibilityLabel(isFav ? String(format: "Remove %@ from Favorites".localized, stream.cleanName) : String(format: "Add %@ to Favorites".localized, stream.cleanName))
+            .help(isFav ? "Remove favorite".localized : "Add favorite".localized)
             .accessibilityIdentifier("favoriteButton")
         }
         .background(

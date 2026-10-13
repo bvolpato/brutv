@@ -170,7 +170,7 @@ public struct MainContentView: View {
                             .fill(Color.cyan)
                             .frame(width: 7, height: 7)
 
-                        Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected" : profile.username) : profile.name)
+                        Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected".localized : profile.username) : profile.name)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.secondary)
                             .lineLimit(1)
@@ -303,7 +303,7 @@ public struct MainContentView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            Text("Live • \(playback.telemetry.bufferDurationFormatted) buffered")
+                            Text("\("Live".localized) • \(playback.telemetry.bufferDurationFormatted) \("buffered".localized)")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.cyan)
                         }
@@ -325,7 +325,7 @@ public struct MainContentView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            Text(vod.streamType == "series" ? (playback.isPlaybackRequested ? "Series Playing" : "Paused") : (playback.isPlaybackRequested ? "Movie Playing" : "Paused"))
+                            Text(vod.streamType == "series" ? (playback.isPlaybackRequested ? "Series Playing".localized : "Paused".localized) : (playback.isPlaybackRequested ? "Movie Playing".localized : "Paused".localized))
                                 .font(.system(size: 11))
                                 .foregroundColor(.gray)
                         }
@@ -336,7 +336,7 @@ public struct MainContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("Opens the full screen player")
+            .accessibilityHint("Opens the full screen player".localized)
             .accessibilityIdentifier("miniPlayer")
 
             Button {
@@ -346,8 +346,8 @@ public struct MainContentView: View {
                     .font(.system(size: 18, weight: .semibold))
             }
             .buttonStyle(MediaControlButtonStyle(isPrimary: true))
-            .accessibilityLabel(playback.isPlaybackRequested ? "Pause" : "Play")
-            .help(playback.isPlaybackRequested ? "Pause playback" : "Resume playback")
+            .accessibilityLabel((playback.isPlaybackRequested ? "Pause" : "Play").localized)
+            .help((playback.isPlaybackRequested ? "Pause playback" : "Resume playback").localized)
             .accessibilityIdentifier("miniPlayerPlayPause")
 
             Button {
@@ -357,8 +357,8 @@ public struct MainContentView: View {
                     .font(.system(size: 16, weight: .semibold))
             }
             .buttonStyle(MediaControlButtonStyle())
-            .accessibilityLabel("Stop")
-            .help("Stop playback")
+            .accessibilityLabel("Stop".localized)
+            .help("Stop playback".localized)
             .accessibilityIdentifier("miniPlayerClose")
         }
         .padding(10)

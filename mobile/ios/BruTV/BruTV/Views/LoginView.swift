@@ -8,6 +8,7 @@ public struct LoginView: View {
     }
 
     @ObservedObject private var account = AccountStore.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var mode: LoginMode = .xtream
     @State private var serverURL: String = ""
@@ -72,9 +73,9 @@ public struct LoginView: View {
 
                     // Credentials Box
                     VStack(spacing: 16) {
-                        Picker("Login type", selection: $mode) {
+                        Picker("Login type".localized, selection: $mode) {
                             ForEach(LoginMode.allCases) { mode in
-                                Text(mode.rawValue).tag(mode)
+                                Text(mode.rawValue.localized).tag(mode)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -91,7 +92,7 @@ public struct LoginView: View {
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "exclamationmark.circle.fill")
                                     .foregroundColor(.orange)
-                                Text(errorMessage)
+                                Text(errorMessage.localized)
                                     .font(.system(size: 13))
                                     .foregroundColor(.orange)
                             }
@@ -108,11 +109,11 @@ public struct LoginView: View {
                                 if isSubmitting {
                                     ProgressView()
                                         .tint(.black)
-                                    Text("Connecting...")
+                                    Text("Connecting...".localized)
                                         .font(.system(size: 16, weight: .bold))
                                 } else {
                                     Label(
-                                        mode == .xtream ? "Connect Server" : "Load Playlist",
+                                        (mode == .xtream ? "Connect Server" : "Load Playlist").localized,
                                         systemImage: mode == .xtream ? "server.rack" : "square.and.arrow.down"
                                     )
                                     .font(.system(size: 16, weight: .bold))
@@ -134,13 +135,13 @@ public struct LoginView: View {
                             Button {
                                 showScanner = true
                             } label: {
-                                Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                                Label("Scan QR Code".localized, systemImage: "qrcode.viewfinder")
                                     .font(.system(size: 15, weight: .semibold))
                             }
                             .buttonStyle(.bordered)
                             .buttonBorderShape(.capsule)
                             .tint(.cyan)
-                            .accessibilityHint("Scan a BruTV sign-in QR code with the camera or from a photo.")
+                            .accessibilityHint("Scan a BruTV sign-in QR code with the camera or from a photo.".localized)
                             .accessibilityIdentifier("scanQRButton")
 
                             PasteButton(payloadType: String.self) { strings in
@@ -150,11 +151,11 @@ public struct LoginView: View {
                             .buttonBorderShape(.capsule)
                             .tint(.cyan)
                             .labelStyle(.titleAndIcon)
-                            .accessibilityHint("Paste a BruTV sign-in link or playlist URL.")
+                            .accessibilityHint("Paste a BruTV sign-in link or playlist URL.".localized)
                             .accessibilityIdentifier("pasteLoginLinkButton")
                         }
 
-                        Text("Got a BruTV QR code? Tap Scan QR Code. Got a link? Copy it, then tap Paste.")
+                        Text("Got a BruTV QR code? Tap Scan QR Code. Got a link? Copy it, then tap Paste.".localized)
                             .font(.system(size: 11))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
@@ -168,7 +169,7 @@ public struct LoginView: View {
                                 HStack(spacing: 6) {
                                     Image(systemName: "sparkles")
                                         .foregroundColor(.cyan)
-                                    Text("Fill Demo Credentials (example.invalid)")
+                                    Text("Fill Demo Credentials (example.invalid)".localized)
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(.cyan)
                                 }
@@ -195,7 +196,7 @@ public struct LoginView: View {
                     // Saved Profiles
                     if !account.savedProfiles.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("SAVED PROFILES")
+                            Text("SAVED PROFILES".localized)
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                                 .foregroundColor(.gray)
                                 .padding(.horizontal, 4)
@@ -248,7 +249,7 @@ public struct LoginView: View {
         VStack(spacing: 16) {
             // Server URL
             VStack(alignment: .leading, spacing: 6) {
-                Text("SERVER ADDRESS")
+                Text("SERVER ADDRESS".localized)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.gray)
                 HStack {
@@ -269,14 +270,14 @@ public struct LoginView: View {
 
             // Username
             VStack(alignment: .leading, spacing: 6) {
-                Text("USERNAME")
+                Text("USERNAME".localized)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.gray)
                 HStack {
                     Image(systemName: "person.fill")
                         .foregroundColor(.cyan)
                         .frame(width: 20)
-                    TextField("Username", text: $username)
+                    TextField("Username".localized, text: $username)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .foregroundColor(.white)
@@ -289,7 +290,7 @@ public struct LoginView: View {
 
             // Password
             VStack(alignment: .leading, spacing: 6) {
-                Text("PASSWORD")
+                Text("PASSWORD".localized)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.gray)
                 HStack {
@@ -297,12 +298,12 @@ public struct LoginView: View {
                         .foregroundColor(.cyan)
                         .frame(width: 20)
                     if showPassword {
-                        TextField("Password", text: $password)
+                        TextField("Password".localized, text: $password)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
                             .foregroundColor(.white)
                     } else {
-                        SecureField("Password", text: $password)
+                        SecureField("Password".localized, text: $password)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
                             .foregroundColor(.white)
@@ -316,8 +317,8 @@ public struct LoginView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
-                    .accessibilityHint(showPassword ? "Hides your password." : "Shows your password.")
+                    .accessibilityLabel(showPassword ? "Hide password".localized : "Show password".localized)
+                    .accessibilityHint(showPassword ? "Hides your password.".localized : "Shows your password.".localized)
                 }
                 .padding(14)
                 .background(Color(white: 0.12))
@@ -328,7 +329,7 @@ public struct LoginView: View {
 
     private var m3uFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("PLAYLIST URL")
+            Text("PLAYLIST URL".localized)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(.gray)
             HStack {
@@ -346,7 +347,7 @@ public struct LoginView: View {
             .background(Color(white: 0.12))
             .cornerRadius(12)
 
-            Text("Paste an .m3u or .m3u8 link. Xtream get.php links unlock movies and series too.")
+            Text("Paste an .m3u or .m3u8 link. Xtream get.php links unlock movies and series too.".localized)
                 .font(.system(size: 11))
                 .foregroundColor(.gray)
         }
@@ -374,7 +375,7 @@ public struct LoginView: View {
 
     private func signIn(withPasted text: String) {
         guard let link = LoginLink(pasted: text) else {
-            errorMessage = "The clipboard does not contain a BruTV link or playlist URL."
+            errorMessage = "The clipboard does not contain a BruTV link or playlist URL.".localized
             return
         }
         signIn(withScanned: link)

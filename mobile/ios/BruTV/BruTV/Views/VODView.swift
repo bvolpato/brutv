@@ -41,7 +41,7 @@ public struct VODView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search".localized)
-                        .accessibilityHint("Removes the movie search text.")
+                        .accessibilityHint("Removes the movie search text.".localized)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -57,7 +57,7 @@ public struct VODView: View {
                                 selectedCategoryID = cat.id
                                 loadMovies(categoryID: cat.id)
                             } label: {
-                                Text(cat.name)
+                                Text(cat.name.localized)
                                     .font(.system(size: 13, weight: isSelected ? .bold : .medium))
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 7)

@@ -40,7 +40,7 @@ public struct SeriesView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Clear search".localized)
-                        .accessibilityHint("Removes the series search text.")
+                        .accessibilityHint("Removes the series search text.".localized)
                     }
                 }
                 .padding(.horizontal, 14)
@@ -56,7 +56,7 @@ public struct SeriesView: View {
                                 selectedCategoryID = cat.id
                                 loadSeries(categoryID: cat.id)
                             } label: {
-                                Text(cat.name)
+                                Text(cat.name.localized)
                                     .font(.system(size: 13, weight: isSelected ? .bold : .medium))
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 7)
@@ -206,6 +206,7 @@ public struct SeriesDetailView: View {
     public let series: SeriesItem
     @Binding public var selectedSeries: SeriesItem?
     @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var details: SeriesDetails?
     @State private var isLoading: Bool = true
@@ -255,7 +256,7 @@ public struct SeriesDetailView: View {
 
                         if let plot = seriesPlot, !plot.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Overview")
+                                Text("Overview".localized)
                                     .font(.system(size: 16, weight: .bold))
                                     .foregroundColor(.white)
                                 Text(plot)
@@ -267,7 +268,7 @@ public struct SeriesDetailView: View {
 
                         if let cast = seriesCast, !cast.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Cast")
+                                Text("Cast".localized)
                                     .font(.system(size: 14, weight: .bold))
                                     .foregroundColor(.white)
                                 Text(cast)
@@ -297,7 +298,7 @@ public struct SeriesDetailView: View {
                             .font(.system(size: 20))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Close")
+                    .accessibilityLabel("Close".localized)
                 }
             }
         }
@@ -344,7 +345,7 @@ public struct SeriesDetailView: View {
                 }
 
                 if let director = details?.info?.director ?? series.director, !director.isEmpty {
-                    Text("Director: \(director)")
+                    Text(String(format: "Director: %@".localized, director))
                         .font(.system(size: 12))
                         .foregroundColor(.gray)
                 }
@@ -358,7 +359,7 @@ public struct SeriesDetailView: View {
             if isLoading {
                 HStack(spacing: 12) {
                     ProgressView().tint(.cyan)
-                    Text("Loading seasons & episodes...")
+                    Text("Loading seasons & episodes...".localized)
                         .font(.system(size: 14))
                         .foregroundColor(.gray)
                 }
@@ -366,10 +367,10 @@ public struct SeriesDetailView: View {
                 .padding(.vertical, 32)
             } else if let error = errorMessage {
                 VStack(spacing: 10) {
-                    Text("Failed to load episodes: \(error)")
+                    Text(String(format: "Failed to load episodes: %@".localized, error))
                         .font(.system(size: 13))
                         .foregroundColor(.red)
-                    Button("Retry") {
+                    Button("Retry".localized) {
                         Task { await loadDetails() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -382,7 +383,7 @@ public struct SeriesDetailView: View {
                     Image(systemName: "play.slash")
                         .font(.system(size: 28))
                         .foregroundColor(.gray)
-                    Text("No episodes available")
+                    Text("No episodes available".localized)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.gray)
                 }
@@ -390,7 +391,7 @@ public struct SeriesDetailView: View {
                 .padding(.vertical, 24)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Seasons")
+                    Text("Seasons".localized)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundColor(.white)
 
@@ -418,11 +419,11 @@ public struct SeriesDetailView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Episodes")
+                        Text("Episodes".localized)
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.white)
                         Spacer()
-                        Text("\(currentEpisodes.count) episodes")
+                        Text(currentEpisodes.count == 1 ? "1 episode".localized : String(format: "%d episodes".localized, currentEpisodes.count))
                             .font(.system(size: 12))
                             .foregroundColor(.gray)
                     }
@@ -436,10 +437,7 @@ public struct SeriesDetailView: View {
     }
 
     private func seasonLabel(_ season: String) -> String {
-        if let num = Int(season) {
-            return "Season \(num)"
-        }
-        return "Season \(season)"
+        return String(format: "Season %@".localized, season)
     }
 
     private func episodeRow(_ episode: SeriesEpisode) -> some View {
@@ -518,7 +516,7 @@ public struct SeriesDetailView: View {
     private func episodeDuration(_ episode: SeriesEpisode) -> String? {
         if let secs = episode.info?.durationSecs, secs > 0 {
             let mins = secs / 60
-            return "\(mins) min"
+            return String(format: "%d min".localized, mins)
         }
         if let dur = episode.info?.duration, !dur.isEmpty {
             return dur

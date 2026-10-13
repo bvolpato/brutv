@@ -122,7 +122,7 @@ public struct HomeView: View {
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help("Refresh home recommendations")
+                .help("Refresh home recommendations".localized)
             }
         }
     }

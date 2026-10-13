@@ -4,6 +4,8 @@ public struct TechStatsHUD: View {
     public let telemetry: StreamTelemetry
     public let format: String
 
+    @ObservedObject private var localization = LocalizationManager.shared
+
     public init(telemetry: StreamTelemetry, format: String = "HLS (.m3u8)") {
         self.telemetry = telemetry
         self.format = format
@@ -25,7 +27,7 @@ public struct TechStatsHUD: View {
                 Circle()
                     .fill(bufferHealthColor)
                     .frame(width: 8, height: 8)
-                Text("STREAM TELEMETRY")
+                Text("STREAM TELEMETRY".localized)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
                 Spacer()
@@ -37,11 +39,11 @@ public struct TechStatsHUD: View {
             Divider().background(Color.white.opacity(0.2))
 
             Group {
-                statRow(label: "Buffer Ahead", value: telemetry.bufferDurationFormatted, valueColor: bufferHealthColor)
-                statRow(label: "Resolution", value: telemetry.resolutionFormatted)
-                statRow(label: "Bitrate", value: telemetry.observedBitrateFormatted)
-                statRow(label: "Dropped Frames", value: "\(telemetry.droppedFrames)", valueColor: telemetry.droppedFrames > 0 ? .orange : .white)
-                statRow(label: "Stalls Count", value: "\(telemetry.stallCount)", valueColor: telemetry.stallCount > 0 ? .red : .white)
+                statRow(label: "Buffer Ahead".localized, value: telemetry.bufferDurationFormatted, valueColor: bufferHealthColor)
+                statRow(label: "Resolution".localized, value: telemetry.resolutionFormatted.localized)
+                statRow(label: "Bitrate".localized, value: telemetry.observedBitrateFormatted.localized)
+                statRow(label: "Dropped Frames".localized, value: "\(telemetry.droppedFrames)", valueColor: telemetry.droppedFrames > 0 ? .orange : .white)
+                statRow(label: "Stalls Count".localized, value: "\(telemetry.stallCount)", valueColor: telemetry.stallCount > 0 ? .red : .white)
             }
         }
         .padding(12)
