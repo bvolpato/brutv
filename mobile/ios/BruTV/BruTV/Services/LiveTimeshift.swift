@@ -2,10 +2,12 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(os)
 import os
 
 /// Relay and recorder diagnostics. Messages never contain URLs, because they hold credentials.
 let relayLog = Logger(subsystem: "com.bvolpato.brutv", category: "live-relay")
+#endif
 
 struct LiveTimeshiftLimits: Sendable {
     var seconds: Double = 600
@@ -600,7 +602,9 @@ actor LiveTimeshiftRecorder {
         while !stopped, !Task.isCancelled {
             var segmenter = MPEGTSSegmenter()
             var bytes = 0
+            #if canImport(os)
             relayLog.info("relay connecting, attempt \(failures + 1, privacy: .public)")
+            #endif
             do {
                 for try await chunk in open(url) {
                     guard !stopped, !Task.isCancelled else { return }
@@ -612,11 +616,15 @@ actor LiveTimeshiftRecorder {
                         do {
                             try ring.append(recorded, data: segment.data, target: max(2, ceil(segment.duration)), now: clock())
                         } catch {
+                            #if canImport(os)
                             relayLog.error("relay buffer rejected a segment: \(String(describing: error), privacy: .public)")
+                            #endif
                             relayFailure = error
                             return
                         }
+                        #if canImport(os)
                         relayLog.debug("relay segment \(self.relaySequence, privacy: .public): \(segment.duration, privacy: .public)s, \(segment.data.count, privacy: .public) bytes")
+                        #endif
                         relaySequence += 1
                         failures = 0
                     }
@@ -628,7 +636,9 @@ actor LiveTimeshiftRecorder {
                 throw LiveTimeshiftError.network(0)
             } catch {
                 if stopped || Task.isCancelled { return }
+                #if canImport(os)
                 relayLog.error("relay response ended after \(bytes, privacy: .public) bytes: \(String(describing: error), privacy: .public)")
+                #endif
                 failures += 1
                 if failures >= 3 {
                     relayFailure = error

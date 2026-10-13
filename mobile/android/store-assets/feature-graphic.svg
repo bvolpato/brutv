@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500" role="img" aria-labelledby="title description">
+  <title id="title">BruTV. Bring your own TV.</title>
+  <desc id="description">BruTV feature graphic with a cyan play symbol on a dark navy background. Xtream Codes and M3U playlists.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0c202a"/>
+      <stop offset="1" stop-color="#060e16"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#74ece0"/>
+      <stop offset="1" stop-color="#28b9c4"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop stop-color="#55e2d1" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#55e2d1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="500" fill="url(#background)"/>
+  <circle cx="866" cy="250" r="315" fill="url(#glow)"/>
+  <circle cx="866" cy="250" r="178" fill="none" stroke="#55e2d1" stroke-opacity="0.08" stroke-width="1.5"/>
+  <circle cx="866" cy="250" r="144" fill="none" stroke="#55e2d1" stroke-opacity="0.12" stroke-width="1.5"/>
+  <circle cx="866" cy="250" r="108" fill="#0f2c36" stroke="#55e2d1" stroke-opacity="0.34" stroke-width="2"/>
+  <path d="M840 201v98l77-49z" fill="url(#accent)"/>
+  <rect x="60" y="61" width="68" height="68" rx="18" fill="url(#accent)"/>
+  <path d="M86 79v32l25-16z" fill="#082128"/>
+  <g font-family="DejaVu Sans, sans-serif">
+    <text x="147" y="126" font-size="82" font-weight="700" letter-spacing="-3" fill="#f5fbff">BruTV</text>
+    <text x="60" y="268" font-size="59" font-weight="700" letter-spacing="-2" fill="#f5fbff">Bring your own TV.</text>
+    <text x="63" y="329" font-size="28" font-weight="400" fill="#8adfdc">Xtream Codes · M3U playlists</text>
+  </g>
+  <path d="M63 403h480" stroke="#2c515e" stroke-width="1.5"/>
+  <circle cx="63" cy="403" r="3" fill="#55e2d1"/>
+</svg>
