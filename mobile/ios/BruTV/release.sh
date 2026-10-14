@@ -8,6 +8,7 @@ SIGNING_DIR="$BUILD_DIR/signing"
 ARCHIVE_PATH="$BUILD_DIR/BruTV.xcarchive"
 EXPORT_PATH="$BUILD_DIR/export"
 EXPORT_OPTIONS_PLIST="$BUILD_DIR/ExportOptions.plist"
+EXPORT_OPTIONS_UPLOAD_PLIST="$BUILD_DIR/ExportOptions-Upload.plist"
 KEYCHAIN_PATH="$SIGNING_DIR/brutv-release-$$.keychain-db"
 ORIGINAL_KEYCHAINS=()
 KEYCHAIN_CREATED=false
@@ -21,12 +22,17 @@ CERT_PATH="${IOS_CERTIFICATE_PATH:-}"
 PROFILE_PATH="${IOS_PROVISIONING_PROFILE_PATH:-}"
 CODE_SIGN_IDENTITY="${IOS_CODE_SIGN_IDENTITY:-Apple Distribution}"
 SKIP_SIM_BUILD=false
+UPLOAD=false
 
 usage() {
   cat <<'USAGE'
-Usage: mobile/ios/BruTV/release.sh [--skip-simulator-build]
+Usage: mobile/ios/BruTV/release.sh [--skip-simulator-build] [--upload]
 
-Builds signed App Store IPA. Must run on macOS with Xcode.
+Builds signed App Store IPA and Mac Catalyst PKG. Must run on macOS with Xcode.
+
+Options:
+  --skip-simulator-build   Skip building the iOS simulator target.
+  --upload                 Upload both iOS and Mac packages directly to App Store Connect.
 
 Signing modes:
   manual     Used when a .p12 and a .mobileprovision are given. Needs IOS_P12_PASSWORD.
@@ -54,6 +60,9 @@ for arg in "$@"; do
   case "$arg" in
     --skip-simulator-build)
       SKIP_SIM_BUILD=true
+      ;;
+    --upload)
+      UPLOAD=true
       ;;
     --help|-h)
       usage
@@ -167,6 +176,24 @@ if [[ "$SIGNING_MODE" = automatic ]]; then
 </dict>
 </plist>
 PLIST
+  cat > "$EXPORT_OPTIONS_UPLOAD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>destination</key>
+    <string>upload</string>
+    <key>method</key>
+    <string>$EXPORT_METHOD</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>teamID</key>
+    <string>$IOS_TEAM_ID</string>
+    <key>manageAppVersionAndBuildNumber</key>
+    <false/>
+</dict>
+</plist>
+PLIST
   SIGNING_ARGS=(
     -allowProvisioningUpdates
     CODE_SIGN_STYLE=Automatic
@@ -216,6 +243,27 @@ cat > "$EXPORT_OPTIONS_PLIST" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>method</key>
+    <string>$EXPORT_METHOD</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>teamID</key>
+    <string>$IOS_TEAM_ID</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>$BUNDLE_ID</key>
+        <string>$IOS_PROFILE_NAME</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+cat > "$EXPORT_OPTIONS_UPLOAD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>destination</key>
+    <string>upload</string>
     <key>method</key>
     <string>$EXPORT_METHOD</string>
     <key>signingStyle</key>
@@ -325,3 +373,21 @@ if [[ -n "$PKG_PATH" ]]; then
   echo "pkg: $PKG_PATH (macOS / Mac Catalyst)"
 fi
 echo "version: $SHORT_VERSION ($BUNDLE_VERSION)"
+
+if [[ "$UPLOAD" = true ]]; then
+  echo "==> Uploading iOS app to App Store Connect..."
+  xcodebuild -exportArchive \
+    -archivePath "$ARCHIVE_PATH" \
+    -exportOptionsPlist "$EXPORT_OPTIONS_UPLOAD_PLIST" \
+    -exportPath "$EXPORT_PATH" \
+    ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
+
+  echo "==> Uploading Mac Catalyst app to App Store Connect..."
+  xcodebuild -exportArchive \
+    -archivePath "$MAC_ARCHIVE_PATH" \
+    -exportOptionsPlist "$EXPORT_OPTIONS_UPLOAD_PLIST" \
+    -exportPath "$EXPORT_PATH" \
+    ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
+
+  echo "==> Direct upload completed for both iOS and macOS builds."
+fi
