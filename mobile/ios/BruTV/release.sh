@@ -278,6 +278,7 @@ if [[ "$SKIP_SIM_BUILD" = false ]]; then
     ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
 fi
 
+echo "==> Archiving iOS..."
 xcodebuild archive \
   "${XCODE_COMMON_ARGS[@]}" \
   -destination "generic/platform=iOS" \
@@ -285,8 +286,25 @@ xcodebuild archive \
   "${SIGNING_ARGS[@]}" \
   ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
 
+echo "==> Exporting iOS IPA..."
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
+  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+  -exportPath "$EXPORT_PATH" \
+  ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
+
+MAC_ARCHIVE_PATH="$BUILD_DIR/BruTV-Mac.xcarchive"
+echo "==> Archiving Mac Catalyst..."
+xcodebuild archive \
+  "${XCODE_COMMON_ARGS[@]}" \
+  -destination "generic/platform=macOS,variant=Mac Catalyst" \
+  -archivePath "$MAC_ARCHIVE_PATH" \
+  "${SIGNING_ARGS[@]}" \
+  ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
+
+echo "==> Exporting Mac Catalyst PKG..."
+xcodebuild -exportArchive \
+  -archivePath "$MAC_ARCHIVE_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
   -exportPath "$EXPORT_PATH" \
   ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
@@ -297,8 +315,13 @@ IPA_PATH=$(find "$EXPORT_PATH" -name '*.ipa' -type f | sort | head -n 1 || true)
   exit 1
 }
 
+PKG_PATH=$(find "$EXPORT_PATH" -name '*.pkg' -type f | sort | head -n 1 || true)
+
 BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleVersion" "$ARCHIVE_PATH/Info.plist")
 SHORT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleShortVersionString" "$ARCHIVE_PATH/Info.plist")
 
-echo "ipa: $IPA_PATH"
+echo "ipa: $IPA_PATH (iOS/iPadOS)"
+if [[ -n "$PKG_PATH" ]]; then
+  echo "pkg: $PKG_PATH (macOS / Mac Catalyst)"
+fi
 echo "version: $SHORT_VERSION ($BUNDLE_VERSION)"
