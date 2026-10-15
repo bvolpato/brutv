@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Join BruTV - Next-Generation IPTV Player</title>
+  <meta name="description" content="Open your subscription in BruTV or download the app for Apple TV, iOS, iPadOS, macOS, and Android.">
+  <meta property="og:title" content="Join BruTV - Next-Generation IPTV Player">
+  <meta property="og:description" content="Fast, buffer-free IPTV with native Siri Remote, Apple TV Top Shelf, and instant channel switching.">
+  <meta property="og:type" content="website">
+  <style>
+    :root {
+      --bg-start: #090D16;
+      --bg-end: #121A29;
+      --card-bg: rgba(22, 30, 46, 0.75);
+      --card-border: rgba(255, 255, 255, 0.12);
+      --accent: #06b6d4;
+      --accent-hover: #22d3ee;
+      --accent-glow: rgba(6, 182, 212, 0.35);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background: radial-gradient(circle at 50% 20%, #1e293b 0%, var(--bg-start) 65%, #05070c 100%);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .lang-switcher {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .lang-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .lang-btn.active, .lang-btn:hover {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      padding: 36px 28px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px var(--accent-glow);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      text-align: center;
+    }
+
+    .logo-container {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #06b6d4 0%, #2563eb 100%);
+      margin-bottom: 20px;
+      box-shadow: 0 10px 25px var(--accent-glow);
+    }
+
+    .logo-icon {
+      font-size: 40px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      line-height: 1.5;
+      margin-bottom: 28px;
+    }
+
+    .action-group {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 14px 20px;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, #0284c7 100%);
+      color: #041017;
+      box-shadow: 0 6px 20px rgba(6, 182, 212, 0.4);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px rgba(6, 182, 212, 0.6);
+      color: #000;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: var(--text-main);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 20px 0;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .divider:not(:empty)::before {
+      margin-right: 12px;
+    }
+
+    .divider:not(:empty)::after {
+      margin-left: 12px;
+    }
+
+    .qr-card {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 20px;
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .qr-container {
+      background: #ffffff;
+      padding: 12px;
+      border-radius: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 180px;
+      min-height: 180px;
+    }
+
+    .qr-caption {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .platforms {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 24px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .platform-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 6px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .security-note {
+      margin-top: 24px;
+      font-size: 12px;
+      color: #f59e0b;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-align: left;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      background: var(--accent);
+      color: #000;
+      padding: 10px 20px;
+      border-radius: 30px;
+      font-weight: 600;
+      font-size: 14px;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.3s ease;
+      pointer-events: none;
+    }
+
+    .toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="lang-switcher">
+    <button class="lang-btn" id="lang-en" onclick="setLanguage('en')">EN</button>
+    <button class="lang-btn" id="lang-pt" onclick="setLanguage('pt')">PT-BR</button>
+  </div>
+
+  <div class="container">
+    <div class="logo-container">
+      <span class="logo-icon">📺</span>
+    </div>
+
+    <h1 id="title">Join BruTV</h1>
+    <p class="subtitle" id="subtitle">The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.</p>
+
+    <div class="action-group">
+      <!-- 1. Open App Directly -->
+      <a id="btn-open-app" href="#" class="btn btn-primary">
+        <span>▶</span>
+        <span id="txt-open-app">Open in BruTV App</span>
+      </a>
+
+      <!-- 2. Store Download Button -->
+      <a id="btn-download" href="https://apps.apple.com/app/brutv/id6754930353" class="btn btn-secondary" target="_blank" rel="noopener">
+        <span id="download-icon">🍎</span>
+        <span id="txt-download">Download on App Store</span>
+      </a>
+    </div>
+
+    <!-- Secondary: Copy link or QR code -->
+    <div class="divider" id="txt-or">Or connect another screen</div>
+
+    <div class="qr-card">
+      <div id="qr-code" class="qr-container">
+        <!-- Live QR Code Canvas / SVG generated via JS -->
+      </div>
+      <p class="qr-caption" id="txt-qr-hint">Scan with camera on Apple TV, iPhone, iPad, or Android.</p>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <button class="btn btn-secondary" onclick="copySetupLink()">
+        <span>📋</span>
+        <span id="txt-copy">Copy Sign-In Link</span>
+      </button>
+    </div>
+
+    <div class="security-note">
+      <span>⚠️</span>
+      <span id="txt-security">This sign-in link includes your subscription access. Only share it with people and devices you trust.</span>
+    </div>
+
+    <div class="platforms">
+      <div class="platform-pill"><span></span> tvOS & iOS</div>
+      <div class="platform-pill"><span>💻</span> macOS</div>
+      <div class="platform-pill"><span>🤖</span> Android</div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Link copied!</div>
+
+  <!-- QR Code Generator (Lightweight Vanilla JS) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script>
+    const translations = {
+      en: {
+        title: "Join BruTV",
+        subtitle: "The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.",
+        openApp: "Open in BruTV App",
+        downloadApple: "Download on Apple App Store",
+        downloadAndroid: "Download for Android",
+        downloadMac: "Download for macOS",
+        or: "Or connect another screen",
+        qrHint: "Scan with camera on Apple TV, iPhone, iPad, or Android.",
+        copy: "Copy Sign-In Link",
+        copied: "Link copied to clipboard!",
+        security: "This sign-in link includes your subscription access. Only share it with people and devices you trust."
+      },
+      pt: {
+        title: "Entrar no BruTV",
+        subtitle: "O melhor reprodutor IPTV para Apple TV, iPhone, iPad, Mac e Android.",
+        openApp: "Abrir no App BruTV",
+        downloadApple: "Baixar na App Store (Apple)",
+        downloadAndroid: "Baixar para Android",
+        downloadMac: "Baixar para macOS",
+        or: "Ou conecte em outra tela",
+        qrHint: "Aponte a câmera na Apple TV, iPhone, iPad ou Android.",
+        copy: "Copiar Link de Acesso",
+        copied: "Link copiado para a área de transferência!",
+        security: "Este link contém o acesso da sua assinatura. Compartilhe apenas com pessoas e aparelhos de sua confiança."
+      }
+    };
+
+    let currentLang = "en";
+
+    function detectLanguage() {
+      const navLang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
+      return navLang.startsWith("pt") ? "pt" : "en";
+    }
+
+    function setLanguage(lang) {
+      currentLang = lang;
+      document.getElementById("lang-en").classList.toggle("active", lang === "en");
+      document.getElementById("lang-pt").classList.toggle("active", lang === "pt");
+
+      const t = translations[lang];
+      document.getElementById("title").innerText = t.title;
+      document.getElementById("subtitle").innerText = t.subtitle;
+      document.getElementById("txt-open-app").innerText = t.openApp;
+      document.getElementById("txt-or").innerText = t.or;
+      document.getElementById("txt-qr-hint").innerText = t.qrHint;
+      document.getElementById("txt-copy").innerText = t.copy;
+      document.getElementById("txt-security").innerText = t.security;
+
+      updatePlatformDownloadButton();
+    }
+
+    function detectPlatform() {
+      const ua = navigator.userAgent || "";
+      if (/android/i.test(ua)) return "android";
+      if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return "ios";
+      if (/Macintosh|Mac OS X/i.test(ua)) return "mac";
+      return "other";
+    }
+
+    function updatePlatformDownloadButton() {
+      const platform = detectPlatform();
+      const t = translations[currentLang];
+      const btnDownload = document.getElementById("btn-download");
+      const icon = document.getElementById("download-icon");
+      const txt = document.getElementById("txt-download");
+
+      if (platform === "android") {
+        icon.innerText = "🤖";
+        txt.innerText = t.downloadAndroid;
+        btnDownload.href = "https://github.com/bvolpato/brutv/releases";
+      } else if (platform === "mac") {
+        icon.innerText = "💻";
+        txt.innerText = t.downloadMac;
+        btnDownload.href = "https://apps.apple.com/app/brutv/id6754930353";
+      } else {
+        icon.innerText = "🍎";
+        txt.innerText = t.downloadApple;
+        btnDownload.href = "https://apps.apple.com/app/brutv/id6754930353";
+      }
+    }
+
+    function parseDeepLink() {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+
+      const server = searchParams.get("server") || hashParams.get("server");
+      const username = searchParams.get("username") || hashParams.get("username");
+      const password = searchParams.get("password") || hashParams.get("password");
+      const m3u = searchParams.get("m3u") || hashParams.get("m3u");
+
+      if (m3u) {
+        return `brutv://login?m3u=${encodeURIComponent(m3u)}`;
+      } else if (server && username && password) {
+        return `brutv://login?server=${encodeURIComponent(server)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+      }
+      return "brutv://login";
+    }
+
+    function renderQRCode(deepLink) {
+      const qrContainer = document.getElementById("qr-code");
+      try {
+        if (typeof qrcode !== "undefined") {
+          const qr = qrcode(0, 'M');
+          qr.addData(deepLink);
+          qr.make();
+          qrContainer.innerHTML = qr.createSvgTag({ scalable: true, margin: 0 });
+          const svg = qrContainer.querySelector('svg');
+          if (svg) {
+            svg.setAttribute('width', '180');
+            svg.setAttribute('height', '180');
+          }
+        } else {
+          qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(deepLink)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;">`;
+        }
+      } catch (e) {
+        qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(deepLink)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;">`;
+      }
+    }
+
+    function copySetupLink() {
+      const deepLink = parseDeepLink();
+      const currentUrl = window.location.href;
+      navigator.clipboard.writeText(currentUrl).then(() => {
+        showToast(translations[currentLang].copied);
+      }).catch(() => {
+        showToast("Copied: " + currentUrl);
+      });
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById("toast");
+      toast.innerText = msg;
+      toast.classList.add("visible");
+      setTimeout(() => {
+        toast.classList.remove("visible");
+      }, 2500);
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const lang = detectLanguage();
+      setLanguage(lang);
+
+      const deepLink = parseDeepLink();
+      const btnOpenApp = document.getElementById("btn-open-app");
+      btnOpenApp.href = deepLink;
+
+      renderQRCode(deepLink);
+
+      // On mobile devices, attempt direct app launch if configured
+      const platform = detectPlatform();
+      if (platform === "ios" || platform === "android") {
+        setTimeout(() => {
+          window.location.href = deepLink;
+        }, 500);
+      }
+    });
+  </script>
+</body>
+</html>

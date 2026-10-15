@@ -45,7 +45,55 @@ public struct LoginView: View {
             .ignoresSafeArea()
 
             ScrollView {
-                VStack(spacing: 28) {
+                VStack(spacing: 24) {
+                    // Language Selection (Available on all platforms prior to sign-in)
+                    #if os(tvOS)
+                    Picker("Language".localized, selection: $localization.selectedLanguage) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 40)
+                    .padding(.top, 16)
+                    #else
+                    HStack {
+                        Spacer()
+                        Menu {
+                            ForEach(AppLanguage.allCases) { lang in
+                                Button {
+                                    localization.selectedLanguage = lang
+                                } label: {
+                                    HStack {
+                                        Text(lang.displayName)
+                                        if localization.selectedLanguage == lang {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(localization.selectedLanguage.displayName)
+                                    .font(.system(size: 12, weight: .semibold))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.1))
+                            .foregroundColor(.white)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("loginLanguagePicker")
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 10)
+                    #endif
+
                     // Branding & Logo
                     VStack(spacing: 12) {
                         ZStack {

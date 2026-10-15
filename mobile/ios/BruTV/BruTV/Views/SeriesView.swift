@@ -11,6 +11,10 @@ public struct SeriesView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
     @State private var selectedSeries: SeriesItem?
+    @State private var categoryIcons: [String: URL] = [:]
+    @State private var categoryCounts: [String: Int] = [:]
+    @State private var allLoadedSeries: [SeriesItem] = []
+    @State private var showSideMenu: Bool = true
 
     private let client = AccountStore.shared.client
 
@@ -40,11 +44,150 @@ public struct SeriesView: View {
         return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    private var currentCategoryName: String {
+        if selectedCategoryID == "all" {
+            return "ALL SERIES".localized
+        }
+        return categories.first(where: { $0.id == selectedCategoryID })?.name.localized ?? selectedCategoryID
+    }
+
+    private var menuItems: [CategoryMenuItem] {
+        var items: [CategoryMenuItem] = []
+
+        let allIcon = categoryIcons["all"] ?? allLoadedSeries.first(where: { $0.coverURL != nil })?.coverURL
+        let allCount = allLoadedSeries.count > 0 ? allLoadedSeries.count : seriesList.count
+        items.append(
+            CategoryMenuItem(
+                id: "all",
+                name: "ALL SERIES".localized,
+                iconURL: allIcon,
+                count: allCount,
+                systemFallbackIcon: "play.tv"
+            )
+        )
+
+        for cat in categories where cat.id != "all" {
+            let catIcon = categoryIcons[cat.id]
+            let catCount = categoryCounts[cat.id]
+            items.append(
+                CategoryMenuItem(
+                    id: cat.id,
+                    name: cat.name.localized,
+                    iconURL: catIcon,
+                    count: catCount,
+                    systemFallbackIcon: "play.tv"
+                )
+            )
+        }
+
+        return items
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            // Search, Category, and Sort bar
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
+        #if os(tvOS)
+        HStack(spacing: 0) {
+            CategorySideMenuView(
+                title: "CATEGORIES".localized,
+                items: menuItems,
+                selectedID: $selectedCategoryID,
+                onSelect: { catID in
+                    loadSeries(categoryID: catID)
+                }
+            )
+            .frame(width: 320)
+
+            Divider().background(Color.white.opacity(0.12))
+
+            VStack(spacing: 0) {
+                topControlsBar(isCompact: false)
+                Divider().background(Color.white.opacity(0.1))
+                seriesContentArea
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .sheet(item: $selectedSeries) { series in
+            SeriesDetailView(series: series, selectedSeries: $selectedSeries)
+        }
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+        }
+        #else
+        GeometryReader { geometry in
+            let isCompact = geometry.size.width < 700
+            HStack(spacing: 0) {
+                if !isCompact || showSideMenu {
+                    CategorySideMenuView(
+                        title: "CATEGORIES".localized,
+                        items: menuItems,
+                        selectedID: $selectedCategoryID,
+                        onSelect: { catID in
+                            if isCompact {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showSideMenu = false
+                                }
+                            }
+                            loadSeries(categoryID: catID)
+                        }
+                    )
+                    .frame(width: isCompact ? min(280, geometry.size.width * 0.78) : 250)
+                    .transition(.move(edge: .leading))
+
+                    Divider().background(Color.white.opacity(0.12))
+                }
+
+                VStack(spacing: 0) {
+                    topControlsBar(isCompact: isCompact)
+                    Divider().background(Color.white.opacity(0.1))
+                    seriesContentArea
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(item: $selectedSeries) { series in
+            SeriesDetailView(series: series, selectedSeries: $selectedSeries)
+        }
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+        }
+        #endif
+    }
+
+    private func topControlsBar(isCompact: Bool) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                #if !os(tvOS)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSideMenu.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showSideMenu ? "sidebar.left" : "line.3.horizontal")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(currentCategoryName)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.cyan.opacity(0.18))
+                    .foregroundColor(.cyan)
+                    .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showSideMenu ? "Hide Categories".localized : "Show Categories".localized)
+                #endif
+
+                // Search Field
+                HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
                     TextField("Search series...".localized, text: $searchText)
@@ -63,26 +206,32 @@ public struct SeriesView: View {
                         .accessibilityHint("Removes the series search text.".localized)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .background(Color(white: 0.12))
                 .cornerRadius(12)
+            }
 
+            // Sort Pills & Series Count
+            HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(categories) { cat in
-                            let isSelected = selectedCategoryID == cat.id
+                    HStack(spacing: 6) {
+                        ForEach(CatalogSortOrder.allCases) { order in
+                            let isSelected = sortOrder == order
                             Button {
-                                selectedCategoryID = cat.id
-                                loadSeries(categoryID: cat.id)
+                                sortOrder = order
                             } label: {
-                                Text(cat.name.localized)
-                                    .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(isSelected ? Color.cyan : Color(white: 0.12))
+                                Text(order.rawValue.localized)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 5)
+                                    .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
                                     .foregroundColor(isSelected ? .black : .white)
-                                    .cornerRadius(20)
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
+                                    )
                             }
                             .buttonStyle(.plain)
                             .fixedSize()
@@ -90,190 +239,150 @@ public struct SeriesView: View {
                     }
                 }
 
-                // Sort Pills & Series Count
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(CatalogSortOrder.allCases) { order in
-                                let isSelected = sortOrder == order
-                                Button {
-                                    sortOrder = order
-                                } label: {
-                                    Text(order.rawValue.localized)
-                                        .font(.system(size: 11, weight: .bold))
-                                        .padding(.horizontal, 11)
-                                        .padding(.vertical, 5)
-                                        .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
-                                        .foregroundColor(isSelected ? .black : .white)
-                                        .clipShape(Capsule())
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                                .fixedSize()
-                            }
-                        }
-                    }
+                Spacer(minLength: 4)
 
-                    Spacer(minLength: 4)
-
-                    HStack(spacing: 3) {
-                        Text("\(filteredSeries.count)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.9))
-                        Text("series".localized)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.gray)
-                    }
-                    .lineLimit(1)
-                    .fixedSize()
+                HStack(spacing: 3) {
+                    Text("\(filteredSeries.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.9))
+                    Text("series".localized)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.gray)
                 }
+                .lineLimit(1)
+                .fixedSize()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
+    }
 
-            Divider().background(Color.white.opacity(0.1))
-
-            Group {
-                if isLoading {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        ProgressView().tint(.cyan).scaleEffect(1.3)
-                        Text("Loading series...".localized)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                        Spacer()
+    @ViewBuilder
+    private var seriesContentArea: some View {
+        if isLoading {
+            VStack(spacing: 16) {
+                Spacer()
+                ProgressView().tint(.cyan).scaleEffect(1.3)
+                Text("Loading series...".localized)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                Spacer()
+            }
+        } else if let errorMessage {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 36))
+                    .foregroundColor(.orange)
+                Text(errorMessage)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                Button {
+                    loadSeries(categoryID: selectedCategoryID)
+                } label: {
+                    Label("Retry".localized, systemImage: "arrow.clockwise")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                Spacer()
+            }
+        } else if filteredSeries.isEmpty {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "play.tv")
+                    .font(.system(size: 40))
+                    .foregroundColor(.gray)
+                Text("No series found".localized)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                Text("Try adjusting your search query or category filter.".localized)
+                    .font(.system(size: 13))
+                    .foregroundColor(.gray)
+                if !searchText.isEmpty || selectedCategoryID != "all" {
+                    Button {
+                        searchText = ""
+                        if selectedCategoryID != "all" {
+                            selectedCategoryID = "all"
+                            loadSeries(categoryID: "all")
+                        }
+                    } label: {
+                        Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                } else if let errorMessage {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 36))
-                            .foregroundColor(.orange)
-                        Text(errorMessage)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
+                    .buttonStyle(.bordered)
+                    .tint(.cyan)
+                    .padding(.top, 4)
+                }
+                Spacer()
+            }
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 14)],
+                    spacing: 16
+                ) {
+                    ForEach(filteredSeries) { item in
                         Button {
-                            loadSeries(categoryID: selectedCategoryID)
+                            selectedSeries = item
                         } label: {
-                            Label("Retry".localized, systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
-                        Spacer()
-                    }
-                } else if filteredSeries.isEmpty {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "play.tv")
-                            .font(.system(size: 40))
-                            .foregroundColor(.gray)
-                        Text("No series found".localized)
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Try adjusting your search query or category filter.".localized)
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        if !searchText.isEmpty || selectedCategoryID != "all" {
-                            Button {
-                                searchText = ""
-                                if selectedCategoryID != "all" {
-                                    selectedCategoryID = "all"
-                                    loadSeries(categoryID: "all")
-                                }
-                            } label: {
-                                Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.cyan)
-                            .padding(.top, 4)
-                        }
-                        Spacer()
-                    }
-                } else {
-                    ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)],
-                            spacing: 16
-                        ) {
-                            ForEach(filteredSeries) { item in
-                                Button {
-                                    selectedSeries = item
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        ZStack(alignment: .bottomTrailing) {
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .fill(Color(white: 0.12))
-                                                .aspectRatio(2/3, contentMode: .fit)
+                            VStack(alignment: .leading, spacing: 6) {
+                                ZStack(alignment: .bottomTrailing) {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(white: 0.12))
+                                        .aspectRatio(2/3, contentMode: .fit)
 
-                                            CachedAsyncImage(url: item.coverURL) {
-                                                Image(systemName: "play.tv")
-                                                    .font(.system(size: 28))
-                                                    .foregroundColor(.gray)
-                                            }
-                                            .cornerRadius(12)
+                                    CachedAsyncImage(url: item.coverURL) {
+                                        Image(systemName: "play.tv")
+                                            .font(.system(size: 28))
+                                            .foregroundColor(.gray)
+                                    }
+                                    .cornerRadius(12)
 
-                                            if let rating = item.rating, !rating.isEmpty {
-                                                HStack(spacing: 3) {
-                                                    Image(systemName: "star.fill")
-                                                        .font(.system(size: 9))
-                                                        .foregroundColor(.yellow)
-                                                    Text(rating)
-                                                        .font(.system(size: 10, weight: .bold))
-                                                        .foregroundColor(.white)
-                                                }
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 3)
-                                                .background(Color.black.opacity(0.75))
-                                                .cornerRadius(6)
-                                                .padding(6)
-                                            }
+                                    if let rating = item.rating, !rating.isEmpty {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "star.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.yellow)
+                                            Text(rating)
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundColor(.white)
                                         }
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                                        )
-
-                                        Text(item.name)
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(.white)
-                                            .lineLimit(2)
-
-                                        if let genre = item.genre, !genre.isEmpty {
-                                            Text(genre)
-                                                .font(.system(size: 11))
-                                                .foregroundColor(.gray)
-                                                .lineLimit(1)
-                                        }
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 3)
+                                        .background(Color.black.opacity(0.75))
+                                        .cornerRadius(6)
+                                        .padding(6)
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+
+                                Text(item.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(2)
+
+                                if let genre = item.genre, !genre.isEmpty {
+                                    Text(genre)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.gray)
+                                        .lineLimit(1)
+                                }
                             }
                         }
-                        .padding(16)
-                    }
-                    .refreshable {
-                        await reloadAll()
+                        .buttonStyle(.plain)
                     }
                 }
+                .padding(16)
             }
-        }
-        .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("")
-        .toolbar(.hidden, for: .navigationBar)
-        .sheet(item: $selectedSeries) { series in
-            SeriesDetailView(series: series, selectedSeries: $selectedSeries)
-        }
-        .task {
-            if categories.isEmpty {
-                await loadCategories()
+            .refreshable {
+                await reloadAll()
             }
         }
     }
@@ -310,6 +419,31 @@ public struct SeriesView: View {
                 await MainActor.run {
                     self.seriesList = items
                     self.isLoading = false
+
+                    if categoryID == "all" {
+                        self.allLoadedSeries = items
+                    }
+
+                    var icons = self.categoryIcons
+                    var counts = self.categoryCounts
+
+                    if icons["all"] == nil, let first = items.first(where: { $0.coverURL != nil })?.coverURL {
+                        icons["all"] = first
+                    }
+                    if categoryID == "all" {
+                        counts["all"] = items.count
+                    }
+
+                    for series in items {
+                        if categoryID == "all" {
+                            counts[series.categoryId, default: 0] += 1
+                        }
+                        if icons[series.categoryId] == nil, let icon = series.coverURL {
+                            icons[series.categoryId] = icon
+                        }
+                    }
+                    self.categoryIcons = icons
+                    self.categoryCounts = counts
                 }
             } catch {
                 await MainActor.run {

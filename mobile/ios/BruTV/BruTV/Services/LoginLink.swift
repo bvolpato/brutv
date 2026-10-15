@@ -11,11 +11,16 @@ public enum LoginLink: Equatable, Sendable {
     case m3u(url: String)
 
     public static let scheme = "brutv"
+    public static let defaultWebJoinBaseURL = "https://bvolpato.github.io/brutv/join.html"
 
-    /// Parses a `brutv://login` link.
+    /// Parses a `brutv://login` link or universal HTTPS `https://.../join...` link.
     public init?(url: URL) {
-        guard url.scheme?.lowercased() == Self.scheme,
-              url.host?.lowercased() == "login",
+        let scheme = url.scheme?.lowercased()
+        let isSchemeMatch = scheme == Self.scheme && url.host?.lowercased() == "login"
+        let isWebJoinMatch = (scheme == "http" || scheme == "https") &&
+            (url.path.lowercased().contains("join") || url.host?.lowercased() == "join.brutv.app")
+
+        guard isSchemeMatch || isWebJoinMatch,
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
         else { return nil }
 
@@ -90,6 +95,28 @@ public enum LoginLink: Equatable, Sendable {
             .map { "\($0.name)=\(Self.escape($0.value ?? ""))" }
             .joined(separator: "&")
         return components.url!
+    }
+
+    /// An HTTPS Universal Link that opens BruTV directly when installed,
+    /// or opens a web fallback landing page offering app download when not installed.
+    public var universalURL: URL {
+        guard var components = URLComponents(string: Self.defaultWebJoinBaseURL) else {
+            return url
+        }
+        switch self {
+        case let .xtream(server, username, password):
+            components.queryItems = [
+                URLQueryItem(name: "server", value: server),
+                URLQueryItem(name: "username", value: username),
+                URLQueryItem(name: "password", value: password),
+            ]
+        case let .m3u(playlist):
+            components.queryItems = [URLQueryItem(name: "m3u", value: playlist)]
+        }
+        components.percentEncodedQuery = components.queryItems?
+            .map { "\($0.name)=\(Self.escape($0.value ?? ""))" }
+            .joined(separator: "&")
+        return components.url ?? url
     }
 
     private static func escape(_ value: String) -> String {

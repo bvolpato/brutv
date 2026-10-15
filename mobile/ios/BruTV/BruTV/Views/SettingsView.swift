@@ -19,11 +19,20 @@ public struct SettingsView: View {
                 header: Text("LANGUAGE & REGION".localized),
                 footer: Text("Choose the language for BruTV interface and menus.".localized)
             ) {
+                #if os(tvOS)
                 Picker("Language".localized, selection: $localization.selectedLanguage) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
+                .pickerStyle(.inline)
+                #else
+                Picker("Language".localized, selection: $localization.selectedLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                #endif
             }
 
             // Account Information
