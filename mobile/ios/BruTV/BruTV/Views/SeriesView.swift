@@ -409,7 +409,7 @@ public struct SeriesDetailView: View {
                 }
             }
             .navigationTitle(series.name)
-            #if !targetEnvironment(macCatalyst)
+            #if !targetEnvironment(macCatalyst) && !os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {

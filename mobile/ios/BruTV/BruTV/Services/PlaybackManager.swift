@@ -292,6 +292,13 @@ public final class PlaybackManager: ObservableObject {
 
         // Record in history
         FavoritesStore.shared.addRecent(channelID: stream.id)
+        TopShelfStore.shared.recordContinueWatching(
+            id: "\(stream.id)",
+            title: stream.cleanName,
+            subtitle: stream.quality.rawValue,
+            imageURLString: stream.iconURLString,
+            kind: "live"
+        )
 
         startPlayback(for: stream, format: currentFormat)
     }
@@ -457,6 +464,13 @@ public final class PlaybackManager: ObservableObject {
         }
 
         providerURL = url
+        TopShelfStore.shared.recordContinueWatching(
+            id: "\(vod.id)",
+            title: vod.name,
+            subtitle: vod.rating,
+            imageURLString: vod.iconURLString,
+            kind: "vod"
+        )
         prepareAndPlay(url: url)
     }
 
@@ -502,6 +516,13 @@ public final class PlaybackManager: ObservableObject {
         }
 
         providerURL = url
+        TopShelfStore.shared.recordContinueWatching(
+            id: "\(episode.id)",
+            title: titleFormatted,
+            subtitle: seriesName,
+            imageURLString: episode.info?.movieImage,
+            kind: "series"
+        )
         prepareAndPlay(url: url)
     }
 

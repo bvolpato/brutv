@@ -101,6 +101,10 @@ public struct AppRootView: View {
     }
 
     private func handle(url: URL) {
+        if url.host == "play" || url.host == "channel" {
+            handlePlaybackURL(url)
+            return
+        }
         guard let link = LoginLink(url: url) else {
             linkError = "This BruTV link is not valid."
             return
@@ -122,6 +126,25 @@ public struct AppRootView: View {
             guard linkGeneration == token else { return }
             isSigningInFromLink = false
             linkTask = nil
+        }
+    }
+
+    private func handlePlaybackURL(_ url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let idParam = components.queryItems?.first(where: { $0.name == "id" })?.value
+        let typeParam = components.queryItems?.first(where: { $0.name == "type" })?.value ?? "live"
+        guard let idParam, !idParam.isEmpty else { return }
+
+        Task { @MainActor in
+            if typeParam == "live", let streamId = Int(idParam) {
+                if let stream = (try? await account.client.fetchLiveStreams())?.first(where: { $0.id == streamId }) {
+                    PlaybackManager.shared.play(stream: stream)
+                }
+            } else if typeParam == "vod", let vodId = Int(idParam) {
+                if let vod = (try? await account.client.fetchVODStreams())?.first(where: { $0.id == vodId }) {
+                    PlaybackManager.shared.playVOD(vod: vod)
+                }
+            }
         }
     }
 }

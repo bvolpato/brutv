@@ -430,7 +430,7 @@ public struct VODDetailView: View {
                 }
             }
             .navigationTitle(movie.name)
-            #if !targetEnvironment(macCatalyst)
+            #if !targetEnvironment(macCatalyst) && !os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {

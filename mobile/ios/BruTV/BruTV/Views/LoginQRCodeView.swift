@@ -2,8 +2,10 @@ import SwiftUI
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import UIKit
+#if !os(tvOS)
 import AVFoundation
 import PhotosUI
+#endif
 
 /// Shows a QR code that signs another device into this account.
 /// Scanning it with the iPhone or iPad Camera opens BruTV and signs in.
@@ -58,6 +60,7 @@ public struct LoginQRCodeView: View {
                             .truncationMode(.middle)
                     }
 
+                    #if !os(tvOS)
                     HStack(spacing: 12) {
                         if let qrImage {
                             ShareLink(
@@ -83,6 +86,7 @@ public struct LoginQRCodeView: View {
                         .accessibilityIdentifier("copyLoginLink")
                     }
                     .frame(maxWidth: 360)
+                    #endif
 
                     Label {
                         Text("This code contains the password. Share it only with people you trust. Anyone with it can use this subscription.".localized)
@@ -102,7 +106,9 @@ public struct LoginQRCodeView: View {
             }
             .background(Color(white: 0.04).ignoresSafeArea())
             .navigationTitle("Sign-In QR Code".localized)
+            #if !os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button { dismiss() } label: {
@@ -134,6 +140,7 @@ public struct LoginQRCodeView: View {
     }
 }
 
+#if !os(tvOS)
 // MARK: - Scanning
 
 /// Reads a BruTV sign-in link from a QR code in an image.
@@ -377,3 +384,4 @@ final class QRCameraViewController: UIViewController, AVCaptureMetadataOutputObj
         onCode?(code)
     }
 }
+#endif

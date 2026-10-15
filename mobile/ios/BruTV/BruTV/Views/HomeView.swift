@@ -790,6 +790,7 @@ public struct HomeView: View {
                 await MainActor.run {
                     self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
                     self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
+                    TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
                 }
             }
 
@@ -833,6 +834,7 @@ public struct HomeView: View {
             await MainActor.run {
                 self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
                 self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
+                TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
             }
         } catch {
             print("Failed to refresh home channels: \(error)")
