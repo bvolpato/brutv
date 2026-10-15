@@ -43,6 +43,7 @@
 		TVAPPBF039 /* InteractiveTimelineScrubber.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC039; };
 		TVAPPBF040 /* LocalizationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC040; };
 		TVAPPBF041 /* TopShelfStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC041; };
+		TVAPPBF042 /* CategorySideMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC042; };
 		TVAPPBFRES1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
 		TVAPPBFRES2 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
 		TVAPPEMBED01 /* BruTVTopShelf.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = TOPSHELFPROD001; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -74,6 +75,7 @@
 		APPBF038 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC038; };
 		APPBF039 /* InteractiveTimelineScrubber.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC039; };
 		APPBF040 /* LocalizationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC040; };
+		APPBF042 /* CategorySideMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC042; };
 		APPBF024 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = APPRES001; };
 		APPBF025 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = APPRES002; };
 		APPBF030 /* LoginLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC030; };
@@ -174,6 +176,7 @@
 		APPSRC038 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		APPSRC039 /* InteractiveTimelineScrubber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractiveTimelineScrubber.swift; sourceTree = "<group>"; };
 		APPSRC040 /* LocalizationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationManager.swift; sourceTree = "<group>"; };
+		APPSRC042 /* CategorySideMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategorySideMenuView.swift; sourceTree = "<group>"; };
 		APPSRC030 /* LoginLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginLink.swift; sourceTree = "<group>"; };
 		APPSRC031 /* M3UPlaylistParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M3UPlaylistParser.swift; sourceTree = "<group>"; };
 		APPSRC032 /* LoginQRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginQRCodeView.swift; sourceTree = "<group>"; };
@@ -339,6 +342,7 @@
 				APPSRC013 /* TechStatsHUD.swift */,
 				APPSRC014 /* VideoPlayerContainer.swift */,
 				APPSRC039 /* InteractiveTimelineScrubber.swift */,
+				APPSRC042 /* CategorySideMenuView.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -610,6 +614,7 @@
 				TVAPPBF039 /* InteractiveTimelineScrubber.swift in Sources */,
 				TVAPPBF040 /* LocalizationManager.swift in Sources */,
 				TVAPPBF041 /* TopShelfStore.swift in Sources */,
+				TVAPPBF042 /* CategorySideMenuView.swift in Sources */,
 				TVAPPBF030 /* LoginLink.swift in Sources */,
 				TVAPPBF031 /* M3UPlaylistParser.swift in Sources */,
 				TVAPPBF032 /* LoginQRCodeView.swift in Sources */,
@@ -661,6 +666,7 @@
 				APPBF039 /* InteractiveTimelineScrubber.swift in Sources */,
 				APPBF040 /* LocalizationManager.swift in Sources */,
 				APPBF041 /* TopShelfStore.swift in Sources */,
+				APPBF042 /* CategorySideMenuView.swift in Sources */,
 				APPBF030 /* LoginLink.swift in Sources */,
 				APPBF031 /* M3UPlaylistParser.swift in Sources */,
 				APPBF032 /* LoginQRCodeView.swift in Sources */,

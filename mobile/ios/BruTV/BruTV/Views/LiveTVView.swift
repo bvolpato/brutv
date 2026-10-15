@@ -13,6 +13,10 @@ public struct LiveTVView: View {
     @State private var showFavoritesOnly: Bool = false
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
+    @State private var categoryIcons: [String: URL] = [:]
+    @State private var categoryCounts: [String: Int] = [:]
+    @State private var allLoadedStreams: [LiveStream] = []
+    @State private var showSideMenu: Bool = true
 
     private let client = AccountStore.shared.client
 
@@ -36,12 +40,150 @@ public struct LiveTVView: View {
         }
     }
 
+    private var currentCategoryName: String {
+        if selectedCategoryID == "ALL" {
+            return "ALL CHANNELS".localized
+        }
+        return categories.first(where: { $0.id == selectedCategoryID })?.name ?? selectedCategoryID
+    }
+
+    private var menuItems: [CategoryMenuItem] {
+        var items: [CategoryMenuItem] = []
+
+        let allIcon = categoryIcons["ALL"] ?? allLoadedStreams.first(where: { $0.iconURL != nil })?.iconURL
+        let allCount = allLoadedStreams.count > 0 ? allLoadedStreams.count : streams.count
+        items.append(
+            CategoryMenuItem(
+                id: "ALL",
+                name: "ALL CHANNELS".localized,
+                iconURL: allIcon,
+                count: allCount,
+                systemFallbackIcon: "sparkles.tv"
+            )
+        )
+
+        for cat in categories {
+            let catIcon = categoryIcons[cat.id]
+            let catCount = categoryCounts[cat.id]
+            items.append(
+                CategoryMenuItem(
+                    id: cat.id,
+                    name: cat.name,
+                    iconURL: catIcon,
+                    count: catCount,
+                    systemFallbackIcon: "tv"
+                )
+            )
+        }
+
+        return items
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            // Top Controls Bar (Search + Quality Filter)
-            VStack(spacing: 10) {
+        #if os(tvOS)
+        HStack(spacing: 0) {
+            CategorySideMenuView(
+                title: "CATEGORIES".localized,
+                items: menuItems,
+                selectedID: $selectedCategoryID,
+                onSelect: { catID in
+                    loadChannels(categoryID: catID)
+                }
+            )
+            .frame(width: 320)
+
+            Divider().background(Color.white.opacity(0.12))
+
+            VStack(spacing: 0) {
+                topControlsBar(isCompact: false)
+                Divider().background(Color.white.opacity(0.1))
+                channelContentArea
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+            if streams.isEmpty {
+                loadChannels(categoryID: selectedCategoryID)
+            }
+        }
+        #else
+        GeometryReader { geometry in
+            let isCompact = geometry.size.width < 700
+            HStack(spacing: 0) {
+                if !isCompact || showSideMenu {
+                    CategorySideMenuView(
+                        title: "CATEGORIES".localized,
+                        items: menuItems,
+                        selectedID: $selectedCategoryID,
+                        onSelect: { catID in
+                            if isCompact {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showSideMenu = false
+                                }
+                            }
+                            loadChannels(categoryID: catID)
+                        }
+                    )
+                    .frame(width: isCompact ? min(280, geometry.size.width * 0.78) : 250)
+                    .transition(.move(edge: .leading))
+
+                    Divider().background(Color.white.opacity(0.12))
+                }
+
+                VStack(spacing: 0) {
+                    topControlsBar(isCompact: isCompact)
+                    Divider().background(Color.white.opacity(0.1))
+                    channelContentArea
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+            if streams.isEmpty {
+                loadChannels(categoryID: selectedCategoryID)
+            }
+        }
+        #endif
+    }
+
+    private func topControlsBar(isCompact: Bool) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                #if !os(tvOS)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSideMenu.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showSideMenu ? "sidebar.left" : "line.3.horizontal")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(currentCategoryName)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.cyan.opacity(0.18))
+                    .foregroundColor(.cyan)
+                    .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showSideMenu ? "Hide Categories".localized : "Show Categories".localized)
+                #endif
+
                 // Search Field
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
                     TextField("Search channels...".localized, text: $searchText)
@@ -62,171 +204,147 @@ public struct LiveTVView: View {
                         .accessibilityHint("Removes the channel search text.".localized)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .background(Color(white: 0.12))
                 .cornerRadius(12)
-
-                // Category Filter Scroll View
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        categoryChip(id: "ALL", name: "All Channels".localized)
-
-                        ForEach(categories) { cat in
-                            categoryChip(id: cat.id, name: cat.name)
-                        }
-                    }
-                }
-
-                // Quality Filter Pills & Channel Count
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(StreamQuality.allCases, id: \.self) { quality in
-                                qualityPill(quality)
-                            }
-
-                            Button {
-                                showFavoritesOnly.toggle()
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
-                                        .font(.system(size: 10, weight: .bold))
-                                    Text("Favorites".localized)
-                                        .font(.system(size: 11, weight: .bold))
-                                }
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 5)
-                                .background(showFavoritesOnly ? Color.red.opacity(0.85) : Color.white.opacity(0.1))
-                                .foregroundColor(.white)
-                                .clipShape(Capsule())
-                                .overlay(
-                                    Capsule()
-                                        .stroke(showFavoritesOnly ? Color.red : Color.white.opacity(0.12), lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .fixedSize()
-                        }
-                    }
-
-                    Spacer(minLength: 4)
-
-                    HStack(spacing: 3) {
-                        Text("\(filteredStreams.count)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.9))
-                        Text("channels".localized)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.gray)
-                    }
-                    .lineLimit(1)
-                    .fixedSize()
-                }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
 
-            Divider().background(Color.white.opacity(0.1))
+            // Quality Filter Pills & Channel Count
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(StreamQuality.allCases, id: \.self) { quality in
+                            qualityPill(quality)
+                        }
 
-            // Channel Content Area
-            Group {
-                if isLoading {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        ProgressView()
-                            .tint(.cyan)
-                            .scaleEffect(1.3)
-                        Text("Loading channels...".localized)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                        Spacer()
-                    }
-                } else if let errorMessage {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 36))
-                            .foregroundColor(.orange)
-                        Text(errorMessage)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
                         Button {
-                            loadChannels(categoryID: selectedCategoryID)
+                            showFavoritesOnly.toggle()
                         } label: {
-                            Label("Retry".localized, systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
-                        Spacer()
-                    }
-                } else if filteredStreams.isEmpty {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "tv.slash")
-                            .font(.system(size: 40))
-                            .foregroundColor(.gray)
-                        Text("No channels found".localized)
-                            .font(.system(size: 16, weight: .medium))
+                            HStack(spacing: 4) {
+                                Image(systemName: showFavoritesOnly ? "heart.fill" : "heart")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text("Favorites".localized)
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 5)
+                            .background(showFavoritesOnly ? Color.red.opacity(0.85) : Color.white.opacity(0.1))
                             .foregroundColor(.white)
-                        Text("Try adjusting your search query or category filter.".localized)
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        if !searchText.isEmpty || selectedQuality != .all || showFavoritesOnly || selectedCategoryID != "ALL" {
-                            Button {
-                                searchText = ""
-                                selectedQuality = .all
-                                showFavoritesOnly = false
-                                if selectedCategoryID != "ALL" {
-                                    selectedCategoryID = "ALL"
-                                    loadChannels(categoryID: "ALL")
-                                }
-                            } label: {
-                                Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.cyan)
-                            .padding(.top, 4)
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(showFavoritesOnly ? Color.red : Color.white.opacity(0.12), lineWidth: 1)
+                            )
                         }
-                        Spacer()
-                    }
-                } else {
-                    ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12)],
-                            spacing: 12
-                        ) {
-                            ForEach(filteredStreams) { stream in
-                                ChannelCardView(
-                                    stream: stream,
-                                    isSelected: playback.currentStream?.id == stream.id
-                                ) {
-                                    playback.play(stream: stream, from: filteredStreams)
-                                }
-                            }
-                        }
-                        .padding(16)
-                    }
-                    .refreshable {
-                        await reloadAll()
+                        .buttonStyle(.plain)
+                        .fixedSize()
                     }
                 }
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 3) {
+                    Text("\(filteredStreams.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.9))
+                    Text("channels".localized)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.gray)
+                }
+                .lineLimit(1)
+                .fixedSize()
             }
         }
-        .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("")
-        .toolbar(.hidden, for: .navigationBar)
-        .task {
-            if categories.isEmpty {
-                await loadCategories()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
+    }
+
+    @ViewBuilder
+    private var channelContentArea: some View {
+        if isLoading {
+            VStack(spacing: 16) {
+                Spacer()
+                ProgressView()
+                    .tint(.cyan)
+                    .scaleEffect(1.3)
+                Text("Loading channels...".localized)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                Spacer()
             }
-            if streams.isEmpty {
-                loadChannels(categoryID: selectedCategoryID)
+        } else if let errorMessage {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 36))
+                    .foregroundColor(.orange)
+                Text(errorMessage)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                Button {
+                    loadChannels(categoryID: selectedCategoryID)
+                } label: {
+                    Label("Retry".localized, systemImage: "arrow.clockwise")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                Spacer()
+            }
+        } else if filteredStreams.isEmpty {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "tv.slash")
+                    .font(.system(size: 40))
+                    .foregroundColor(.gray)
+                Text("No channels found".localized)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                Text("Try adjusting your search query or category filter.".localized)
+                    .font(.system(size: 13))
+                    .foregroundColor(.gray)
+                if !searchText.isEmpty || selectedQuality != .all || showFavoritesOnly || selectedCategoryID != "ALL" {
+                    Button {
+                        searchText = ""
+                        selectedQuality = .all
+                        showFavoritesOnly = false
+                        if selectedCategoryID != "ALL" {
+                            selectedCategoryID = "ALL"
+                            loadChannels(categoryID: "ALL")
+                        }
+                    } label: {
+                        Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.cyan)
+                    .padding(.top, 4)
+                }
+                Spacer()
+            }
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 280, maximum: 420), spacing: 12)],
+                    spacing: 12
+                ) {
+                    ForEach(filteredStreams) { stream in
+                        ChannelCardView(
+                            stream: stream,
+                            isSelected: playback.currentStream?.id == stream.id
+                        ) {
+                            playback.play(stream: stream, from: filteredStreams)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable {
+                await reloadAll()
             }
         }
     }
@@ -247,24 +365,6 @@ public struct LiveTVView: View {
                     Capsule()
                         .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
                 )
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-    }
-
-    private func categoryChip(id: String, name: String) -> some View {
-        let isSelected = selectedCategoryID == id
-        return Button {
-            selectedCategoryID = id
-            loadChannels(categoryID: id)
-        } label: {
-            Text(name)
-                .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(isSelected ? Color.cyan : Color(white: 0.12))
-                .foregroundColor(isSelected ? .black : .white)
-                .cornerRadius(20)
         }
         .buttonStyle(.plain)
         .fixedSize()
@@ -302,6 +402,31 @@ public struct LiveTVView: View {
                 await MainActor.run {
                     self.streams = items
                     self.isLoading = false
+
+                    if categoryID == "ALL" {
+                        self.allLoadedStreams = items
+                    }
+
+                    var icons = self.categoryIcons
+                    var counts = self.categoryCounts
+
+                    if icons["ALL"] == nil, let first = items.first(where: { $0.iconURL != nil })?.iconURL {
+                        icons["ALL"] = first
+                    }
+                    if categoryID == "ALL" {
+                        counts["ALL"] = items.count
+                    }
+
+                    for stream in items {
+                        if categoryID == "ALL" {
+                            counts[stream.categoryId, default: 0] += 1
+                        }
+                        if icons[stream.categoryId] == nil, let icon = stream.iconURL {
+                            icons[stream.categoryId] = icon
+                        }
+                    }
+                    self.categoryIcons = icons
+                    self.categoryCounts = counts
                 }
             } catch {
                 await MainActor.run {

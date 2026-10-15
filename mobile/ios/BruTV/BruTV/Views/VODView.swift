@@ -20,6 +20,10 @@ public struct VODView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
     @State private var selectedMovie: VODStream?
+    @State private var categoryIcons: [String: URL] = [:]
+    @State private var categoryCounts: [String: Int] = [:]
+    @State private var allLoadedMovies: [VODStream] = []
+    @State private var showSideMenu: Bool = true
 
     private let client = AccountStore.shared.client
 
@@ -49,11 +53,150 @@ public struct VODView: View {
         return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    private var currentCategoryName: String {
+        if selectedCategoryID == "all" {
+            return "ALL MOVIES".localized
+        }
+        return categories.first(where: { $0.id == selectedCategoryID })?.name.localized ?? selectedCategoryID
+    }
+
+    private var menuItems: [CategoryMenuItem] {
+        var items: [CategoryMenuItem] = []
+
+        let allIcon = categoryIcons["all"] ?? allLoadedMovies.first(where: { $0.iconURL != nil })?.iconURL
+        let allCount = allLoadedMovies.count > 0 ? allLoadedMovies.count : movies.count
+        items.append(
+            CategoryMenuItem(
+                id: "all",
+                name: "ALL MOVIES".localized,
+                iconURL: allIcon,
+                count: allCount,
+                systemFallbackIcon: "film"
+            )
+        )
+
+        for cat in categories where cat.id != "all" {
+            let catIcon = categoryIcons[cat.id]
+            let catCount = categoryCounts[cat.id]
+            items.append(
+                CategoryMenuItem(
+                    id: cat.id,
+                    name: cat.name.localized,
+                    iconURL: catIcon,
+                    count: catCount,
+                    systemFallbackIcon: "film"
+                )
+            )
+        }
+
+        return items
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            // Search, Category, and Sort bar
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
+        #if os(tvOS)
+        HStack(spacing: 0) {
+            CategorySideMenuView(
+                title: "CATEGORIES".localized,
+                items: menuItems,
+                selectedID: $selectedCategoryID,
+                onSelect: { catID in
+                    loadMovies(categoryID: catID)
+                }
+            )
+            .frame(width: 320)
+
+            Divider().background(Color.white.opacity(0.12))
+
+            VStack(spacing: 0) {
+                topControlsBar(isCompact: false)
+                Divider().background(Color.white.opacity(0.1))
+                movieContentArea
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .sheet(item: $selectedMovie) { movie in
+            VODDetailView(movie: movie, selectedMovie: $selectedMovie)
+        }
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+        }
+        #else
+        GeometryReader { geometry in
+            let isCompact = geometry.size.width < 700
+            HStack(spacing: 0) {
+                if !isCompact || showSideMenu {
+                    CategorySideMenuView(
+                        title: "CATEGORIES".localized,
+                        items: menuItems,
+                        selectedID: $selectedCategoryID,
+                        onSelect: { catID in
+                            if isCompact {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showSideMenu = false
+                                }
+                            }
+                            loadMovies(categoryID: catID)
+                        }
+                    )
+                    .frame(width: isCompact ? min(280, geometry.size.width * 0.78) : 250)
+                    .transition(.move(edge: .leading))
+
+                    Divider().background(Color.white.opacity(0.12))
+                }
+
+                VStack(spacing: 0) {
+                    topControlsBar(isCompact: isCompact)
+                    Divider().background(Color.white.opacity(0.1))
+                    movieContentArea
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(Color(white: 0.04).ignoresSafeArea())
+        .navigationTitle("")
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(item: $selectedMovie) { movie in
+            VODDetailView(movie: movie, selectedMovie: $selectedMovie)
+        }
+        .task {
+            if categories.isEmpty {
+                await loadCategories()
+            }
+        }
+        #endif
+    }
+
+    private func topControlsBar(isCompact: Bool) -> some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                #if !os(tvOS)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSideMenu.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showSideMenu ? "sidebar.left" : "line.3.horizontal")
+                            .font(.system(size: 13, weight: .bold))
+                        Text(currentCategoryName)
+                            .font(.system(size: 12, weight: .bold))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.cyan.opacity(0.18))
+                    .foregroundColor(.cyan)
+                    .cornerRadius(10)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showSideMenu ? "Hide Categories".localized : "Show Categories".localized)
+                #endif
+
+                // Search Field
+                HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundColor(.gray)
                     TextField("Search movies...".localized, text: $searchText)
@@ -72,26 +215,32 @@ public struct VODView: View {
                         .accessibilityHint("Removes the movie search text.".localized)
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .background(Color(white: 0.12))
                 .cornerRadius(12)
+            }
 
+            // Sort Pills & Movie Count
+            HStack(spacing: 8) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(categories) { cat in
-                            let isSelected = selectedCategoryID == cat.id
+                    HStack(spacing: 6) {
+                        ForEach(CatalogSortOrder.allCases) { order in
+                            let isSelected = sortOrder == order
                             Button {
-                                selectedCategoryID = cat.id
-                                loadMovies(categoryID: cat.id)
+                                sortOrder = order
                             } label: {
-                                Text(cat.name.localized)
-                                    .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 7)
-                                    .background(isSelected ? Color.cyan : Color(white: 0.12))
+                                Text(order.rawValue.localized)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 5)
+                                    .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
                                     .foregroundColor(isSelected ? .black : .white)
-                                    .cornerRadius(20)
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
+                                    )
                             }
                             .buttonStyle(.plain)
                             .fixedSize()
@@ -99,140 +248,100 @@ public struct VODView: View {
                     }
                 }
 
-                // Sort Pills & Movie Count
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(CatalogSortOrder.allCases) { order in
-                                let isSelected = sortOrder == order
-                                Button {
-                                    sortOrder = order
-                                } label: {
-                                    Text(order.rawValue.localized)
-                                        .font(.system(size: 11, weight: .bold))
-                                        .padding(.horizontal, 11)
-                                        .padding(.vertical, 5)
-                                        .background(isSelected ? Color.cyan : Color.white.opacity(0.1))
-                                        .foregroundColor(isSelected ? .black : .white)
-                                        .clipShape(Capsule())
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(isSelected ? Color.cyan : Color.white.opacity(0.12), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                                .fixedSize()
-                            }
-                        }
-                    }
+                Spacer(minLength: 4)
 
-                    Spacer(minLength: 4)
-
-                    HStack(spacing: 3) {
-                        Text("\(filteredMovies.count)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.9))
-                        Text("movies".localized)
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.gray)
-                    }
-                    .lineLimit(1)
-                    .fixedSize()
+                HStack(spacing: 3) {
+                    Text("\(filteredMovies.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.9))
+                    Text("movies".localized)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.gray)
                 }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
-
-            Divider().background(Color.white.opacity(0.1))
-
-            Group {
-                if isLoading {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        ProgressView().tint(.cyan).scaleEffect(1.3)
-                        Text("Loading movies...".localized)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                        Spacer()
-                    }
-                } else if let errorMessage {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 36))
-                            .foregroundColor(.orange)
-                        Text(errorMessage)
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                        Button {
-                            loadMovies(categoryID: selectedCategoryID)
-                        } label: {
-                            Label("Retry".localized, systemImage: "arrow.clockwise")
-                                .frame(minHeight: 44)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.cyan)
-                        Spacer()
-                    }
-                } else if filteredMovies.isEmpty {
-                    VStack(spacing: 12) {
-                        Spacer()
-                        Image(systemName: "film")
-                            .font(.system(size: 40))
-                            .foregroundColor(.gray)
-                        Text("No movies found".localized)
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white)
-                        Text("Try adjusting your search query or category filter.".localized)
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                        if !searchText.isEmpty || selectedCategoryID != "all" {
-                            Button {
-                                searchText = ""
-                                if selectedCategoryID != "all" {
-                                    selectedCategoryID = "all"
-                                    loadMovies(categoryID: "all")
-                                }
-                            } label: {
-                                Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.cyan)
-                            .padding(.top, 4)
-                        }
-                        Spacer()
-                    }
-                } else {
-                    ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 14)],
-                            spacing: 16
-                        ) {
-                            ForEach(filteredMovies) { movie in
-                                vodPosterCard(movie: movie)
-                            }
-                        }
-                        .padding(16)
-                    }
-                    .refreshable {
-                        await reloadAll()
-                    }
-                }
+                .lineLimit(1)
+                .fixedSize()
             }
         }
-        .background(Color(white: 0.04).ignoresSafeArea())
-        .navigationTitle("")
-        .toolbar(.hidden, for: .navigationBar)
-        .sheet(item: $selectedMovie) { movie in
-            VODDetailView(movie: movie, selectedMovie: $selectedMovie)
-        }
-        .task {
-            if categories.isEmpty {
-                await loadCategories()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(white: 0.06).ignoresSafeArea(edges: .top))
+    }
+
+    @ViewBuilder
+    private var movieContentArea: some View {
+        if isLoading {
+            VStack(spacing: 16) {
+                Spacer()
+                ProgressView().tint(.cyan).scaleEffect(1.3)
+                Text("Loading movies...".localized)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                Spacer()
+            }
+        } else if let errorMessage {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 36))
+                    .foregroundColor(.orange)
+                Text(errorMessage)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+                Button {
+                    loadMovies(categoryID: selectedCategoryID)
+                } label: {
+                    Label("Retry".localized, systemImage: "arrow.clockwise")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.cyan)
+                Spacer()
+            }
+        } else if filteredMovies.isEmpty {
+            VStack(spacing: 12) {
+                Spacer()
+                Image(systemName: "film")
+                    .font(.system(size: 40))
+                    .foregroundColor(.gray)
+                Text("No movies found".localized)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                Text("Try adjusting your search query or category filter.".localized)
+                    .font(.system(size: 13))
+                    .foregroundColor(.gray)
+                if !searchText.isEmpty || selectedCategoryID != "all" {
+                    Button {
+                        searchText = ""
+                        if selectedCategoryID != "all" {
+                            selectedCategoryID = "all"
+                            loadMovies(categoryID: "all")
+                        }
+                    } label: {
+                        Label("Reset Filters".localized, systemImage: "arrow.counterclockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.cyan)
+                    .padding(.top, 4)
+                }
+                Spacer()
+            }
+        } else {
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 14)],
+                    spacing: 16
+                ) {
+                    ForEach(filteredMovies) { movie in
+                        vodPosterCard(movie: movie)
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable {
+                await reloadAll()
             }
         }
     }
@@ -328,6 +437,31 @@ public struct VODView: View {
                 await MainActor.run {
                     self.movies = items
                     self.isLoading = false
+
+                    if categoryID == "all" {
+                        self.allLoadedMovies = items
+                    }
+
+                    var icons = self.categoryIcons
+                    var counts = self.categoryCounts
+
+                    if icons["all"] == nil, let first = items.first(where: { $0.iconURL != nil })?.iconURL {
+                        icons["all"] = first
+                    }
+                    if categoryID == "all" {
+                        counts["all"] = items.count
+                    }
+
+                    for movie in items {
+                        if categoryID == "all" {
+                            counts[movie.categoryId, default: 0] += 1
+                        }
+                        if icons[movie.categoryId] == nil, let icon = movie.iconURL {
+                            icons[movie.categoryId] = icon
+                        }
+                    }
+                    self.categoryIcons = icons
+                    self.categoryCounts = counts
                 }
             } catch {
                 await MainActor.run {

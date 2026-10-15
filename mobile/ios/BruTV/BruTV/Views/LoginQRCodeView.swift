@@ -23,7 +23,7 @@ public struct LoginQRCodeView: View {
     }
 
     private var qrImage: UIImage? {
-        Self.makeQRCode(from: link.url.absoluteString)
+        Self.makeQRCode(from: link.universalURL.absoluteString)
     }
 
     public var body: some View {
@@ -61,29 +61,38 @@ public struct LoginQRCodeView: View {
                     }
 
                     #if !os(tvOS)
-                    HStack(spacing: 12) {
-                        if let qrImage {
-                            ShareLink(
-                                item: Image(uiImage: qrImage),
-                                preview: SharePreview(String(format: "BruTV sign-in for %@".localized, title), image: Image(uiImage: qrImage))
-                            ) {
-                                Label("Share QR".localized, systemImage: "square.and.arrow.up")
+                    VStack(spacing: 8) {
+                        HStack(spacing: 12) {
+                            if let qrImage {
+                                ShareLink(
+                                    item: link.universalURL,
+                                    subject: Text("Join BruTV".localized),
+                                    message: Text(String(format: "BruTV sign-in for %@".localized, title))
+                                ) {
+                                    Label("Share Link".localized, systemImage: "square.and.arrow.up")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.cyan)
+                            }
+
+                            Button {
+                                UIPasteboard.general.string = link.universalURL.absoluteString
+                                copied = true
+                            } label: {
+                                Label(copied ? "Copied".localized : "Copy Link".localized, systemImage: copied ? "checkmark" : "link")
                                     .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.cyan)
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                            .accessibilityIdentifier("copyLoginLink")
                         }
 
-                        Button {
-                            UIPasteboard.general.string = link.url.absoluteString
-                            copied = true
-                        } label: {
-                            Label(copied ? "Copied".localized : "Copy Link".localized, systemImage: copied ? "checkmark" : "link")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.white)
-                        .accessibilityIdentifier("copyLoginLink")
+                        Text("Link opens BruTV directly or prompts to download the app if not installed.".localized)
+                            .font(.system(size: 11))
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 2)
                     }
                     .frame(maxWidth: 360)
                     #endif
