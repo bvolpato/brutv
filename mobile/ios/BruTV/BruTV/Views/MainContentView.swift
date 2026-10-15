@@ -45,6 +45,27 @@ public struct MainContentView: View {
     public init() {}
 
     public var body: some View {
+        #if os(tvOS)
+        tvosLayout
+            .tint(.cyan)
+            .fullScreenCover(isPresented: $isPlayerFullScreen) {
+                PlayerView(isPresented: $isPlayerFullScreen)
+            }
+            .onChange(of: playback.currentStream) { _, stream in
+                if stream != nil {
+                    isPlayerFullScreen = true
+                } else if playback.currentVOD == nil {
+                    isPlayerFullScreen = false
+                }
+            }
+            .onChange(of: playback.currentVOD) { _, vod in
+                if vod != nil {
+                    isPlayerFullScreen = true
+                } else if playback.currentStream == nil {
+                    isPlayerFullScreen = false
+                }
+            }
+        #else
         ZStack(alignment: .bottom) {
             // Adaptive iPad Split View vs iPhone Tab View
             if horizontalSizeClass == .regular {
@@ -81,7 +102,50 @@ public struct MainContentView: View {
                 isPlayerFullScreen = false
             }
         }
+        #endif
     }
+
+    #if os(tvOS)
+    private var tvosLayout: some View {
+        TabView(selection: tabSelection) {
+            HomeView(onNavigate: { section in selectedSection = section })
+                .tabItem {
+                    Label(NavigationSection.home.title, systemImage: NavigationSection.home.iconName)
+                }
+                .tag(NavigationSection.home)
+
+            LiveTVView()
+                .tabItem {
+                    Label(NavigationSection.liveTV.title, systemImage: NavigationSection.liveTV.iconName)
+                }
+                .tag(NavigationSection.liveTV)
+
+            VODView()
+                .tabItem {
+                    Label(NavigationSection.movies.title, systemImage: NavigationSection.movies.iconName)
+                }
+                .tag(NavigationSection.movies)
+
+            SeriesView()
+                .tabItem {
+                    Label(NavigationSection.series.title, systemImage: NavigationSection.series.iconName)
+                }
+                .tag(NavigationSection.series)
+
+            FavoritesView()
+                .tabItem {
+                    Label(NavigationSection.favorites.title, systemImage: NavigationSection.favorites.iconName)
+                }
+                .tag(NavigationSection.favorites)
+
+            SettingsView()
+                .tabItem {
+                    Label(NavigationSection.settings.title, systemImage: NavigationSection.settings.iconName)
+                }
+                .tag(NavigationSection.settings)
+        }
+    }
+    #endif
 
     // iPad / Mac Multi-Column Persistent Navigation Rail Layout
     private var ipadLayout: some View {

@@ -119,6 +119,7 @@ public struct InteractiveTimelineScrubber: View {
                 }
             }
             .frame(height: 28)
+            #if !os(tvOS)
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
@@ -137,6 +138,8 @@ public struct InteractiveTimelineScrubber: View {
                         onSeek(time)
                     }
             )
+            #endif
+            #if !os(tvOS)
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
@@ -146,6 +149,7 @@ public struct InteractiveTimelineScrubber: View {
                     isHovering = false
                 }
             }
+            #endif
         }
         .frame(height: 28)
     }

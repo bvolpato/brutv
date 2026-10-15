@@ -8,6 +8,9 @@ public struct ChannelCardView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
     @State private var isHovered: Bool = false
+    #if os(tvOS)
+    @Environment(\.isFocused) private var isFocused
+    #endif
 
     public init(stream: LiveStream, isSelected: Bool = false, onSelect: @escaping () -> Void) {
         self.stream = stream
@@ -115,17 +118,29 @@ public struct ChannelCardView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
+                #if os(tvOS)
+                .fill(isSelected ? Color.cyan.opacity(0.3) : (isFocused ? Color.white.opacity(0.2) : Color(white: 0.08)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isSelected ? Color.cyan : (isFocused ? Color.cyan : Color.white.opacity(0.08)), lineWidth: (isSelected || isFocused) ? 2 : 1)
+                )
+                .scaleEffect(isFocused ? 1.04 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isFocused)
+                #else
                 .fill(isSelected ? Color.cyan.opacity(0.2) : (isHovered ? Color(white: 0.13) : Color(white: 0.08)))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(isSelected ? Color.cyan : (isHovered ? Color.cyan.opacity(0.45) : Color.white.opacity(0.08)), lineWidth: isSelected ? 1.5 : 1)
                 )
+                #endif
         )
+        #if !os(tvOS)
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) {
                 isHovered = hovering
             }
         }
+        #endif
     }
 }
 

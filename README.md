@@ -55,11 +55,13 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
   - Favorite channel bookmarking and watch history.
 - **Movies (VOD) & Series:**
   - Catalog browsing with TMDb posters, ratings, plot overviews, director and cast details.
-- **Designed for iPad, iPhone, and Mac:**
+- **Designed for Apple TV, iPad, iPhone, and Mac:**
+  - Native Apple TV (tvOS) target with Siri Remote focus engine, Play/Pause remote toggle, and up/down channel zapping.
+  - Native tvOS Top Shelf extension showcasing favorites and continue-watching queues with instant deep linking.
   - Multi-column `NavigationSplitView` sidebar on iPad and Mac.
   - Native Picture-in-Picture (PiP) and background audio playback.
   - On Mac Catalyst, double-click toggles full screen, and the Esc key exits full screen.
-  - Dark glassmorphism Apple TV aesthetic.
+  - Dark glassmorphism Apple TV aesthetic across all screens.
 
 ---
 
@@ -100,8 +102,16 @@ brutv/
 
 ### 1. Build for Simulator
 
+To build for iOS Simulator:
+
 ```bash
 ./build.sh
+```
+
+To build for Apple TV (tvOS) Simulator:
+
+```bash
+./build.sh --tvos
 ```
 
 ### 2. Run Tests

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BruTVCore",
-    platforms: [.macOS(.v13), .iOS(.v17)],
+    platforms: [.macOS(.v13), .iOS(.v17), .tvOS(.v17)],
     products: [.library(name: "BruTVCore", targets: ["BruTV"])],
     targets: [
         .target(
@@ -11,6 +11,7 @@ let package = Package(
             path: "BruTV",
             exclude: [
                 "AppRootView.swift", "BruTVApp.swift", "BruTV.entitlements", "BruTVCatalyst.entitlements",
+                "BruTV-tvOS.entitlements", "Info-tvOS.plist",
                 "Info.plist", "Resources", "Views",
                 "Services/AccountStore.swift", "Services/FavoritesStore.swift",
                 "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift", "Services/LiveTimeshiftServer.swift",
@@ -22,7 +23,7 @@ let package = Package(
                 "Services/LoginLink.swift", "Services/M3UPlaylistParser.swift",
                 "Services/XtreamCodesClient.swift",
                 "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift", "Services/LiveTimeshift.swift",
-                "Services/MPEGTSRelay.swift",
+                "Services/MPEGTSRelay.swift", "Services/TopShelfStore.swift",
             ]
         ),
         .testTarget(
@@ -36,7 +37,7 @@ let package = Package(
                 "SourceLoginTests.swift", "XtreamCodesClientTests.swift",
                 "SourceRegressionTests.swift",
                 "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift", "LiveTimeshiftTests.swift",
-                "MPEGTSRelayTests.swift",
+                "MPEGTSRelayTests.swift", "TopShelfStoreTests.swift",
             ]
         ),
     ],

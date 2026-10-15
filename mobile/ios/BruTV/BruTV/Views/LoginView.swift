@@ -130,6 +130,7 @@ public struct LoginView: View {
                         .accessibilityIdentifier("connectButton")
                         .padding(.top, 4)
 
+                        #if !os(tvOS)
                         // Sign in from a QR code or a shared link
                         HStack(spacing: 10) {
                             Button {
@@ -159,6 +160,7 @@ public struct LoginView: View {
                             .font(.system(size: 11))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
+                        #endif
 
                         #if DEBUG
                         if mode == .xtream && !ProcessInfo.processInfo.arguments.contains("--store-screenshots") {
@@ -236,11 +238,13 @@ public struct LoginView: View {
                 }
             }
         }
+        #if !os(tvOS)
         .sheet(isPresented: $showScanner) {
             LoginQRScannerView { link in
                 signIn(withScanned: link)
             }
         }
+        #endif
     }
 
     // MARK: - Fields

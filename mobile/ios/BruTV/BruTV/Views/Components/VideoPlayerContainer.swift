@@ -86,7 +86,9 @@ public final class PictureInPictureModel: NSObject, ObservableObject, AVPictureI
         let controller = AVPictureInPictureController(playerLayer: layer)
         controller?.delegate = self
         // Going to the Home Screen while a channel plays keeps it playing in PiP.
+        #if !os(tvOS)
         controller?.canStartPictureInPictureAutomaticallyFromInline = true
+        #endif
         self.controller = controller
         possibleObservation = controller?.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
             let possible = controller.isPictureInPicturePossible

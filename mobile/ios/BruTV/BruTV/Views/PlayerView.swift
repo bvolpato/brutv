@@ -141,7 +141,7 @@ public struct PlayerView: View {
                         controlsTimer?.invalidate()
                     }
                 }
-                #else
+                #elseif !os(tvOS)
                 .onTapGesture {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showControls.toggle()
@@ -170,6 +170,17 @@ public struct PlayerView: View {
                             }
                         }
                 )
+                #else
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls.toggle()
+                    }
+                    if showControls && playback.playbackState == .playing {
+                        scheduleControlsAutoHide()
+                    } else {
+                        controlsTimer?.invalidate()
+                    }
+                }
                 #endif
 
             // Buffering Indicator
@@ -311,6 +322,7 @@ public struct PlayerView: View {
             }
         }
         #endif
+        #if !os(tvOS)
         .background(
             Group {
                 Button("") {
@@ -363,6 +375,7 @@ public struct PlayerView: View {
             }
             .opacity(0)
         )
+        #endif
         .onAppear {
             if playback.playbackState == .playing {
                 scheduleControlsAutoHide()
@@ -380,6 +393,40 @@ public struct PlayerView: View {
             controlsTimer?.invalidate()
             exitMacFullScreenIfEntered()
         }
+        #if os(tvOS)
+        .onPlayPauseCommand {
+            playback.togglePlayPause()
+        }
+        .onExitCommand {
+            dismissPlayer(stop: true)
+        }
+        .onMoveCommand { direction in
+            switch direction {
+            case .up:
+                playback.previousChannel()
+            case .down:
+                playback.nextChannel()
+            case .left:
+                if playback.currentVOD != nil {
+                    playback.seekRelative(-10)
+                } else if playback.canSeekLive {
+                    playback.seekLive(by: -10)
+                } else {
+                    playback.previousChannel()
+                }
+            case .right:
+                if playback.currentVOD != nil {
+                    playback.seekRelative(10)
+                } else if playback.canSeekLive {
+                    playback.seekLive(by: 10)
+                } else {
+                    playback.nextChannel()
+                }
+            default:
+                break
+            }
+        }
+        #endif
     }
 
     private var topControlsBar: some View {
