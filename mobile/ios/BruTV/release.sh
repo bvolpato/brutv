@@ -6,6 +6,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BUILD_DIR="${IOS_RELEASE_DIR:-$SCRIPT_DIR/build/release}"
 SIGNING_DIR="$BUILD_DIR/signing"
 ARCHIVE_PATH="$BUILD_DIR/BruTV.xcarchive"
+MAC_ARCHIVE_PATH="$BUILD_DIR/BruTV-Mac.xcarchive"
+TVOS_ARCHIVE_PATH="$BUILD_DIR/BruTV-tvOS.xcarchive"
 EXPORT_PATH="$BUILD_DIR/export"
 EXPORT_OPTIONS_PLIST="$BUILD_DIR/ExportOptions.plist"
 EXPORT_OPTIONS_UPLOAD_PLIST="$BUILD_DIR/ExportOptions-Upload.plist"
@@ -28,11 +30,11 @@ usage() {
   cat <<'USAGE'
 Usage: mobile/ios/BruTV/release.sh [--skip-simulator-build] [--upload]
 
-Builds signed App Store IPA and Mac Catalyst PKG. Must run on macOS with Xcode.
+Builds signed App Store iOS/iPadOS IPA, Mac Catalyst PKG, and tvOS IPA. Must run on macOS with Xcode.
 
 Options:
   --skip-simulator-build   Skip building the iOS simulator target.
-  --upload                 Upload both iOS and Mac packages directly to App Store Connect.
+  --upload                 Upload iOS, Mac, and tvOS packages directly to App Store Connect.
 
 Signing modes:
   manual     Used when a .p12 and a .mobileprovision are given. Needs IOS_P12_PASSWORD.
@@ -123,7 +125,7 @@ require_cmd /usr/libexec/PlistBuddy
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH"
 
 mkdir -p "$BUILD_DIR" "$SIGNING_DIR" "$EXPORT_PATH" "$PROFILE_DIR"
-rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"/*
+rm -rf "$ARCHIVE_PATH" "$MAC_ARCHIVE_PATH" "$TVOS_ARCHIVE_PATH" "$EXPORT_PATH"/*
 
 if [[ -n "${IOS_CERTIFICATE_BASE64:-}" ]]; then
   CERT_PATH="$SIGNING_DIR/ios_distribution.p12"
@@ -198,8 +200,10 @@ PLIST
     -allowProvisioningUpdates
     CODE_SIGN_STYLE=Automatic
     DEVELOPMENT_TEAM="$IOS_TEAM_ID"
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   )
+  if [[ "$BUNDLE_ID" != "com.bvolpato.brutv" ]]; then
+    SIGNING_ARGS+=(PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID")
+  fi
   EXPORT_ARGS=(-allowProvisioningUpdates)
 else
 require_env IOS_P12_PASSWORD
@@ -341,7 +345,6 @@ xcodebuild -exportArchive \
   -exportPath "$EXPORT_PATH" \
   ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
 
-MAC_ARCHIVE_PATH="$BUILD_DIR/BruTV-Mac.xcarchive"
 echo "==> Archiving Mac Catalyst..."
 xcodebuild archive \
   "${XCODE_COMMON_ARGS[@]}" \
@@ -357,13 +360,31 @@ xcodebuild -exportArchive \
   -exportPath "$EXPORT_PATH" \
   ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
 
-IPA_PATH=$(find "$EXPORT_PATH" -name '*.ipa' -type f | sort | head -n 1 || true)
+echo "==> Archiving tvOS..."
+xcodebuild archive \
+  -project "$PROJECT" \
+  -scheme "BruTV-tvOS" \
+  -configuration Release \
+  -destination "generic/platform=tvOS" \
+  -archivePath "$TVOS_ARCHIVE_PATH" \
+  CODE_SIGNING_ALLOWED=NO \
+  ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
+
+echo "==> Exporting tvOS IPA..."
+xcodebuild -exportArchive \
+  -archivePath "$TVOS_ARCHIVE_PATH" \
+  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+  -exportPath "$EXPORT_PATH" \
+  ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
+
+IPA_PATH=$(find "$EXPORT_PATH" -name 'BruTV.ipa' -type f | sort | head -n 1 || find "$EXPORT_PATH" -name '*.ipa' ! -name '*tvOS*' -type f | sort | head -n 1 || true)
 [[ -n "$IPA_PATH" ]] || {
   echo "error: IPA not generated" >&2
   exit 1
 }
 
 PKG_PATH=$(find "$EXPORT_PATH" -name '*.pkg' -type f | sort | head -n 1 || true)
+TVOS_IPA_PATH=$(find "$EXPORT_PATH" -name '*tvOS*.ipa' -type f | sort | head -n 1 || true)
 
 BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleVersion" "$ARCHIVE_PATH/Info.plist")
 SHORT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundleShortVersionString" "$ARCHIVE_PATH/Info.plist")
@@ -371,6 +392,9 @@ SHORT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :ApplicationProperties:CFBundl
 echo "ipa: $IPA_PATH (iOS/iPadOS)"
 if [[ -n "$PKG_PATH" ]]; then
   echo "pkg: $PKG_PATH (macOS / Mac Catalyst)"
+fi
+if [[ -n "$TVOS_IPA_PATH" ]]; then
+  echo "tvos ipa: $TVOS_IPA_PATH (tvOS)"
 fi
 echo "version: $SHORT_VERSION ($BUNDLE_VERSION)"
 
@@ -389,5 +413,12 @@ if [[ "$UPLOAD" = true ]]; then
     -exportPath "$EXPORT_PATH" \
     ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
 
-  echo "==> Direct upload completed for both iOS and macOS builds."
+  echo "==> Uploading tvOS app to App Store Connect..."
+  xcodebuild -exportArchive \
+    -archivePath "$TVOS_ARCHIVE_PATH" \
+    -exportOptionsPlist "$EXPORT_OPTIONS_UPLOAD_PLIST" \
+    -exportPath "$EXPORT_PATH" \
+    ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
+
+  echo "==> Direct upload completed for iOS, macOS, and tvOS builds."
 fi
