@@ -75,6 +75,8 @@ import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -360,6 +362,13 @@ private fun BruTvHome(
 ) {
     val width = LocalConfiguration.current.screenWidthDp
     val tablet = width >= 760
+    val isPt = remember(state.language) {
+        when (state.language) {
+            "pt" -> true
+            "en" -> false
+            else -> java.util.Locale.getDefault().language.lowercase().startsWith("pt")
+        }
+    }
     BackHandler(enabled = state.destination != BruTvDestination.LIVE) {
         viewModel.onDestinationSelected(BruTvDestination.LIVE)
     }
@@ -369,6 +378,7 @@ private fun BruTvHome(
             NavigationRail(
                 selected = state.destination,
                 isTv = isTv,
+                isPt = isPt,
                 onSelect = viewModel::onDestinationSelected,
                 onInitialFocus = isTv,
             )
@@ -376,6 +386,7 @@ private fun BruTvHome(
                 AppHeader(
                     source = state.activeSource,
                     isTv = isTv,
+                    isPt = isPt,
                     onProfiles = { viewModel.onDestinationSelected(BruTvDestination.PROFILES) },
                     onAdd = onAddXtream,
                     onShare = { viewModel.showLoginQr() },
@@ -387,7 +398,7 @@ private fun BruTvHome(
                 when (state.destination) {
                     BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, isTv)
                     BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, isTv, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
-                    else -> CatalogPage(state, viewModel, isTv, tablet, imageLoader, onAddXtream, onScan)
+                    else -> CatalogPage(state, viewModel, isTv, tablet, imageLoader, isPt, onAddXtream, onScan)
                 }
             }
         }
@@ -395,13 +406,14 @@ private fun BruTvHome(
         Scaffold(
             containerColor = Canvas,
             bottomBar = {
-                PhoneNavigationBar(state.destination, viewModel::onDestinationSelected)
+                PhoneNavigationBar(state.destination, isPt, viewModel::onDestinationSelected)
             },
         ) { insets ->
             Column(Modifier.fillMaxSize().padding(insets)) {
                 AppHeader(
                     source = state.activeSource,
                     isTv = false,
+                    isPt = isPt,
                     onProfiles = { viewModel.onDestinationSelected(BruTvDestination.PROFILES) },
                     onAdd = onAddXtream,
                     onShare = { viewModel.showLoginQr() },
@@ -413,7 +425,7 @@ private fun BruTvHome(
                 when (state.destination) {
                     BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, false)
                     BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, false, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
-                    else -> CatalogPage(state, viewModel, false, false, imageLoader, onAddXtream, onScan)
+                    else -> CatalogPage(state, viewModel, false, false, imageLoader, isPt, onAddXtream, onScan)
                 }
             }
         }
@@ -623,22 +635,36 @@ private fun tvTextFieldFocusModifier(
         }
 }
 
+private data class NavItem(val destination: BruTvDestination, val label: String, val shortLabel: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+
+private fun getNavItems(isPt: Boolean): List<NavItem> = listOf(
+    NavItem(BruTvDestination.LIVE, if (isPt) "TV ao Vivo" else "Live TV", if (isPt) "Ao Vivo" else "Live", Icons.Outlined.LiveTv),
+    NavItem(BruTvDestination.MOVIES, if (isPt) "Filmes" else "Movies", if (isPt) "Filmes" else "Movies", Icons.Outlined.Movie),
+    NavItem(BruTvDestination.SERIES, if (isPt) "Séries" else "Series", if (isPt) "Séries" else "Series", Icons.Outlined.Tv),
+    NavItem(BruTvDestination.FAVORITES, if (isPt) "Favoritos" else "Favorites", if (isPt) "Salvos" else "Saved", Icons.Outlined.Favorite),
+    NavItem(BruTvDestination.RECENTS, if (isPt) "Recentes" else "Recently watched", if (isPt) "Recentes" else "Recent", Icons.Outlined.Bookmark),
+    NavItem(BruTvDestination.PROFILES, if (isPt) "Perfis" else "Profiles", if (isPt) "Perfis" else "Profiles", Icons.Outlined.Tv),
+    NavItem(BruTvDestination.SETTINGS, if (isPt) "Configurações" else "Settings", if (isPt) "Ajustes" else "Settings", Icons.Outlined.Settings),
+)
+
 @Composable
 private fun NavigationRail(
     selected: BruTvDestination,
     isTv: Boolean,
+    isPt: Boolean,
     onSelect: (BruTvDestination) -> Unit,
     onInitialFocus: Boolean,
 ) {
     val first = remember { FocusRequester() }
     LaunchedEffect(onInitialFocus) { if (onInitialFocus) first.requestFocus() }
+    val items = remember(isPt) { getNavItems(isPt) }
     Column(
         Modifier.width(if (isTv) 205.dp else 84.dp).fillMaxHeight().background(Color(0xFF0E1A20)).padding(horizontal = if (isTv) 14.dp else 8.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         BrandMark(compact = !isTv)
         Spacer(Modifier.height(10.dp))
-        navItems.forEachIndexed { index, item ->
+        items.forEachIndexed { index, item ->
             NavRailButton(
                 item = item,
                 selected = selected == item.destination,
@@ -651,8 +677,9 @@ private fun NavigationRail(
 }
 
 @Composable
-private fun PhoneNavigationBar(selected: BruTvDestination, onSelect: (BruTvDestination) -> Unit) {
+private fun PhoneNavigationBar(selected: BruTvDestination, isPt: Boolean, onSelect: (BruTvDestination) -> Unit) {
     val current = if (selected == BruTvDestination.RECENTS) BruTvDestination.FAVORITES else selected
+    val items = remember(isPt) { getNavItems(isPt) }
     Surface(
         color = Color(0xFF101A20),
         border = BorderStroke(1.dp, Color(0xFF16252C)),
@@ -673,7 +700,7 @@ private fun PhoneNavigationBar(selected: BruTvDestination, onSelect: (BruTvDesti
                 BruTvDestination.FAVORITES,
                 BruTvDestination.SETTINGS,
             ).forEach { destination ->
-                val item = navItems.first { it.destination == destination }
+                val item = items.first { it.destination == destination }
                 val isSelected = current == destination
                 Surface(
                     onClick = { onSelect(destination) },
@@ -706,17 +733,6 @@ private fun PhoneNavigationBar(selected: BruTvDestination, onSelect: (BruTvDesti
     }
 }
 
-private data class NavItem(val destination: BruTvDestination, val label: String, val shortLabel: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
-private val navItems = listOf(
-    NavItem(BruTvDestination.LIVE, "Live TV", "Live", Icons.Outlined.LiveTv),
-    NavItem(BruTvDestination.MOVIES, "Movies", "Movies", Icons.Outlined.Movie),
-    NavItem(BruTvDestination.SERIES, "Series", "Series", Icons.Outlined.Tv),
-    NavItem(BruTvDestination.FAVORITES, "Favorites", "Saved", Icons.Outlined.Favorite),
-    NavItem(BruTvDestination.RECENTS, "Recently watched", "Recent", Icons.Outlined.Bookmark),
-    NavItem(BruTvDestination.PROFILES, "Profiles", "Profiles", Icons.Outlined.Tv),
-    NavItem(BruTvDestination.SETTINGS, "Settings", "Settings", Icons.Outlined.Settings),
-)
-
 @Composable
 private fun NavRailButton(item: NavItem, selected: Boolean, isTv: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
@@ -741,6 +757,7 @@ private fun NavRailButton(item: NavItem, selected: Boolean, isTv: Boolean, modif
 private fun AppHeader(
     source: SourceConfig?,
     isTv: Boolean,
+    isPt: Boolean,
     onProfiles: () -> Unit,
     onAdd: () -> Unit,
     onShare: () -> Unit,
@@ -756,24 +773,210 @@ private fun AppHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(if (isTv) 10.dp else 6.dp),
     ) {
-        HeaderIdentity(source, Modifier.weight(1f))
-        HeaderActionButton("Add", Icons.Outlined.Add, onAdd, isTv = isTv, primary = true)
+        HeaderIdentity(source, isPt, Modifier.weight(1f))
+        HeaderActionButton(if (isPt) "Adicionar" else "Add", Icons.Outlined.Add, onAdd, isTv = isTv, primary = true)
         if (showQr) {
             HeaderActionButton(if (isTv) "Login QR" else "QR", Icons.Outlined.QrCode2, onShare, isTv = isTv)
         }
-        HeaderActionButton(if (isTv) "Pair phone" else "Pair TV", Icons.Outlined.Devices, onPair, isTv = isTv)
-        HeaderActionButton("Profiles", Icons.Outlined.ManageAccounts, onProfiles, isTv = isTv)
+        HeaderActionButton(if (isPt) (if (isTv) "Parear cel" else "Parear TV") else (if (isTv) "Pair phone" else "Pair TV"), Icons.Outlined.Devices, onPair, isTv = isTv)
+        HeaderActionButton(if (isPt) "Perfis" else "Profiles", Icons.Outlined.ManageAccounts, onProfiles, isTv = isTv)
         if (isTv) {
-            HeaderActionButton("Settings", Icons.Outlined.Settings, onSettings, isTv = true)
+            HeaderActionButton(if (isPt) "Configurações" else "Settings", Icons.Outlined.Settings, onSettings, isTv = true)
         }
     }
 }
 
 @Composable
-private fun HeaderIdentity(source: SourceConfig?, modifier: Modifier = Modifier) {
+private fun HeaderIdentity(source: SourceConfig?, isPt: Boolean, modifier: Modifier = Modifier) {
     Column(modifier) {
         Text("BruTV", style = MaterialTheme.typography.titleMedium, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(source?.name ?: "No provider selected", style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(source?.name ?: (if (isPt) "Nenhum provedor selecionado" else "No provider selected"), style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private data class CategorySideBarItem(
+    val id: String?,
+    val name: String,
+    val iconUrl: String?,
+    val count: Int,
+)
+
+@Composable
+private fun CategorySideBar(
+    items: List<CategorySideBarItem>,
+    selectedId: String?,
+    isTv: Boolean,
+    isPt: Boolean,
+    imageLoader: ImageLoader,
+    modifier: Modifier = Modifier,
+    onSelect: (String?) -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .background(Color(0xFF0C1622))
+            .padding(vertical = 10.dp)
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (isTv) 16.dp else 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Outlined.GridView,
+                    contentDescription = null,
+                    tint = Aqua,
+                    modifier = Modifier.size(if (isTv) 20.dp else 16.dp),
+                )
+                Text(
+                    text = if (isPt) "CATEGORIAS" else "CATEGORIES",
+                    color = Muted,
+                    fontSize = if (isTv) 14.sp else 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.2.sp,
+                )
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF163C43))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "${items.size}",
+                    color = Aqua,
+                    fontSize = if (isTv) 13.sp else 11.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1B2B3A)))
+        Spacer(Modifier.height(6.dp))
+
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = if (isTv) 8.dp else 6.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isTv) 6.dp else 4.dp),
+        ) {
+            items(items, key = { it.id ?: "ALL_CATEGORIES" }) { item ->
+                CategorySideBarRow(
+                    item = item,
+                    selected = selectedId == item.id,
+                    isTv = isTv,
+                    imageLoader = imageLoader,
+                    onClick = { onSelect(item.id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategorySideBarRow(
+    item: CategorySideBarItem,
+    selected: Boolean,
+    isTv: Boolean,
+    imageLoader: ImageLoader,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .clip(shape)
+            .background(
+                when {
+                    selected -> Color(0xFF163C43)
+                    focused -> Color(0xFF1E3344)
+                    else -> Color.Transparent
+                }
+            )
+            .border(
+                width = if (focused) 2.dp else if (selected) 1.dp else 0.dp,
+                color = when {
+                    focused -> Aqua
+                    selected -> Color(0xFF2B7979)
+                    else -> Color.Transparent
+                },
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = if (isTv) 10.dp else 8.dp, vertical = if (isTv) 8.dp else 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            Modifier
+                .width(if (isTv) 4.dp else 3.dp)
+                .height(if (isTv) 24.dp else 18.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(if (selected) Aqua else Color.Transparent)
+        )
+
+        Box(
+            modifier = Modifier
+                .size(if (isTv) 38.dp else 30.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF070D17))
+                .border(1.dp, if (selected) Color(0xFF2B7979) else Color(0xFF182635), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!item.iconUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(item.iconUrl)
+                        .crossfade(true)
+                        .build(),
+                    imageLoader = imageLoader,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Icon(
+                    if (item.id == null) Icons.Outlined.AutoAwesome else Icons.Outlined.Tv,
+                    contentDescription = null,
+                    tint = if (selected) Aqua else Muted,
+                    modifier = Modifier.size(if (isTv) 20.dp else 16.dp),
+                )
+            }
+        }
+
+        Text(
+            text = item.name,
+            color = if (selected) Color.White else Color(0xFFCAD7E6),
+            fontSize = if (isTv) 15.sp else 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+
+        if (item.count > 0) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (selected) Color(0xFF102D33) else Color(0xFF131F2A))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "${item.count}",
+                    color = if (selected) Aqua else Muted,
+                    fontSize = if (isTv) 12.sp else 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
     }
 }
 
@@ -785,11 +988,13 @@ private fun CatalogPage(
     isTv: Boolean,
     tablet: Boolean,
     imageLoader: ImageLoader,
+    isPt: Boolean,
     onAdd: () -> Unit,
     onScan: () -> Unit,
 ) {
     var editingSearch by remember { mutableStateOf(false) }
     var imeWasShownForSearch by remember { mutableStateOf(false) }
+    var showCategoryDrawer by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val imeVisible = WindowInsets.isImeVisible
@@ -811,133 +1016,219 @@ private fun CatalogPage(
         keyboardController?.hide()
         editingSearch = false
     }
-    val title = when (state.destination) {
-        BruTvDestination.LIVE -> "Live TV"
-        BruTvDestination.MOVIES -> "Movies"
-        BruTvDestination.SERIES -> "Series"
-        BruTvDestination.FAVORITES -> "Your library"
-        BruTvDestination.RECENTS -> "Recently watched"
-        else -> "Browse"
+    BackHandler(enabled = !isTv && !tablet && showCategoryDrawer) {
+        showCategoryDrawer = false
     }
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = if (isTv) 30.dp else 18.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = if (isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                val itemCount = state.visibleEntries.size
-                Text("$itemCount ${if (itemCount == 1) "item" else "items"}", style = MaterialTheme.typography.bodySmall, color = Muted)
+    val title = when (state.destination) {
+        BruTvDestination.LIVE -> if (isPt) "TV ao Vivo" else "Live TV"
+        BruTvDestination.MOVIES -> if (isPt) "Filmes" else "Movies"
+        BruTvDestination.SERIES -> if (isPt) "Séries" else "Series"
+        BruTvDestination.FAVORITES -> if (isPt) "Sua biblioteca" else "Your library"
+        BruTvDestination.RECENTS -> if (isPt) "Assistidos recentemente" else "Recently watched"
+        else -> if (isPt) "Catálogo" else "Browse"
+    }
+
+    val hasCategories = state.activeSection.categories.isNotEmpty() &&
+        state.destination in setOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES)
+
+    val categoryItems = remember(state.activeSection.categories, state.activeSection.entries, isPt, state.destination, hasCategories) {
+        if (!hasCategories) emptyList()
+        else {
+            val entries = state.activeSection.entries
+            val firstIcons = mutableMapOf<String, String>()
+            val counts = mutableMapOf<String, Int>()
+            var firstAllIcon: String? = null
+            for (entry in entries) {
+                if (firstAllIcon == null && entry.artwork.isNotBlank()) {
+                    firstAllIcon = entry.artwork
+                }
+                val catId = entry.categoryId
+                if (catId.isNotBlank()) {
+                    counts[catId] = (counts[catId] ?: 0) + 1
+                    if (!firstIcons.containsKey(catId) && entry.artwork.isNotBlank()) {
+                        firstIcons[catId] = entry.artwork
+                    }
+                }
             }
-            OutlinedTextField(
-                value = state.searchText,
-                onValueChange = viewModel::setSearchText,
-                singleLine = true,
-                readOnly = isTv && !editingSearch,
-                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                placeholder = { Text("Search") },
-                modifier = Modifier.width(if (isTv) 330.dp else 150.dp).then(
-                    if (isTv) Modifier.onPreviewKeyEvent { event ->
-                        val key = event.nativeKeyEvent
-                        when (key.keyCode) {
-                            KeyEvent.KEYCODE_DPAD_UP,
-                            KeyEvent.KEYCODE_DPAD_DOWN,
-                            KeyEvent.KEYCODE_DPAD_LEFT,
-                            KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
-                                    val direction = when (key.keyCode) {
-                                        KeyEvent.KEYCODE_DPAD_UP -> FocusDirection.Up
-                                        KeyEvent.KEYCODE_DPAD_DOWN -> FocusDirection.Down
-                                        KeyEvent.KEYCODE_DPAD_LEFT -> FocusDirection.Left
-                                        else -> FocusDirection.Right
-                                    }
-                                    focusManager.moveFocus(direction)
-                                }
-                                !editingSearch
-                            }
-                            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) editingSearch = true
-                                true
-                            }
-                            else -> false
-                        }
-                    } else Modifier,
-                ),
+            val allName = when (state.destination) {
+                BruTvDestination.LIVE -> if (isPt) "Todos os Canais" else "All Channels"
+                BruTvDestination.MOVIES -> if (isPt) "Todos os Filmes" else "All Movies"
+                BruTvDestination.SERIES -> if (isPt) "Todas as Séries" else "All Series"
+                else -> if (isPt) "Todos" else "All"
+            }
+            val allItem = CategorySideBarItem(
+                id = null,
+                name = allName,
+                iconUrl = firstAllIcon,
+                count = entries.size,
             )
-            if (state.destination == BruTvDestination.LIVE) FilterChip(
-                selected = state.onlyFavorites,
-                onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
-                label = { Text("Saved") },
-            )
-        }
-        if (state.destination == BruTvDestination.FAVORITES || state.destination == BruTvDestination.RECENTS) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 30.dp else 18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = state.destination == BruTvDestination.FAVORITES, onClick = { viewModel.onDestinationSelected(BruTvDestination.FAVORITES) }, label = { Text("Favorites") })
-                FilterChip(selected = state.destination == BruTvDestination.RECENTS, onClick = { viewModel.onDestinationSelected(BruTvDestination.RECENTS) }, label = { Text("Recent") })
-            }
-            Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 30.dp else 18.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(MediaKind.LIVE to "Live", MediaKind.MOVIE to "Movies", MediaKind.SERIES to "Series").forEach { (kind, label) ->
-                    FilterChip(selected = state.libraryKind == kind, onClick = { viewModel.selectLibraryKind(kind) }, label = { Text(label) })
-                }
+            listOf(allItem) + state.activeSection.categories.map { cat ->
+                CategorySideBarItem(
+                    id = cat.id,
+                    name = cat.name,
+                    iconUrl = firstIcons[cat.id],
+                    count = counts[cat.id] ?: 0,
+                )
             }
         }
-        if (state.activeSection.categories.isNotEmpty() && state.destination !in setOf(BruTvDestination.FAVORITES, BruTvDestination.RECENTS)) {
-            LazyRow(
-                Modifier.fillMaxWidth().padding(horizontal = if (isTv) 24.dp else 12.dp, vertical = 8.dp),
-                contentPadding = PaddingValues(horizontal = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item(key = "all") { FilterChip(selected = state.selectedCategoryId == null, onClick = { viewModel.selectCategory(null) }, label = { Text("All") }) }
-                items(state.activeSection.categories, key = { it.id }) { category ->
-                    FilterChip(selected = state.selectedCategoryId == category.id, onClick = { viewModel.selectCategory(category.id) }, label = { Text(category.name, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                }
-            }
+    }
+
+    val selectedCategoryName = remember(state.selectedCategoryId, categoryItems, isPt) {
+        if (state.selectedCategoryId == null) {
+            categoryItems.firstOrNull()?.name ?: (if (isPt) "Todos" else "All")
+        } else {
+            categoryItems.firstOrNull { it.id == state.selectedCategoryId }?.name ?: state.selectedCategoryId
         }
-        if (state.destination in setOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES, BruTvDestination.FAVORITES, BruTvDestination.RECENTS)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 30.dp else 18.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                listOf(null, "4K", "FHD", "HD", "SD").forEach { quality ->
-                    FilterChip(selected = state.qualityFilter == quality, onClick = { viewModel.setQualityFilter(quality) }, label = { Text(quality ?: "Any quality") })
-                }
-            }
-        }
-        if (state.catalogError != null) ErrorBlock(state.catalogError, viewModel::retryCatalog)
-        when {
-            state.catalogLoading && state.activeSection.entries.isEmpty() -> LoadingBlock("Loading your ${title.lowercase(Locale.ROOT)}…")
-            state.visibleEntries.isEmpty() -> EmptyCatalog(
-                title = if (state.searchText.isNotBlank()) "No matches" else if (state.destination == BruTvDestination.FAVORITES) "Nothing saved yet" else if (state.destination == BruTvDestination.RECENTS) "Nothing watched yet" else "No ${title.lowercase(Locale.ROOT)} found",
-                body = when {
-                    state.searchText.isNotBlank() -> "Try another search or clear a filter."
-                    state.destination in setOf(BruTvDestination.FAVORITES, BruTvDestination.RECENTS) -> "Save a channel or start watching to build your library."
-                    else -> "Your provider has not returned items for this section. Try another section or refresh."
-                },
-                onAdd = onAdd,
+    }
+
+    Row(Modifier.fillMaxSize()) {
+        if (hasCategories && (isTv || tablet || showCategoryDrawer)) {
+            CategorySideBar(
+                items = categoryItems,
+                selectedId = state.selectedCategoryId,
                 isTv = isTv,
-                onScan = onScan,
-            )
-            else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = when {
-                    isTv -> 238.dp
-                    tablet -> 190.dp
-                    else -> 144.dp
-                }),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = if (isTv) 28.dp else 14.dp, vertical = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(if (isTv) 20.dp else 12.dp),
-                verticalArrangement = Arrangement.spacedBy(if (isTv) 22.dp else 16.dp),
-            ) {
-                items(state.visibleEntries, key = { it.id }, contentType = { it.kind.name }) { entry ->
-                    MediaCard(
-                        entry = entry,
-                        imageLoader = imageLoader,
-                        isTv = isTv,
-                        favorite = viewModel.isFavorite(entry.id),
-                        onClick = {
-                            if (entry.kind == MediaKind.LIVE) viewModel.play(entry)
-                            else viewModel.openEntry(entry)
-                        },
-                        onFavorite = { viewModel.toggleFavorite(entry) },
+                isPt = isPt,
+                imageLoader = imageLoader,
+                modifier = Modifier
+                    .width(
+                        when {
+                            isTv -> 270.dp
+                            tablet -> 220.dp
+                            else -> 230.dp
+                        }
                     )
+                    .fillMaxHeight(),
+                onSelect = { catId ->
+                    viewModel.selectCategory(catId)
+                    if (!isTv && !tablet) {
+                        showCategoryDrawer = false
+                    }
+                },
+            )
+            Box(Modifier.width(1.dp).fillMaxHeight().background(Color(0xFF1E2D3D)))
+        }
+
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = if (isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    val itemCount = state.visibleEntries.size
+                    Text("$itemCount ${if (itemCount == 1) "item" else (if (isPt) "itens" else "items")}", style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+
+                if (hasCategories && !isTv && !tablet) {
+                    FilterChip(
+                        selected = showCategoryDrawer || state.selectedCategoryId != null,
+                        onClick = { showCategoryDrawer = !showCategoryDrawer },
+                        label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = { Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = Aqua) },
+                    )
+                }
+
+                OutlinedTextField(
+                    value = state.searchText,
+                    onValueChange = viewModel::setSearchText,
+                    singleLine = true,
+                    readOnly = isTv && !editingSearch,
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    placeholder = { Text(if (isPt) "Buscar" else "Search") },
+                    modifier = Modifier.width(if (isTv) 300.dp else 140.dp).then(
+                        if (isTv) Modifier.onPreviewKeyEvent { event ->
+                            val key = event.nativeKeyEvent
+                            when (key.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_UP,
+                                KeyEvent.KEYCODE_DPAD_DOWN,
+                                KeyEvent.KEYCODE_DPAD_LEFT,
+                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                    if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
+                                        val direction = when (key.keyCode) {
+                                            KeyEvent.KEYCODE_DPAD_UP -> FocusDirection.Up
+                                            KeyEvent.KEYCODE_DPAD_DOWN -> FocusDirection.Down
+                                            KeyEvent.KEYCODE_DPAD_LEFT -> FocusDirection.Left
+                                            else -> FocusDirection.Right
+                                        }
+                                        focusManager.moveFocus(direction)
+                                    }
+                                    !editingSearch
+                                }
+                                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                                    if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) editingSearch = true
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else Modifier,
+                    ),
+                )
+                if (state.destination == BruTvDestination.LIVE) FilterChip(
+                    selected = state.onlyFavorites,
+                    onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
+                    label = { Text(if (isPt) "Salvos" else "Saved") },
+                )
+            }
+
+            if (state.destination == BruTvDestination.FAVORITES || state.destination == BruTvDestination.RECENTS) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = state.destination == BruTvDestination.FAVORITES, onClick = { viewModel.onDestinationSelected(BruTvDestination.FAVORITES) }, label = { Text(if (isPt) "Favoritos" else "Favorites") })
+                    FilterChip(selected = state.destination == BruTvDestination.RECENTS, onClick = { viewModel.onDestinationSelected(BruTvDestination.RECENTS) }, label = { Text(if (isPt) "Recentes" else "Recent") })
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(MediaKind.LIVE to (if (isPt) "Ao Vivo" else "Live"), MediaKind.MOVIE to (if (isPt) "Filmes" else "Movies"), MediaKind.SERIES to (if (isPt) "Séries" else "Series")).forEach { (kind, label) ->
+                        FilterChip(selected = state.libraryKind == kind, onClick = { viewModel.selectLibraryKind(kind) }, label = { Text(label) })
+                    }
+                }
+            }
+
+            if (state.destination in setOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES, BruTvDestination.FAVORITES, BruTvDestination.RECENTS)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    listOf(null, "4K", "FHD", "HD", "SD").forEach { quality ->
+                        FilterChip(selected = state.qualityFilter == quality, onClick = { viewModel.setQualityFilter(quality) }, label = { Text(quality ?: (if (isPt) "Qualquer qualidade" else "Any quality")) })
+                    }
+                }
+            }
+
+            if (state.catalogError != null) ErrorBlock(state.catalogError, viewModel::retryCatalog)
+            when {
+                state.catalogLoading && state.activeSection.entries.isEmpty() -> LoadingBlock(if (isPt) "Carregando ${title.lowercase(Locale.ROOT)}…" else "Loading your ${title.lowercase(Locale.ROOT)}…")
+                state.visibleEntries.isEmpty() -> EmptyCatalog(
+                    title = if (state.searchText.isNotBlank()) (if (isPt) "Nenhum resultado" else "No matches") else if (state.destination == BruTvDestination.FAVORITES) (if (isPt) "Nenhum favorito salvo" else "Nothing saved yet") else if (state.destination == BruTvDestination.RECENTS) (if (isPt) "Nenhum item assistido" else "Nothing watched yet") else (if (isPt) "Nenhum item encontrado" else "No ${title.lowercase(Locale.ROOT)} found"),
+                    body = when {
+                        state.searchText.isNotBlank() -> if (isPt) "Tente outra busca ou limpe o filtro." else "Try another search or clear a filter."
+                        state.destination in setOf(BruTvDestination.FAVORITES, BruTvDestination.RECENTS) -> if (isPt) "Salve um canal ou comece a assistir para montar sua biblioteca." else "Save a channel or start watching to build your library."
+                        else -> if (isPt) "Seu provedor não retornou itens nesta seção. Tente outra seção ou atualize." else "Your provider has not returned items for this section. Try another section or refresh."
+                    },
+                    onAdd = onAdd,
+                    isTv = isTv,
+                    onScan = onScan,
+                )
+                else -> LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = when {
+                        isTv -> 238.dp
+                        tablet -> 190.dp
+                        else -> 144.dp
+                    }),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = if (isTv) 28.dp else 14.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (isTv) 20.dp else 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (isTv) 22.dp else 16.dp),
+                ) {
+                    items(state.visibleEntries, key = { it.id }, contentType = { it.kind.name }) { entry ->
+                        MediaCard(
+                            entry = entry,
+                            imageLoader = imageLoader,
+                            isTv = isTv,
+                            favorite = viewModel.isFavorite(entry.id),
+                            onClick = {
+                                if (entry.kind == MediaKind.LIVE) viewModel.play(entry)
+                                else viewModel.openEntry(entry)
+                            },
+                            onFavorite = { viewModel.toggleFavorite(entry) },
+                        )
+                    }
                 }
             }
         }
@@ -1285,10 +1576,38 @@ private fun ProfilesPage(
 
 @Composable
 private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: Boolean) {
+    val isPt = remember(state.language) {
+        when (state.language) {
+            "pt" -> true
+            "en" -> false
+            else -> java.util.Locale.getDefault().language.lowercase().startsWith("pt")
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = if (isTv) 30.dp else 18.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Tune playback for your network and device.", color = Muted)
-        Text("Buffer profile", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(if (isPt) "Configurações" else "Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(if (isPt) "Ajuste a reprodução e preferências para sua rede e dispositivo." else "Tune playback for your network and device.", color = Muted)
+
+        Text(if (isPt) "Idioma" else "Language", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+        listOf(
+            "system" to (if (isPt) "Automático (Padrão do sistema)" else "System Default"),
+            "pt" to "Português (Brasil)",
+            "en" to "English",
+        ).forEach { (langKey, langLabel) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(CardSurface)
+                    .clickable { viewModel.setLanguage(langKey) }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = state.language == langKey, onClick = { viewModel.setLanguage(langKey) })
+                Text(langLabel, color = Color.White, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+
+        Text(if (isPt) "Perfil de buffer" else "Buffer profile", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         BufferProfile.entries.forEach { profile ->
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSurface).clickable { viewModel.setBufferProfile(profile.key) }.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(selected = state.bufferProfile == profile.key, onClick = { viewModel.setBufferProfile(profile.key) })
@@ -1300,13 +1619,13 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
         }
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSurface).clickable { viewModel.setShowStats(!state.showStats) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Playback diagnostics", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text("Show resolution, bitrate, buffer and recovery details while playing.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                Text(if (isPt) "Diagnósticos de reprodução" else "Playback diagnostics", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(if (isPt) "Exibir resolução, bitrate, buffer e detalhes de rede durante a reprodução." else "Show resolution, bitrate, buffer and recovery details while playing.", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
             Switch(checked = state.showStats, onCheckedChange = viewModel::setShowStats)
         }
-        Text("Privacy", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text("BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
+        Text(if (isPt) "Privacidade" else "Privacy", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(if (isPt) "O BruTV não possui servidores próprios nem canais embutidos. Suas credenciais são salvas criptografadas neste dispositivo e enviadas diretamente ao provedor configurado." else "BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
         Text("BruTV • Version 1.0.1", color = Muted, style = MaterialTheme.typography.bodySmall)
     }
 }

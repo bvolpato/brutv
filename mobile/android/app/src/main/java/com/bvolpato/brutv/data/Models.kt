@@ -132,4 +132,5 @@ data class SavedState(
     val libraries: Map<String, LibraryState> = emptyMap(),
     val bufferProfile: String = "balanced",
     val showStats: Boolean = false,
+    val language: String = "system",
 )

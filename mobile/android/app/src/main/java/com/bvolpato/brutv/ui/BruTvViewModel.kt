@@ -79,6 +79,7 @@ data class BruTvUiState(
     val loginQrSource: SourceConfig? = null,
     val bufferProfile: String = "balanced",
     val showStats: Boolean = false,
+    val language: String = "system",
     val library: LibraryState = LibraryState(),
 ) {
     val activeSource: SourceConfig? get() = profiles.firstOrNull { it.id == activeSourceId }
@@ -131,6 +132,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                         activeSourceId = activeId,
                         bufferProfile = restored.bufferProfile,
                         showStats = restored.showStats,
+                        language = restored.language,
                         library = activeId?.let { restored.libraries[it] }.orEmptyLibrary(),
                         pageError = readResult.exceptionOrNull()?.let { "Saved profiles could not be loaded. Existing encrypted data was left untouched." },
                         persistenceError = readResult.exceptionOrNull()?.let { "Saved profiles could not be read. BruTV has kept the encrypted file unchanged; profile changes in this session cannot be saved." },
@@ -551,6 +553,13 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     fun setShowStats(enabled: Boolean) {
         savedState = savedState.copy(showStats = enabled)
         _state.update { it.copy(showStats = enabled) }
+        persist()
+    }
+
+    fun setLanguage(lang: String) {
+        if (lang !in setOf("system", "pt", "en")) return
+        savedState = savedState.copy(language = lang)
+        _state.update { it.copy(language = lang) }
         persist()
     }
 
