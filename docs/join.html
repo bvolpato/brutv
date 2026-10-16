@@ -150,14 +150,14 @@
       color: var(--text-muted);
       font-size: 14px;
       line-height: 1.5;
-      margin-bottom: 26px;
+      margin-bottom: 24px;
     }
 
     .action-group {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 10px;
+      margin-bottom: 16px;
     }
 
     .btn {
@@ -166,7 +166,7 @@
       justify-content: center;
       gap: 10px;
       width: 100%;
-      padding: 14px 20px;
+      padding: 13px 20px;
       border-radius: 16px;
       font-size: 15px;
       font-weight: 700;
@@ -197,6 +197,14 @@
     .btn-secondary:hover {
       background: rgba(255, 255, 255, 0.12);
       border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .apk-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: -3px;
+      margin-bottom: 4px;
+      line-height: 1.3;
     }
 
     .divider {
@@ -344,11 +352,18 @@
         <span id="txt-open-app">Open in BruTV App</span>
       </a>
 
-      <!-- 2. Store Download Button -->
-      <a id="btn-download" href="https://apps.apple.com/app/brutv/id6754930353" class="btn btn-secondary" target="_blank" rel="noopener">
-        <span id="download-icon">🍎</span>
-        <span id="txt-download">Download on App Store</span>
+      <!-- 2. Apple App Store Button -->
+      <a id="btn-apple" href="https://apps.apple.com/app/brutv/id6754930353" class="btn btn-secondary" target="_blank" rel="noopener">
+        <span>🍎</span>
+        <span id="txt-download-apple">Download on Apple App Store</span>
       </a>
+
+      <!-- 3. Direct Android APK Download Button -->
+      <a id="btn-apk" href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-4.apk" class="btn btn-secondary" download="BruTV-android-1.0.1-4.apk">
+        <span>🤖</span>
+        <span id="txt-download-apk">Download Android APK (Direct)</span>
+      </a>
+      <p class="apk-hint" id="txt-apk-hint">For Android phones, tablets, Android TV & Fire TV</p>
     </div>
 
     <!-- Secondary: Copy link or QR code -->
@@ -374,9 +389,10 @@
     </div>
 
     <div class="platforms">
-      <div class="platform-pill"><span></span> tvOS & iOS</div>
-      <div class="platform-pill"><span>💻</span> macOS</div>
-      <div class="platform-pill"><span>🤖</span> Android</div>
+      <div class="platform-pill"><span></span> Apple TV, iOS & Mac</div>
+      <a href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-4.apk" class="platform-pill" style="text-decoration: none; color: inherit;" download>
+        <span>🤖</span> Android APK (v1.0.1) ↓
+      </a>
     </div>
   </div>
 
@@ -392,8 +408,8 @@
         subtitle: "The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.",
         openApp: "Open in BruTV App",
         downloadApple: "Download on Apple App Store",
-        downloadAndroid: "Download for Android",
-        downloadMac: "Download for macOS",
+        downloadApk: "Download Android APK (Direct)",
+        apkDetails: "For Android phones, tablets, Android TV & Fire TV",
         or: "Or connect another screen",
         qrHint: "Scan with camera on Apple TV, iPhone, iPad, or Android.",
         copy: "Copy Sign-In Link",
@@ -406,8 +422,8 @@
         subtitle: "O melhor reprodutor IPTV para Apple TV, iPhone, iPad, Mac e Android.",
         openApp: "Abrir no App BruTV",
         downloadApple: "Baixar na App Store (Apple)",
-        downloadAndroid: "Baixar para Android",
-        downloadMac: "Baixar para macOS",
+        downloadApk: "Baixar APK para Android (Direto)",
+        apkDetails: "Para celulares Android, tablets, Android TV e Fire TV",
         or: "Ou conecte em outra tela",
         qrHint: "Aponte a câmera na Apple TV, iPhone, iPad ou Android.",
         copy: "Copiar Link de Acesso",
@@ -433,6 +449,9 @@
       document.getElementById("title").innerText = t.title;
       document.getElementById("subtitle").innerText = t.subtitle;
       document.getElementById("txt-open-app").innerText = t.openApp;
+      document.getElementById("txt-download-apple").innerText = t.downloadApple;
+      document.getElementById("txt-download-apk").innerText = t.downloadApk;
+      document.getElementById("txt-apk-hint").innerText = t.apkDetails;
       document.getElementById("txt-or").innerText = t.or;
       document.getElementById("txt-qr-hint").innerText = t.qrHint;
       document.getElementById("txt-copy").innerText = t.copy;
@@ -451,23 +470,19 @@
 
     function updatePlatformDownloadButton() {
       const platform = detectPlatform();
-      const t = translations[currentLang];
-      const btnDownload = document.getElementById("btn-download");
-      const icon = document.getElementById("download-icon");
-      const txt = document.getElementById("txt-download");
+      const actionGroup = document.querySelector(".action-group");
+      const btnApple = document.getElementById("btn-apple");
+      const btnApk = document.getElementById("btn-apk");
+      const apkHint = document.getElementById("txt-apk-hint");
 
       if (platform === "android") {
-        icon.innerText = "🤖";
-        txt.innerText = t.downloadAndroid;
-        btnDownload.href = "/brutv/#downloads";
-      } else if (platform === "mac") {
-        icon.innerText = "💻";
-        txt.innerText = t.downloadMac;
-        btnDownload.href = "https://apps.apple.com/app/brutv/id6754930353";
+        // Position Android APK button right below Open in App
+        actionGroup.insertBefore(btnApk, btnApple);
+        actionGroup.insertBefore(apkHint, btnApple);
       } else {
-        icon.innerText = "🍎";
-        txt.innerText = t.downloadApple;
-        btnDownload.href = "https://apps.apple.com/app/brutv/id6754930353";
+        // Keep Apple App Store button first
+        actionGroup.appendChild(btnApk);
+        actionGroup.appendChild(apkHint);
       }
     }
 
