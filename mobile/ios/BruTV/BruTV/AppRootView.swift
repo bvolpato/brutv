@@ -92,7 +92,14 @@ public struct AppRootView: View {
     private func handleLaunchArguments() {
         #if DEBUG
         let args = ProcessInfo.processInfo.arguments
-        if args.contains("--demo-login") {
+        if args.contains("--play-demo") {
+            Task {
+                try? await account.loginWithDemo()
+                if let stream = (try? await account.client.fetchLiveStreams())?.first {
+                    PlaybackManager.shared.play(stream: stream)
+                }
+            }
+        } else if args.contains("--demo-login") {
             Task {
                 try? await account.loginWithDemo()
             }

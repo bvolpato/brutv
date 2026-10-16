@@ -25,7 +25,7 @@ capture_device() {
   local subdir="$2"
   local dev_id
 
-  dev_id=$(xcrun simctl list devices available | grep -F "$device (" | head -n 1 | sed -E 's/.*\(([A-F0-9-]{36})\).*/\1/')
+  dev_id=$(xcrun simctl list devices available | grep -F "$device (" | head -n 1 | sed -E 's/.*\(([A-F0-9-]{36})\).*/\1/' || true)
   if [[ -z "$dev_id" ]]; then
     echo "warning: simulator not found: $device, skipping"
     return 0
@@ -83,7 +83,78 @@ capture_device() {
   done
 }
 
+capture_tvos() {
+  local tv_device="${TVOS_SCREENSHOT_DEVICE:-Apple TV 4K (3rd generation)}"
+  local dev_id
+  dev_id=$(xcrun simctl list devices available | grep -F "$tv_device (" | head -n 1 | sed -E 's/.*\(([A-F0-9-]{36})\).*/\1/' || true)
+  if [[ -z "$dev_id" ]]; then
+    echo "warning: tvOS simulator not found: $tv_device, skipping"
+    return 0
+  fi
+
+  echo "Capturing on $tv_device ($dev_id)..."
+  xcrun simctl boot "$dev_id" >/dev/null 2>&1 || true
+  xcrun simctl bootstatus "$dev_id" -b >/dev/null
+
+  local out="$SCREENSHOT_DIR/appletv-4k"
+  rm -rf "$out"
+  mkdir -p "$out"
+
+  local app_bundle="$SCRIPT_DIR/build/tvos-sim/Build/Products/Debug-appletvsimulator/BruTV-tvOS.app"
+  if [[ ! -d "$app_bundle" ]]; then
+    echo "Building BruTV-tvOS for simulator..."
+    xcodebuild build \
+      -project BruTV.xcodeproj \
+      -scheme BruTV-tvOS \
+      -destination "platform=tvOS Simulator,id=$dev_id" \
+      -derivedDataPath "$SCRIPT_DIR/build/tvos-sim" \
+      CODE_SIGNING_ALLOWED=NO -quiet
+  fi
+  xcrun simctl install "$dev_id" "$app_bundle"
+
+  echo "  Capturing Apple TV 01_login..."
+  xcrun simctl terminate "$dev_id" com.bvolpato.brutv >/dev/null 2>&1 || true
+  xcrun simctl launch "$dev_id" com.bvolpato.brutv --reset-session --no-splash >/dev/null
+  sleep 4
+  xcrun simctl io "$dev_id" screenshot "$out/01_login.png"
+
+  echo "  Capturing Apple TV 02_home..."
+  xcrun simctl terminate "$dev_id" com.bvolpato.brutv >/dev/null 2>&1 || true
+  xcrun simctl launch "$dev_id" com.bvolpato.brutv --demo-login --no-splash --section "Home" >/dev/null
+  sleep 5
+  xcrun simctl io "$dev_id" screenshot "$out/02_home.png"
+
+  echo "  Capturing Apple TV 03_channels..."
+  xcrun simctl terminate "$dev_id" com.bvolpato.brutv >/dev/null 2>&1 || true
+  xcrun simctl launch "$dev_id" com.bvolpato.brutv --demo-login --no-splash --section "Live TV" >/dev/null
+  sleep 6
+  xcrun simctl io "$dev_id" screenshot "$out/03_channels.png"
+
+  echo "  Capturing Apple TV 04_movies..."
+  xcrun simctl terminate "$dev_id" com.bvolpato.brutv >/dev/null 2>&1 || true
+  xcrun simctl launch "$dev_id" com.bvolpato.brutv --demo-login --no-splash --section "Movies" >/dev/null
+  sleep 6
+  xcrun simctl io "$dev_id" screenshot "$out/04_movies.png"
+
+  echo "  Capturing Apple TV 05_settings..."
+  xcrun simctl terminate "$dev_id" com.bvolpato.brutv >/dev/null 2>&1 || true
+  xcrun simctl launch "$dev_id" com.bvolpato.brutv --demo-login --no-splash --section "Settings" >/dev/null
+  sleep 4
+  xcrun simctl io "$dev_id" screenshot "$out/05_settings.png"
+
+  echo "  Saved to $out"
+  for f in "$out"/*.png; do
+    [[ -f "$f" ]] && echo "  $(basename "$f"): $(sips -g pixelWidth -g pixelHeight "$f" | awk '/pixel/ {printf "%s ", $2}')"
+  done
+}
+
 capture_device "$IPHONE_DEVICE" "iphone-6.9-inch"
 capture_device "$IPAD_DEVICE" "ipad-13-inch"
+capture_tvos
+
+if command -v uv >/dev/null 2>&1; then
+  echo "Generating Mac Catalyst screenshots..."
+  uv run "$SCRIPT_DIR/generate_mac_screenshots.py"
+fi
 
 echo "Screenshots generated in: $SCREENSHOT_DIR"

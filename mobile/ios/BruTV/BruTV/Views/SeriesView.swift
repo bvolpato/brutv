@@ -14,7 +14,7 @@ public struct SeriesView: View {
     @State private var categoryIcons: [String: URL] = [:]
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedSeries: [SeriesItem] = []
-    @State private var showSideMenu: Bool = true
+    @State private var showSideMenu: Bool = false
 
     private let client = AccountStore.shared.client
 

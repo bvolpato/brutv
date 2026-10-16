@@ -11,7 +11,7 @@ public enum LoginLink: Equatable, Sendable {
     case m3u(url: String)
 
     public static let scheme = "brutv"
-    public static let defaultWebJoinBaseURL = "https://bvolpato.github.io/brutv/join.html"
+    public static let defaultWebJoinBaseURL = "https://brunovolpato.com/brutv/join.html"
 
     /// Parses a `brutv://login` link or universal HTTPS `https://.../join...` link.
     public init?(url: URL) {
