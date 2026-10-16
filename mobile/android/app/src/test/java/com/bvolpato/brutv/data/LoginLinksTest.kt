@@ -40,6 +40,36 @@ class LoginLinksTest {
     }
 
     @Test
+    fun parsesIosUniversalJoinLinksAndDecodesNestedValuesOnce() {
+        val xtream = LoginLinks.parse(
+            "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example%2Fpanel&username=jo%C3%A3o%2Bone%26two&password=secret%20%2B%20%26%3D%3F%23%25",
+        )
+        assertEquals(SourceType.XTREAM, xtream?.type)
+        assertEquals("https://provider.example/panel", xtream?.server)
+        assertEquals("joão+one&two", xtream?.username)
+        assertEquals("secret + &=?#%", xtream?.password)
+
+        val playlist = "https://provider.example/list.m3u?token=a%2Bb&name=A%20B"
+        val m3u = LoginLinks.parse(
+            "https://bvolpato.github.io/brutv/join.html?m3u=https%3A%2F%2Fprovider.example%2Flist.m3u%3Ftoken%3Da%252Bb%26name%3DA%2520B",
+        )
+        assertEquals(SourceType.M3U, m3u?.type)
+        assertEquals(playlist, m3u?.playlistUrl)
+    }
+
+    @Test
+    fun onlyParsesSupportedUniversalJoinRouteAndRejectsMalformedJoinPayloads() {
+        val incomplete = "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"
+        assertNull(LoginLinks.parse(incomplete))
+        assertNull(LoginLinks.parse("https://bvolpato.github.io/brutv/join.html?m3u=file%3A%2F%2F%2Fprivate%2Flist.m3u"))
+
+        val unrelatedWebPage = "https://provider.example/join.html?server=https%3A%2F%2Fpanel.example&username=family&password=secret"
+        val parsedPage = LoginLinks.parse(unrelatedWebPage)
+        assertEquals(SourceType.M3U, parsedPage?.type)
+        assertEquals(unrelatedWebPage, parsedPage?.playlistUrl)
+    }
+
+    @Test
     fun rejectsMalformedOrNonHttpSources() {
         assertNull(LoginLinks.parse("brutv://login?server=file%3A%2F%2Fhost&username=u&password=p"))
         assertNull(LoginLinks.parse("brutv://login?m3u=file%3A%2F%2F%2Fdata%2Fuser%2F0%2Fapp%2Fno_backup%2Fplaylists%2F00000000-0000-0000-0000-000000000000.m3u"))
