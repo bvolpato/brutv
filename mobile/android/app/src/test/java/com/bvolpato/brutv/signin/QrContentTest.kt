@@ -2,6 +2,7 @@ package com.bvolpato.brutv.signin
 
 import com.bvolpato.brutv.data.LoginLinks
 import com.bvolpato.brutv.data.SourceConfig
+import com.bvolpato.brutv.data.SourceType
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.MultiFormatReader
@@ -17,6 +18,16 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicBoolean
 
 class QrContentTest {
+    @Test fun scannerAcceptsIosUniversalLoginLinksAndRejectsMalformedJoinLinks() {
+        val link = "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family&password=secret"
+        assertEquals(link, supportedQrContent(link))
+        val received = requireNotNull(LoginLinks.parse(link))
+        assertEquals(SourceType.XTREAM, received.type)
+        assertEquals("family", received.username)
+
+        assertNull(supportedQrContent("https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"))
+    }
+
     @Test fun unsupportedCodesDoNotPreventAValidSubsequentCode() {
         val delivered = AtomicBoolean(false)
         assertNull(claimSupportedQr("A shopping receipt", delivered))

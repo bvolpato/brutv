@@ -66,6 +66,11 @@ object LoginLinks {
     }
 
     private fun parsePlaylistOrXtream(original: String): SourceConfig? {
+        val uri = runCatching { URI(original) }.getOrNull()
+        if (uri != null && isIosUniversalJoin(uri)) {
+            return parseUniversalJoin(uri.rawQuery)
+        }
+
         val isGetPhp = original.contains("get.php", ignoreCase = true)
         if (isGetPhp) {
             val query = original.substringAfter('?', "").substringBefore('#')
@@ -83,6 +88,30 @@ object LoginLinks {
             }
         }
         return m3uSource(original)
+    }
+
+    private fun isIosUniversalJoin(uri: URI): Boolean =
+        uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host.equals("bvolpato.github.io", ignoreCase = true) &&
+            uri.port == -1 &&
+            uri.rawUserInfo == null &&
+            uri.rawFragment == null &&
+            uri.rawPath == "/brutv/join.html"
+
+    private fun parseUniversalJoin(query: String?): SourceConfig? {
+        val values = parseQuery(query)
+        val playlist = values.firstValue("m3u")
+        if (playlist != null) {
+            if (!playlist.startsWith("http://", ignoreCase = true) &&
+                !playlist.startsWith("https://", ignoreCase = true)) return null
+            return m3uSource(playlist)
+        }
+        val server = values.firstValue("server") ?: return null
+        val username = values.firstValue("username") ?: return null
+        val password = values.firstValue("password") ?: return null
+        return runCatching {
+            SourceConfig(name = username, type = SourceType.XTREAM, server = server, username = username, password = password).normalized()
+        }.getOrNull()
     }
 
     private fun m3uSource(url: String): SourceConfig? = runCatching {
