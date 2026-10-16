@@ -110,11 +110,13 @@ final class SourceLoginTests: XCTestCase {
     func testUniversalLinkRoundTripsXtreamAndM3U() {
         let xtreamLink = LoginLink.xtream(server: "http://tv.example:8080", username: "pedro", password: "secret-pass")
         XCTAssertTrue(xtreamLink.universalURL.absoluteString.contains("join.html"))
+        XCTAssertTrue(xtreamLink.universalURL.absoluteString.hasPrefix("https://brunovolpato.com/brutv/join.html"))
         XCTAssertEqual(LoginLink(url: xtreamLink.universalURL), xtreamLink)
         XCTAssertEqual(LoginLink(pasted: xtreamLink.universalURL.absoluteString), xtreamLink)
 
         let m3uLink = LoginLink.m3u(url: "https://example.com/playlist.m3u")
         XCTAssertTrue(m3uLink.universalURL.absoluteString.contains("join.html"))
+        XCTAssertTrue(m3uLink.universalURL.absoluteString.hasPrefix("https://brunovolpato.com/brutv/join.html"))
         XCTAssertEqual(LoginLink(url: m3uLink.universalURL), m3uLink)
         XCTAssertEqual(LoginLink(pasted: m3uLink.universalURL.absoluteString), m3uLink)
     }

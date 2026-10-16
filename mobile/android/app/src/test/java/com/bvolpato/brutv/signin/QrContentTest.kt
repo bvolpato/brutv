@@ -19,12 +19,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class QrContentTest {
     @Test fun scannerAcceptsIosUniversalLoginLinksAndRejectsMalformedJoinLinks() {
+        val linkBruno = "https://brunovolpato.com/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family&password=secret"
+        assertEquals(linkBruno, supportedQrContent(linkBruno))
+        val receivedBruno = requireNotNull(LoginLinks.parse(linkBruno))
+        assertEquals(SourceType.XTREAM, receivedBruno.type)
+        assertEquals("family", receivedBruno.username)
+
         val link = "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family&password=secret"
         assertEquals(link, supportedQrContent(link))
         val received = requireNotNull(LoginLinks.parse(link))
         assertEquals(SourceType.XTREAM, received.type)
         assertEquals("family", received.username)
 
+        assertNull(supportedQrContent("https://brunovolpato.com/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"))
         assertNull(supportedQrContent("https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"))
     }
 

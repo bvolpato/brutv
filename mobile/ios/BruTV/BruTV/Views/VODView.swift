@@ -23,7 +23,7 @@ public struct VODView: View {
     @State private var categoryIcons: [String: URL] = [:]
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedMovies: [VODStream] = []
-    @State private var showSideMenu: Bool = true
+    @State private var showSideMenu: Bool = false
 
     private let client = AccountStore.shared.client
 

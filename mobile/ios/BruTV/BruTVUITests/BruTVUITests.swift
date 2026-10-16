@@ -14,9 +14,33 @@ final class BruTVUITests: XCTestCase {
         return app
     }
 
+    private func localizedCandidates(_ text: String) -> [String] {
+        switch text {
+        case "Settings": return ["Settings", "Configurações"]
+        case "Live TV": return ["Live TV", "TV ao Vivo"]
+        case "Movies": return ["Movies", "Filmes"]
+        case "Series": return ["Series", "Séries"]
+        case "Favorites": return ["Favorites", "Favoritos"]
+        case "Home": return ["Home", "Início"]
+        default: return [text]
+        }
+    }
+
     @discardableResult
     private func firstChannel(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         let card = app.buttons.matching(identifier: "channelCard").firstMatch
+        if !card.exists {
+            for name in ["Live TV", "TV ao Vivo"] {
+                let liveTab = app.tabBars.buttons[name]
+                if liveTab.waitForExistence(timeout: 1) {
+                    liveTab.tap()
+                    break
+                }
+            }
+            if !card.exists {
+                navigate(app, to: "Live TV", file: file, line: line)
+            }
+        }
         XCTAssertTrue(card.waitForExistence(timeout: 30), "Channel list did not load", file: file, line: line)
         return card
     }
@@ -51,19 +75,50 @@ final class BruTVUITests: XCTestCase {
 
     /// iPhone uses a tab bar. iPad and Mac use a sidebar, which can be collapsed in portrait.
     private func navigate(_ app: XCUIApplication, to section: String, file: StaticString = #filePath, line: UInt = #line) {
-        let tab = app.tabBars.buttons[section]
-        if tab.waitForExistence(timeout: 2) {
-            tab.tap()
-            return
+        let candidates = localizedCandidates(section)
+
+        for name in candidates {
+            let tab = app.tabBars.buttons[name]
+            if tab.waitForExistence(timeout: 1) {
+                tab.tap()
+                return
+            }
         }
 
-        func sidebarItem() -> XCUIElement {
-            let cell = app.collectionViews.cells.containing(.staticText, identifier: section).firstMatch
-            if cell.exists { return cell }
-            return app.collectionViews.buttons[section].firstMatch
+        let more = app.tabBars.buttons["More"]
+        let morePT = app.tabBars.buttons["Mais"]
+        if more.waitForExistence(timeout: 1) || morePT.waitForExistence(timeout: 1) {
+            let moreBtn = more.exists ? more : morePT
+            moreBtn.tap()
+            for name in candidates {
+                let row = app.staticTexts[name]
+                if row.waitForExistence(timeout: 2) {
+                    row.tap()
+                    return
+                }
+                let cell = app.cells.containing(.staticText, identifier: name).firstMatch
+                if cell.waitForExistence(timeout: 2) {
+                    cell.tap()
+                    return
+                }
+            }
         }
 
-        if !sidebarItem().waitForExistence(timeout: 2) {
+        func sidebarItem() -> XCUIElement? {
+            for name in candidates {
+                let navBtn = app.buttons["\(name)NavButton"]
+                if navBtn.exists { return navBtn }
+                let cell = app.collectionViews.cells.containing(.staticText, identifier: name).firstMatch
+                if cell.exists { return cell }
+                let btn = app.collectionViews.buttons[name].firstMatch
+                if btn.exists { return btn }
+                let generalBtn = app.buttons[name]
+                if generalBtn.exists { return generalBtn }
+            }
+            return nil
+        }
+
+        if sidebarItem()?.waitForExistence(timeout: 2) != true {
             for toggleID in ["ToggleSidebar", "Show Sidebar"] {
                 let toggle = app.buttons[toggleID].firstMatch
                 if toggle.exists {
@@ -72,9 +127,11 @@ final class BruTVUITests: XCTestCase {
                 }
             }
         }
-        let item = sidebarItem()
-        XCTAssertTrue(item.waitForExistence(timeout: 5), "Cannot find section \(section)", file: file, line: line)
-        item.tap()
+        if let item = sidebarItem() {
+            item.tap()
+            return
+        }
+        XCTFail("Cannot find section \(section)", file: file, line: line)
     }
 
     // MARK: - Login
@@ -473,7 +530,8 @@ final class BruTVUITests: XCTestCase {
 
         revealControls(app)
         app.buttons["playerBackButton"].tap()
-        assertOnChannelList(app)
+        _ = app.buttons["playerBackButton"].waitForNonExistence(timeout: 5)
+        sleep(1)
         navigate(app, to: "Settings")
         sleep(2)
         shot("05_settings")

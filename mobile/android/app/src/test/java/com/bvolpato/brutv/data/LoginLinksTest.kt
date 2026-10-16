@@ -41,6 +41,14 @@ class LoginLinksTest {
 
     @Test
     fun parsesIosUniversalJoinLinksAndDecodesNestedValuesOnce() {
+        val xtreamBruno = LoginLinks.parse(
+            "https://brunovolpato.com/brutv/join.html?server=https%3A%2F%2Fprovider.example%2Fpanel&username=jo%C3%A3o%2Bone%26two&password=secret%20%2B%20%26%3D%3F%23%25",
+        )
+        assertEquals(SourceType.XTREAM, xtreamBruno?.type)
+        assertEquals("https://provider.example/panel", xtreamBruno?.server)
+        assertEquals("joão+one&two", xtreamBruno?.username)
+        assertEquals("secret + &=?#%", xtreamBruno?.password)
+
         val xtream = LoginLinks.parse(
             "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example%2Fpanel&username=jo%C3%A3o%2Bone%26two&password=secret%20%2B%20%26%3D%3F%23%25",
         )
@@ -50,6 +58,12 @@ class LoginLinksTest {
         assertEquals("secret + &=?#%", xtream?.password)
 
         val playlist = "https://provider.example/list.m3u?token=a%2Bb&name=A%20B"
+        val m3uBruno = LoginLinks.parse(
+            "https://brunovolpato.com/brutv/join.html?m3u=https%3A%2F%2Fprovider.example%2Flist.m3u%3Ftoken%3Da%252Bb%26name%3DA%2520B",
+        )
+        assertEquals(SourceType.M3U, m3uBruno?.type)
+        assertEquals(playlist, m3uBruno?.playlistUrl)
+
         val m3u = LoginLinks.parse(
             "https://bvolpato.github.io/brutv/join.html?m3u=https%3A%2F%2Fprovider.example%2Flist.m3u%3Ftoken%3Da%252Bb%26name%3DA%2520B",
         )
@@ -59,8 +73,10 @@ class LoginLinksTest {
 
     @Test
     fun onlyParsesSupportedUniversalJoinRouteAndRejectsMalformedJoinPayloads() {
-        val incomplete = "https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"
+        val incomplete = "https://brunovolpato.com/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"
         assertNull(LoginLinks.parse(incomplete))
+        assertNull(LoginLinks.parse("https://brunovolpato.com/brutv/join.html?m3u=file%3A%2F%2F%2Fprivate%2Flist.m3u"))
+        assertNull(LoginLinks.parse("https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"))
         assertNull(LoginLinks.parse("https://bvolpato.github.io/brutv/join.html?m3u=file%3A%2F%2F%2Fprivate%2Flist.m3u"))
 
         val unrelatedWebPage = "https://provider.example/join.html?server=https%3A%2F%2Fpanel.example&username=family&password=secret"

@@ -32,7 +32,16 @@ public struct MainContentView: View {
     @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    @State private var selectedSection: NavigationSection? = .home
+    @State private var selectedSection: NavigationSection? = {
+        let args = ProcessInfo.processInfo.arguments
+        if let idx = args.firstIndex(of: "--section"), idx + 1 < args.count {
+            let val = args[idx + 1]
+            if let match = NavigationSection.allCases.first(where: { $0.rawValue == val || $0.id == val }) {
+                return match
+            }
+        }
+        return .home
+    }()
     @State private var isPlayerFullScreen: Bool = false
 
     private var tabSelection: Binding<NavigationSection> {
@@ -42,7 +51,15 @@ public struct MainContentView: View {
         )
     }
 
-    public init() {}
+    public init() {
+        let args = ProcessInfo.processInfo.arguments
+        if let idx = args.firstIndex(of: "--section"), idx + 1 < args.count {
+            let val = args[idx + 1]
+            if let match = NavigationSection.allCases.first(where: { $0.rawValue == val || $0.id == val }) {
+                _selectedSection = State(initialValue: match)
+            }
+        }
+    }
 
     public var body: some View {
         #if os(tvOS)
@@ -217,6 +234,7 @@ public struct MainContentView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("\(section.rawValue)NavButton")
                         }
                     }
                     .padding(.vertical, 10)

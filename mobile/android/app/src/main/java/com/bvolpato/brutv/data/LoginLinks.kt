@@ -92,7 +92,7 @@ object LoginLinks {
 
     private fun isIosUniversalJoin(uri: URI): Boolean =
         uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host.equals("bvolpato.github.io", ignoreCase = true) &&
+            (uri.host.equals("brunovolpato.com", ignoreCase = true) || uri.host.equals("bvolpato.github.io", ignoreCase = true)) &&
             uri.port == -1 &&
             uri.rawUserInfo == null &&
             uri.rawFragment == null &&

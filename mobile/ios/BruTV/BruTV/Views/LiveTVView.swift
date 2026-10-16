@@ -16,7 +16,7 @@ public struct LiveTVView: View {
     @State private var categoryIcons: [String: URL] = [:]
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedStreams: [LiveStream] = []
-    @State private var showSideMenu: Bool = true
+    @State private var showSideMenu: Bool = false
 
     private let client = AccountStore.shared.client
 
@@ -329,7 +329,7 @@ public struct LiveTVView: View {
         } else {
             ScrollView {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 280, maximum: 420), spacing: 12)],
+                    columns: [GridItem(.adaptive(minimum: 220, maximum: 420), spacing: 12)],
                     spacing: 12
                 ) {
                     ForEach(filteredStreams) { stream in
