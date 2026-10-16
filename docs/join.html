@@ -1,22 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join BruTV - Next-Generation IPTV Player</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="canonical" href="https://brunovolpato.com/brutv/join.html">
+  <title>Join BruTV · Next-Generation IPTV Player</title>
   <meta name="description" content="Open your subscription in BruTV or download the app for Apple TV, iOS, iPadOS, macOS, and Android.">
-  <meta property="og:title" content="Join BruTV - Next-Generation IPTV Player">
-  <meta property="og:description" content="Fast, buffer-free IPTV with native Siri Remote, Apple TV Top Shelf, and instant channel switching.">
+  <meta name="author" content="Bruno Volpato">
+  <meta name="robots" content="noindex,follow">
+  <meta name="apple-itunes-app" content="app-id=6754930353">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://brunovolpato.com/brutv/join.html">
+  <meta property="og:title" content="Join BruTV · Next-Generation IPTV Player">
+  <meta property="og:description" content="Fast, buffer-free IPTV with native Siri Remote, Apple TV Top Shelf, and instant channel switching.">
+  <meta property="og:image" content="https://brunovolpato.com/images/brutv/app-icon-social.png">
+  <meta property="og:image:alt" content="BruTV app icon">
+  <meta name="theme-color" content="#070D12">
+  <link rel="icon" type="image/png" href="/images/brutv/app-icon.png" sizes="180x180">
+  <link rel="apple-touch-icon" href="/images/brutv/app-icon.png" sizes="180x180">
   <style>
     :root {
-      --bg-start: #090D16;
-      --bg-end: #121A29;
-      --card-bg: rgba(22, 30, 46, 0.75);
+      --bg-start: #070D12;
+      --bg-end: #0D1820;
+      --card-bg: rgba(13, 24, 32, 0.85);
       --card-border: rgba(255, 255, 255, 0.12);
-      --accent: #06b6d4;
-      --accent-hover: #22d3ee;
-      --accent-glow: rgba(6, 182, 212, 0.35);
+      --accent: #55E2D1;
+      --accent-hover: #7eeddf;
+      --accent-glow: rgba(85, 226, 209, 0.25);
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -29,7 +39,7 @@
     }
 
     body {
-      background: radial-gradient(circle at 50% 20%, #1e293b 0%, var(--bg-start) 65%, #05070c 100%);
+      background: radial-gradient(circle at 50% 15%, #162a38 0%, var(--bg-start) 65%, #04080c 100%);
       color: var(--text-main);
       min-height: 100vh;
       display: flex;
@@ -37,19 +47,49 @@
       align-items: center;
       justify-content: center;
       padding: 24px;
+      position: relative;
+    }
+
+    .top-bar {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: all 0.2s;
+    }
+
+    .back-link:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
     }
 
     .lang-switcher {
-      position: absolute;
-      top: 20px;
-      right: 20px;
       display: flex;
-      gap: 8px;
+      gap: 6px;
     }
 
     .lang-btn {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       color: var(--text-muted);
       padding: 6px 12px;
       border-radius: 20px;
@@ -60,22 +100,24 @@
 
     .lang-btn.active, .lang-btn:hover {
       background: var(--accent);
-      color: #000;
+      color: #041017;
       border-color: var(--accent);
-      font-weight: 600;
+      font-weight: 700;
     }
 
     .container {
       width: 100%;
-      max-width: 520px;
+      max-width: 480px;
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 24px;
+      border-radius: 28px;
       padding: 36px 28px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px var(--accent-glow);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7), 0 0 50px var(--accent-glow);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
       text-align: center;
+      margin-top: 40px;
+      margin-bottom: 20px;
     }
 
     .logo-container {
@@ -84,14 +126,17 @@
       justify-content: center;
       width: 80px;
       height: 80px;
-      border-radius: 20px;
-      background: linear-gradient(135deg, #06b6d4 0%, #2563eb 100%);
+      border-radius: 22px;
       margin-bottom: 20px;
-      box-shadow: 0 10px 25px var(--accent-glow);
+      box-shadow: 0 10px 30px var(--accent-glow);
+      overflow: hidden;
     }
 
-    .logo-icon {
-      font-size: 40px;
+    .logo-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
 
     h1 {
@@ -103,16 +148,16 @@
 
     .subtitle {
       color: var(--text-muted);
-      font-size: 15px;
+      font-size: 14px;
       line-height: 1.5;
-      margin-bottom: 28px;
+      margin-bottom: 26px;
     }
 
     .action-group {
       display: flex;
       flex-direction: column;
-      gap: 14px;
-      margin-bottom: 24px;
+      gap: 12px;
+      margin-bottom: 20px;
     }
 
     .btn {
@@ -122,9 +167,9 @@
       gap: 10px;
       width: 100%;
       padding: 14px 20px;
-      border-radius: 14px;
-      font-size: 16px;
-      font-weight: 600;
+      border-radius: 16px;
+      font-size: 15px;
+      font-weight: 700;
       text-decoration: none;
       cursor: pointer;
       transition: all 0.2s ease;
@@ -132,37 +177,38 @@
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, var(--accent) 0%, #0284c7 100%);
+      background: linear-gradient(135deg, var(--accent) 0%, #0ea5e9 100%);
       color: #041017;
-      box-shadow: 0 6px 20px rgba(6, 182, 212, 0.4);
+      box-shadow: 0 6px 24px rgba(85, 226, 209, 0.35);
     }
 
     .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 10px 25px rgba(6, 182, 212, 0.6);
+      box-shadow: 0 10px 28px rgba(85, 226, 209, 0.55);
       color: #000;
     }
 
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.14);
       color: var(--text-main);
     }
 
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.14);
-      border-color: rgba(255, 255, 255, 0.3);
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.25);
     }
 
     .divider {
       display: flex;
       align-items: center;
       text-align: center;
-      margin: 20px 0;
+      margin: 18px 0;
       color: var(--text-muted);
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.2px;
+      font-weight: 600;
     }
 
     .divider::before, .divider::after {
@@ -180,11 +226,11 @@
     }
 
     .qr-card {
-      background: rgba(0, 0, 0, 0.4);
+      background: rgba(0, 0, 0, 0.45);
       border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
+      border-radius: 20px;
       padding: 20px;
-      margin-top: 20px;
+      margin-top: 16px;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -193,14 +239,18 @@
     .qr-container {
       background: #ffffff;
       padding: 12px;
-      border-radius: 12px;
+      border-radius: 14px;
       margin-bottom: 12px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
       display: flex;
       align-items: center;
       justify-content: center;
       min-width: 180px;
       min-height: 180px;
+    }
+
+    .qr-container svg, .qr-container img {
+      display: block;
     }
 
     .qr-caption {
@@ -212,10 +262,11 @@
     .platforms {
       display: flex;
       justify-content: center;
-      gap: 16px;
-      margin-top: 24px;
+      gap: 10px;
+      margin-top: 22px;
       color: var(--text-muted);
-      font-size: 13px;
+      font-size: 12px;
+      flex-wrap: wrap;
     }
 
     .platform-pill {
@@ -223,22 +274,23 @@
       align-items: center;
       gap: 6px;
       background: rgba(255, 255, 255, 0.05);
-      padding: 6px 12px;
-      border-radius: 16px;
+      padding: 5px 12px;
+      border-radius: 14px;
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     .security-note {
-      margin-top: 24px;
+      margin-top: 20px;
       font-size: 12px;
-      color: #f59e0b;
-      background: rgba(245, 158, 11, 0.1);
-      border: 1px solid rgba(245, 158, 11, 0.2);
-      border-radius: 12px;
+      line-height: 1.4;
+      color: #fbbf24;
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid rgba(251, 191, 36, 0.2);
+      border-radius: 14px;
       padding: 10px 14px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       text-align: left;
     }
 
@@ -246,15 +298,17 @@
       position: fixed;
       bottom: 24px;
       background: var(--accent);
-      color: #000;
-      padding: 10px 20px;
+      color: #041017;
+      padding: 10px 22px;
       border-radius: 30px;
-      font-weight: 600;
+      font-weight: 700;
       font-size: 14px;
       opacity: 0;
       transform: translateY(20px);
       transition: all 0.3s ease;
       pointer-events: none;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      z-index: 100;
     }
 
     .toast.visible {
@@ -264,14 +318,20 @@
   </style>
 </head>
 <body>
-  <div class="lang-switcher">
-    <button class="lang-btn" id="lang-en" onclick="setLanguage('en')">EN</button>
-    <button class="lang-btn" id="lang-pt" onclick="setLanguage('pt')">PT-BR</button>
+  <div class="top-bar">
+    <a href="/brutv/" class="back-link">
+      <span>←</span>
+      <span id="txt-back">Back to BruTV</span>
+    </a>
+    <div class="lang-switcher">
+      <button class="lang-btn" id="lang-en" onclick="setLanguage('en')">EN</button>
+      <button class="lang-btn" id="lang-pt" onclick="setLanguage('pt')">PT-BR</button>
+    </div>
   </div>
 
   <div class="container">
     <div class="logo-container">
-      <span class="logo-icon">📺</span>
+      <img src="/images/brutv/app-icon.png" alt="BruTV logo" width="180" height="180">
     </div>
 
     <h1 id="title">Join BruTV</h1>
@@ -301,7 +361,7 @@
       <p class="qr-caption" id="txt-qr-hint">Scan with camera on Apple TV, iPhone, iPad, or Android.</p>
     </div>
 
-    <div style="margin-top: 16px;">
+    <div style="margin-top: 14px;">
       <button class="btn btn-secondary" onclick="copySetupLink()">
         <span>📋</span>
         <span id="txt-copy">Copy Sign-In Link</span>
@@ -309,7 +369,7 @@
     </div>
 
     <div class="security-note">
-      <span>⚠️</span>
+      <span style="font-size: 16px;">⚠️</span>
       <span id="txt-security">This sign-in link includes your subscription access. Only share it with people and devices you trust.</span>
     </div>
 
@@ -322,11 +382,12 @@
 
   <div id="toast" class="toast">Link copied!</div>
 
-  <!-- QR Code Generator (Lightweight Vanilla JS) -->
+  <!-- Lightweight Vanilla QR Code Generator -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
   <script>
     const translations = {
       en: {
+        back: "Back to BruTV",
         title: "Join BruTV",
         subtitle: "The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.",
         openApp: "Open in BruTV App",
@@ -340,6 +401,7 @@
         security: "This sign-in link includes your subscription access. Only share it with people and devices you trust."
       },
       pt: {
+        back: "Voltar ao BruTV",
         title: "Entrar no BruTV",
         subtitle: "O melhor reprodutor IPTV para Apple TV, iPhone, iPad, Mac e Android.",
         openApp: "Abrir no App BruTV",
@@ -367,6 +429,7 @@
       document.getElementById("lang-pt").classList.toggle("active", lang === "pt");
 
       const t = translations[lang];
+      document.getElementById("txt-back").innerText = t.back;
       document.getElementById("title").innerText = t.title;
       document.getElementById("subtitle").innerText = t.subtitle;
       document.getElementById("txt-open-app").innerText = t.openApp;
@@ -396,7 +459,7 @@
       if (platform === "android") {
         icon.innerText = "🤖";
         txt.innerText = t.downloadAndroid;
-        btnDownload.href = "https://github.com/bvolpato/brutv/releases";
+        btnDownload.href = "/brutv/#downloads";
       } else if (platform === "mac") {
         icon.innerText = "💻";
         txt.innerText = t.downloadMac;
@@ -447,7 +510,6 @@
     }
 
     function copySetupLink() {
-      const deepLink = parseDeepLink();
       const currentUrl = window.location.href;
       navigator.clipboard.writeText(currentUrl).then(() => {
         showToast(translations[currentLang].copied);
@@ -475,9 +537,10 @@
 
       renderQRCode(deepLink);
 
-      // On mobile devices, attempt direct app launch if configured
+      // On mobile devices, attempt direct app launch if sign-in params present
+      const hasParams = window.location.search.length > 1 || window.location.hash.length > 1;
       const platform = detectPlatform();
-      if (platform === "ios" || platform === "android") {
+      if (hasParams && (platform === "ios" || platform === "android")) {
         setTimeout(() => {
           window.location.href = deepLink;
         }, 500);
