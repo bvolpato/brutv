@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  command -v uv >/dev/null 2>&1 || { echo "error: Linux releases require uv" >&2; exit 1; }
+  exec uv run "$SCRIPT_DIR/release-linux.py" "$@"
+fi
 BUILD_DIR="${IOS_RELEASE_DIR:-$SCRIPT_DIR/build/release}"
 SIGNING_DIR="$BUILD_DIR/signing"
 ARCHIVE_PATH="$BUILD_DIR/BruTV.xcarchive"
@@ -125,7 +128,7 @@ require_cmd /usr/libexec/PlistBuddy
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Xcode.app/Contents/Developer/usr/bin:$PATH"
 
 mkdir -p "$BUILD_DIR" "$SIGNING_DIR" "$EXPORT_PATH" "$PROFILE_DIR"
-rm -rf "$ARCHIVE_PATH" "$MAC_ARCHIVE_PATH" "$TVOS_ARCHIVE_PATH" "$EXPORT_PATH"/*
+rm -rf "$ARCHIVE_PATH" "$MAC_ARCHIVE_PATH" "$TVOS_ARCHIVE_PATH" "${EXPORT_PATH:?}"/*
 
 if [[ -n "${IOS_CERTIFICATE_BASE64:-}" ]]; then
   CERT_PATH="$SIGNING_DIR/ios_distribution.p12"
