@@ -18,7 +18,7 @@ The Apple Developer identifier is `com.bvolpato.brutv` under team `83BXSDT7QC`. 
 - Support and marketing: https://brunovolpato.com/brutv/
 - Privacy policy: https://brunovolpato.com/brutv/privacy/
 
-The public support and privacy pages are deployed. Full app compilation and tests, signed archives, real device screenshots, and upload still require a Mac. The portable Swift core suite also runs on Linux. Verify the Mac sandbox, outgoing network access, icon, and shared bundle identifier. The existing release script below exports iOS only; archive Mac Catalyst separately through Xcode Organizer. Reviewer contact and access details remain pending.
+The public support and privacy pages are deployed. On macOS, the release script builds iOS, Mac Catalyst, and tvOS through Xcode. On Linux, it dispatches to the xtool build, distribution signing, and App Store Connect API upload helpers described below. Apple simulators and screenshot capture still require macOS. The portable Swift core suite also runs on Linux. Verify the Mac sandbox, outgoing network access, icon, and shared bundle identifier. App Store Connect review information includes a public playlist test route and the Catalyst loopback server entitlement explanation in [the reviewer notes](STORE_LISTING.md#additional-macos-review-notes).
 
 Before submission, install a stable Xcode version that meets Apple's current SDK requirements. As of this decision date, uploads require Xcode 26 or later with the iOS / iPadOS 26 SDK: https://developer.apple.com/news/upcoming-requirements/?id=04282026a
 
@@ -34,9 +34,58 @@ Encrypted/DRM HLS, external audio/subtitle renditions, fragmented MP4 initializa
 
 On iPhone and iPad, paused capture is **not guaranteed when the app is backgrounded or the device is locked**. The operating system can suspend the app. Active background audio playback uses the existing audio mode. Capture resumes when the app becomes active; content missed during suspension cannot be recovered from an expired upstream window. Mac Catalyst can capture while its process remains active, excluding sleep or termination. The Catalyst-only entitlement file enables sandbox network client/server access for the loopback server; iOS uses its original entitlements.
 
-Before release, build on Xcode and run the controlled moving HLS fixture described in the repository README. Confirm on iPhone, iPad, and Mac Catalyst: pause for longer than the provider's playlist window; manually retry the player while delayed and verify the playhead stays on the same recorded content; verify saved bytes increase while the picture remains paused; resume and rewind into content already expired upstream; seek forward and use Go Live; run past the retention and storage caps; change channels and log out; background/lock and resume; reject unsupported streams without losing ordinary playback. Confirm the Catalyst network entitlements with the signed app. Portable Swift tests and syntax parsing do not validate AVPlayer or Network.framework runtime behavior.
+Before release, use a signed native build to run the controlled moving HLS fixture described in the repository README. Confirm on iPhone, iPad, and Mac Catalyst: pause for longer than the provider's playlist window; manually retry the player while delayed and verify the playhead stays on the same recorded content; verify saved bytes increase while the picture remains paused; resume and rewind into content already expired upstream; seek forward and use Go Live; run past the retention and storage caps; change channels and log out; background/lock and resume; reject unsupported streams without losing ordinary playback. Confirm the Catalyst network entitlements with the signed app. Compilation and portable Swift tests do not validate AVPlayer or Network.framework runtime behavior.
 
-## Prerequisites
+## Linux builds and delivery
+
+The Linux path uses the BruTV xtool fork's platform support. It builds the full app from the same Swift sources as the Xcode application target, checks source-list parity, and reads the bundle identifier and version from the Xcode Release settings. It compiles iOS/Catalyst icon assets with pinned AssetKit and creates a universal Catalyst executable. The default portable `Package.swift` behavior remains unchanged.
+
+The tested fork is [bvolpato/xtool at `df68ba5`](https://github.com/bvolpato/xtool/commit/df68ba5a5b290c57146b970534ce55dc5b9a7240), on `codex/linux-apple-platforms`. [Upstream PR #362](https://github.com/xtool-org/xtool/pull/362) contains the platform changes. Until they are merged, point `XTOOL_SOURCE_DIR` at that checkout rather than upstream `main`.
+
+**Release parity is not yet established.** On October 16, the complete Linux release command built iOS version 1.0.1 (16) and its matching dSYM with the real SDK 27.1, signed the IPA using the team's Apple Distribution identity and a BruTV App Store profile, and verified the package. Both Catalyst architectures also compiled and linked on Linux. Mac package signing and App Store Connect processing remain unverified. tvOS currently stops with an explicit error because AssetKit cannot compile `TVAppIcon.brandassets` layered icons. The default all-platform release stops at preflight rather than dropping tvOS or uploading a partial set.
+
+Install the Apple SDK from an Xcode archive downloaded through your Apple Developer account, then install signing tools privately in the ignored build directory:
+
+```bash
+export XTOOL_SOURCE_DIR=/path/to/the/brutv-xtool-fork
+./mobile/ios/BruTV/setup-linux.sh /path/to/Xcode.xip
+./mobile/ios/BruTV/setup-linux.sh --signing-tools
+./mobile/ios/BruTV/setup-linux.sh --catalyst-linker
+```
+
+The repository provides Docker-backed Swift 6.4 and xtool wrappers when native tools are unavailable. SDKs and caches stay in `mobile/ios/BruTV/build/linux-tools/`. `SWIFT_BINARY`, `XTOOL_BINARY`, and `XTOOL_SOURCE_DIR` select existing tools or a local fork checkout. Release builds require the fork's platform support and accurate SDK metadata. `BRUTV_BUILD_JOBS` limits toolchain concurrency (default 4). Release builds also produce `BruTV.app.dSYM` beside the unsigned app for crash symbolication.
+
+The Catalyst linker installer extracts only `lld` and its `ld64.lld` alias from the official LLVM 23.1.3 release after checking its pinned SHA-256. This includes [LLVM's fix for arm64e SDK reexports](https://github.com/llvm/llvm-project/pull/193065), which the current Apple SDK needs. The wrappers select the private linker automatically. `XTOOL_LD64_LLD` selects another executable; `BRUTV_LLVM_TOOLS_DIR` changes its installation directory. `BRUTV_LLVM_ARCHIVE` can reuse a downloaded official archive, with the same checksum check.
+
+```bash
+# Unsigned device apps, suitable for compilation checks.
+./mobile/ios/BruTV/build.sh ios
+./mobile/ios/BruTV/build.sh macos
+
+# Compile resources and stage sources without an Apple SDK.
+./mobile/ios/BruTV/linux-build.sh --platform ios --prepare-only
+
+# Validate credentials, tools, and all requested SDKs before building.
+./mobile/ios/BruTV/release.sh --platform ios --preflight --upload
+
+# Build, distribution-sign, and upload one explicitly selected platform.
+IOS_BUILD_NUMBER=16 ./mobile/ios/BruTV/release.sh --platform ios --upload
+```
+
+`release.sh` defaults to `--platform all` (iOS, Catalyst, tvOS). Select `ios` or `macos` explicitly for a subset. Linux never invokes a simulator; `--skip-simulator-build` is accepted for compatibility. Every requested package is built, signed, and checked before the first upload. If Apple rejects a later upload, previous uploads cannot be rolled back automatically. A successful upload requires the Build Upload API to complete and the linked build to become `VALID`. It does not submit the app for review or publish it.
+
+Distribution credentials are required independently of xtool's on-device development authentication:
+
+| Platform | Required configuration |
+| --- | --- |
+| iOS/iPadOS | `IOS_CERTIFICATE_PATH`, `IOS_P12_PASSWORD`, `IOS_PROVISIONING_PROFILE_PATH` |
+| tvOS | Shared distribution certificate plus `TVOS_PROVISIONING_PROFILE_PATH` and `TVOS_TOPSHELF_PROVISIONING_PROFILE_PATH`; both profiles must authorize `group.com.bvolpato.brutv` |
+| Mac Catalyst | `MACOS_APPLICATION_CERTIFICATE_PATH`, `MACOS_APPLICATION_P12_PASSWORD`, `MACOS_INSTALLER_CERTIFICATE_PATH`, `MACOS_INSTALLER_P12_PASSWORD`, `MACOS_PROVISIONING_PROFILE_PATH` |
+| App Store Connect upload | `IOS_ASC_KEY_ID`, `IOS_ASC_ISSUER_ID`, `IOS_ASC_PRIVATE_KEY_PATH` (unencrypted P-256 `.p8` key); `ASC_*` aliases are accepted |
+
+Certificate and provisioning profile variables also accept `_BASE64` in place of `_PATH`. Do not put passwords or key contents in command arguments. iOS/tvOS use the private zsign installation; Mac Catalyst uses rcodesign and genuine BOM/CPIO/XAR installer tools. The helpers verify distribution profiles, certificate trust, entitlements, executable signatures, sealed resources, and installer checksums. They preserve an existing output if signing fails. `upload-build.py --validate-only` validates package structure offline; cryptographic verification belongs to the signing helper.
+
+## macOS prerequisites
 
 - **macOS** with a stable **Xcode 26+** version and the required platform SDKs.
 - **Apple Developer Account** with access to Team ID `83BXSDT7QC` (Bruno Candido Volpato da Cunha).
@@ -83,7 +132,7 @@ Run the portable suite on Linux or macOS:
 
 This command uses local Swift when available, otherwise a pinned official Swift Docker image. Docker tests run without network access and use fixture responses. The package compiles the production source parser, Xtream client, source identity/library helpers, and playback policy. It excludes AVFoundation, Combine stores, and SwiftUI.
 
-The October 12 Android follow-up reproduced six source regressions against the original iOS source and fixed them. All 37 portable tests pass in debug and release configurations; every Apple Swift source and test file also passes syntax parsing. New Xcode tests cover cancelled or overlapping sign-ins, source-specific favorites and history, pausing during connection, native transport controls, and resuming a pending movie seek. Syntax parsing does not type-check Apple framework APIs. Those native tests, the full app build, Picture in Picture controls, VOD recovery, and real device playback remain unverified until run on a Mac.
+The October 12 Android follow-up reproduced six source regressions against the original iOS source and fixed them. All 37 portable tests passed in debug and release configurations; every Apple Swift source and test file also passed syntax parsing. New Xcode tests cover cancelled or overlapping sign-ins, source-specific favorites and history, pausing during connection, native transport controls, and resuming a pending movie seek. The October 16 Linux iOS Release build compiles all application sources against the actual Apple SDK. Native tests, Picture in Picture controls, VOD recovery, and real device playback still need runtime validation; simulator and Xcode UI tests require macOS.
 
 The Apple buffer preferences remain 1.5, 4, and 10 seconds. They request buffering ahead of the playhead through AVPlayer's [preferredForwardBufferDuration](https://developer.apple.com/documentation/avfoundation/avplayeritem/preferredforwardbufferduration). They do not force Android-style live-edge offsets.
 

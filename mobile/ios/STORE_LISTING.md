@@ -123,7 +123,7 @@ To test without an account, use a public, legal playlist of free-to-air channels
 1. Launch BruTV.
 2. Select "M3U Playlist".
 3. Enter: https://iptv-org.github.io/iptv/countries/br.m3u
-4. Tap "Load Playlist". About 400 channels load in a few seconds.
+4. Tap "Load Playlist" and wait for the channels to load.
 5. Tap any channel to play it. Use the "Channels" button, Close, Minimize, or swipe down to go back.
 
 QR code sign-in: Settings > Share Sign-In QR Code displays a sign-in QR code. Scanning the code with the Camera app opens a brutv://login link, and BruTV signs in automatically. Users can also tap the camera button on the login screen to scan a code directly in the app or choose a QR screenshot from Photos.
@@ -132,3 +132,25 @@ Some public channels can be offline at any time. If one does not play, try anoth
 
 The app does not track users, show ads, or collect data. Credentials and favorites stay on the device.
 ```
+
+### Additional macOS review notes
+
+Append this explanation to the macOS version's App Review Information > Notes. Also add `com.apple.security.network.server` under App Sandbox Information and describe the same loopback playback use. Keep the entitlement enabled: the sandboxed Catalyst app needs it for its local playback server.
+
+```
+macOS sandbox entitlements (Guideline 2.4.5):
+
+com.apple.security.network.server is required for an embedded, temporary HTTP server used by Pause & Rewind Live TV and the MPEG-TS-to-HLS playback relay. BruTV buffers live media locally and AVPlayer reads its HLS playlist and segments through this server. NWListener is explicitly bound to IPv4 loopback (127.0.0.1) on an ephemeral port, with a per-session token in the URL. It does not listen on the LAN or Internet. The server stops when playback closes or the channel changes. This is on-device playback functionality, not hosting for other devices.
+
+com.apple.security.network.client is used for outgoing requests to download the user-selected provider playlist and media streams, and for AVPlayer to read the local playback server.
+
+To exercise the local server without an account:
+1. Select M3U Playlist on the sign-in screen, enter https://iptv-org.github.io/iptv/countries/br.m3u, and click Load Playlist.
+2. Open Settings in the navigation rail. Under LIVE REWIND, enable Pause & Rewind Live TV (enabled by default).
+3. Select Live TV and play a live HLS channel, for example +MaisUm (720p), currently listed in that playlist. Allow initial buffering and let playback run for at least 30 seconds.
+4. In the player, use Rewind 10 seconds or the Live rewind position slider, then pause and resume. AVPlayer is reading the locally buffered media through the loopback HTTP server. The controls become available once enough media has accumulated.
+
+Public streams can change or go offline. If needed, try another live HLS channel. No credentials are needed for this review path.
+```
+
+The HLS rewind buffer supports unencrypted MPEG-TS segments. A channel with separate audio tracks, fragmented MP4 segments, encryption, or byte ranges can fall back to direct playback and will not demonstrate the local server. Verify the example channel's playlist before each submission. The example above was checked on 2026-10-16; its manifest contained live `.ts` segments without the unsupported tags.

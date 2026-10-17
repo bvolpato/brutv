@@ -20,17 +20,19 @@ mobile/ios/**/artifact/
 mobile/ios/BruTV/build/
 mobile/ios/BruTV/.build/
 mobile/ios/BruTV/.swiftpm/
+mobile/ios/BruTV/**/__pycache__/
 *.ipa
 *.dSYM.zip
 *.dSYM
 
 # Signing secrets (never commit certificates or profiles)
 *.p12
+*.p8
 *.cer
 *.mobileprovision
+*.provisionprofile
 *.keychain-db
-mobile/ios/**/signing/*.p12
-mobile/ios/**/signing/*.mobileprovision
+mobile/ios/**/signing/*
 !mobile/ios/**/signing/README.md
 
 # Review & temp logs

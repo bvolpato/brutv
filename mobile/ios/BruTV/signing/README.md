@@ -1,6 +1,6 @@
 # iOS Signing for BruTV
 
-Git does not track signing material. The `.gitignore` file excludes `*.p12` and `*.mobileprovision`.
+Git ignores this folder's signing material, including private keys, certificates, API keys, and provisioning profiles. Only this README is tracked.
 
 ## Bundle Identifier and Team
 - **Bundle ID:** `com.bvolpato.brutv` (override with `IOS_BUNDLE_ID`)
@@ -19,6 +19,14 @@ IOS_P12_PASSWORD='<p12-password>' ./mobile/ios/BruTV/release.sh --skip-simulator
 
 The script reads the profile name and the team ID from the profile. To override them, set `IOS_PROFILE_NAME` and `IOS_TEAM_ID`.
 
+On Linux, select iOS explicitly:
+
+```bash
+IOS_P12_PASSWORD='<p12-password>' ./mobile/ios/BruTV/release.sh --platform ios
+```
+
+The Linux helper discovers one `.p12` and one `.mobileprovision` in this folder. `IOS_CERTIFICATE_PATH` and `IOS_PROVISIONING_PROFILE_PATH` select files elsewhere. It verifies Apple's profile signature, team, certificate, entitlements, and the resulting IPA. It uses xtool and a private signing tool installation. The [release guide](../../RELEASE.md#linux-builds-and-delivery) covers SDK setup, Mac and tvOS signing, and API upload configuration.
+
 ## CI Release
 
 Provide the files as base64 values:
@@ -30,4 +38,4 @@ export IOS_P12_PASSWORD="<p12-password>"
 ./mobile/ios/BruTV/release.sh
 ```
 
-The script creates a temporary keychain, archives the Release configuration, exports an App Store IPA, and prints the `.ipa` path.
+On macOS, the script creates a temporary keychain and archives with Xcode. On Linux, add `--platform ios` to build and sign the IPA with xtool. Add `--upload` and the App Store Connect API key configuration from the release guide to deliver it and wait for processing.
