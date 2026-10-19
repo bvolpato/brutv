@@ -133,6 +133,26 @@ Some public channels can be offline at any time. If one does not play, try anoth
 The app does not track users, show ads, or collect data. Credentials and favorites stay on the device.
 ```
 
+### Additional tvOS review notes
+
+The tvOS app retains `UIBackgroundModes = [audio]` for Picture in Picture playback. Its custom player's `AVPlayer` is registered with an `MPNowPlayingSession`, which owns its remote commands and Now Playing metadata. The PiP button is visible beside Close in the player controls.
+
+Guideline 2.5.4 rejected tvOS 1.0.1 (15) because the reviewer could not hear background playback. Before resubmission, verify the replacement build on a physical Apple TV and record these steps:
+
+1. Load the public M3U playlist described above and start a channel with audible audio.
+2. Reveal the player controls and select Picture in Picture beside Close. Wait for the PiP window to appear.
+3. Navigate to the Apple TV Home Screen. Keep the PiP window visible and demonstrate that its audio continues.
+4. Return to BruTV through the PiP controls. Verify full-screen playback, pause/resume, and Close.
+5. Repeat with Pause & Rewind Live TV enabled, which exercises the local playback server.
+
+After the recording passes, upload the replacement tvOS build with a new build number for both the app and its Top Shelf extension. Add the recording to App Review Information and include the following note, with the recording's actual attachment or URL:
+
+```
+BruTV uses the audio background mode for Picture in Picture on Apple TV. Start an audible channel, reveal the player controls, and select Picture in Picture beside Close. Once the PiP window appears, navigate to the Home Screen. Video and audio continue in PiP. The attached recording demonstrates this flow on a physical Apple TV.
+```
+
+Do not submit this note until the physical-device recording demonstrates the behavior. Linux compilation and simulator checks do not establish persistent audio on an Apple TV.
+
 ### Additional macOS review notes
 
 Append this explanation to the macOS version's App Review Information > Notes. Also add `com.apple.security.network.server` under App Sandbox Information and describe the same loopback playback use. Keep the entitlement enabled: the sandboxed Catalyst app needs it for its local playback server.

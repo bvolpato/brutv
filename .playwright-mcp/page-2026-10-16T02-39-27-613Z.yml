@@ -1,0 +1,17 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - img "Challenge Loading" [ref=e5]
+    - generic [ref=e6]:
+      - heading "Hold tight" [level=1] [ref=e7]
+      - heading "We are establishing a secure connection." [level=2] [ref=e8]
+      - paragraph [ref=e10]: This website is using a security service to protect itself from online attacks. We are checking your browser to establish a secure connection and keep you safe.
+      - paragraph
+      - generic [ref=e11]: ...
+      - paragraph
+  - generic [ref=e12]:
+    - text: "Request ID:"
+    - strong [ref=e13]: afa9d6c0aad749cc74757d09d24dae2d
+    - paragraph [ref=e14]:
+      - text: Performance & security by
+      - link "bunny.net" [ref=e15] [cursor=pointer]:
+        - /url: https://bunny.net/
