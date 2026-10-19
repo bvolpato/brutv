@@ -450,7 +450,13 @@ public struct PlayerView: View {
                 .help((isFav ? "Remove favorite" : "Add favorite").localized)
                 .accessibilityIdentifier("playerFavoriteButton")
             }
+            #if os(tvOS)
+            if PictureInPictureModel.isSupported {
+                pipButton
+            }
+            #else
             minimizeButton
+            #endif
             closeButton
         }
         .padding(.horizontal, 16)

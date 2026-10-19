@@ -6,6 +6,11 @@ See [the Android guide](mobile/android/README.md) for builds, APK installation, 
 
 The separate [Vega OS starter](mobile/vega/README.md) has source and JavaScript validation. It still requires Amazon SDK packaging and device validation.
 
+The [PS5 homebrew port](mobile/ps5/README.md) is a native C++17/OpenGL application
+with FFmpeg playback, DualSense controls, and a Linux desktop preview. It builds
+as a ShadowMountPlus home-screen title. Physical PS5 playback validation is
+required before calling it console-ready.
+
 ## Live pause and rewind
 
 Supported HLS channels use a temporary recorder that keeps fetching completed video segments independently of the paused player. Rewind and forward move through the retained window; **Go Live** returns to the stream's normal live position and resumes playback. The recorder retains up to **10 minutes or 256 MiB**, whichever limit is reached first. High-bitrate channels can reach the storage limit sooner. The window is shown in the player, and an expired pause is explained rather than presented as a complete recording.

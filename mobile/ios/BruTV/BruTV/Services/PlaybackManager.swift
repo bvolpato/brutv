@@ -110,6 +110,10 @@ public final class PlaybackManager: ObservableObject {
     private var itemObservers: Set<AnyCancellable> = []
     private var accountObserver: AnyCancellable?
     private var nowPlayingObserver: AnyCancellable?
+    #if os(tvOS)
+    private lazy var nowPlayingSession = MPNowPlayingSession(players: [player])
+    private var nowPlayingActivationObserver: AnyCancellable?
+    #endif
     private var telemetryTimer: Timer?
     private var stallCount: Int = 0
     private var recovery = PlaybackRecoveryPolicy(maxAttempts: nil, maxDelay: 15.0)
@@ -157,7 +161,22 @@ public final class PlaybackManager: ObservableObject {
     /// Shows the channel or title on the Lock Screen and in Control Center, and
     /// handles the play, pause, and next or previous channel commands there.
     private func setupNowPlaying() {
+        #if os(tvOS)
+        let center = nowPlayingSession.remoteCommandCenter
+        let info = nowPlayingSession.nowPlayingInfoCenter
+        nowPlayingActivationObserver = Publishers.CombineLatest(
+            $isPlaybackRequested.removeDuplicates(),
+            nowPlayingSession.publisher(for: \.canBecomeActive, options: [.initial, .new]).removeDuplicates()
+        )
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] playing, canBecomeActive in
+                guard let self, playing, canBecomeActive, self.isPlaybackRequested else { return }
+                self.nowPlayingSession.becomeActiveIfPossible(completion: nil)
+            }
+        #else
         let center = MPRemoteCommandCenter.shared()
+        let info = MPNowPlayingInfoCenter.default()
+        #endif
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self, self.currentStream != nil || self.currentVOD != nil else { return .noActionableNowPlayingItem }
             self.togglePlayPause()
@@ -187,7 +206,6 @@ public final class PlaybackManager: ObservableObject {
         nowPlayingObserver = Publishers.CombineLatest3($currentStream, $currentVOD, $isPlaybackRequested)
             .receive(on: DispatchQueue.main)
             .sink { stream, vod, playing in
-                let info = MPNowPlayingInfoCenter.default()
                 guard let title = stream?.name ?? vod?.name else {
                     info.nowPlayingInfo = nil
                     info.playbackState = .stopped

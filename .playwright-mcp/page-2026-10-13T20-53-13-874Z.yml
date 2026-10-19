@@ -1,0 +1,194 @@
+- generic [active] [ref=f3e1]:
+  - link "Skip to content" [ref=f3e2] [cursor=pointer]:
+    - /url: "#main"
+  - generic [ref=f3e3]:
+    - banner [ref=f3e4]:
+      - link "BruTV home" [ref=f3e5] [cursor=pointer]:
+        - /url: /brutv/
+        - generic [ref=f3e9]: BruTV.
+      - navigation "Main navigation" [ref=f3e10]:
+        - link "Getting started" [ref=f3e11] [cursor=pointer]:
+          - /url: "#setup"
+        - link "Help" [ref=f3e12] [cursor=pointer]:
+          - /url: "#faq"
+        - link "Get BruTV" [ref=f3e13] [cursor=pointer]:
+          - /url: "#downloads"
+          - text: Get BruTV
+          - generic [aria-hidden] [ref=f3e14]: ↗
+    - main [ref=f3e15]:
+      - region [ref=f3e16]:
+        - generic [ref=f3e17]:
+          - paragraph [ref=f3e18]: A player for the TV you love
+          - heading "Your TV. A little simpler." [level=1] [ref=f3e20]: Your TV.A little simpler.
+          - paragraph [ref=f3e21]: Live channels, a favorite movie, one more episode. Bring your compatible IPTV playlist to BruTV and enjoy a clean player that feels at home on your phone, tablet, or TV.
+          - generic [ref=f3e22]:
+            - link "Find your download" [ref=f3e23] [cursor=pointer]:
+              - /url: "#downloads"
+              - text: Find your download
+              - generic [aria-hidden] [ref=f3e24]: ↓
+            - link "How to get started" [ref=f3e25] [cursor=pointer]:
+              - /url: "#setup"
+              - text: How to get started
+              - generic [aria-hidden] [ref=f3e26]: →
+          - list "BruTV essentials" [ref=f3e27]:
+            - listitem [ref=f3e28]:
+              - generic [aria-hidden] [ref=f3e29]: ✓
+              - text: No in-app ads
+            - listitem [ref=f3e30]:
+              - generic [aria-hidden] [ref=f3e31]: ✓
+              - text: No BruTV account
+            - listitem [ref=f3e32]:
+              - generic [aria-hidden] [ref=f3e33]: ✓
+              - text: Your own TV source
+        - figure "Real iPhone screenshots. Channels and artwork come from the source you add." [ref=f3e34]:
+          - generic [ref=f3e35]:
+            - generic [ref=f3e36]: Your channels. Your favorites.
+            - generic [ref=f3e37]: A LOOK INSIDE
+          - generic [ref=f3e38]:
+            - img "BruTV on iPhone, with channel search, category filters, and favorite buttons" [ref=f3e39]
+            - img "BruTV playing a live channel, with pause and channel controls" [ref=f3e40]
+      - complementary [ref=f3e42]:
+        - generic [ref=f3e43]: Bring your own playlist.
+        - paragraph [ref=f3e44]: BruTV is a player. It does not include channels, subscriptions, or a provider account. You will need a compatible M3U playlist or Xtream Codes login that you have permission to use.
+      - region [ref=f3e45]:
+        - generic [ref=f3e46]:
+          - generic [ref=f3e47]:
+            - paragraph [ref=f3e48]: Make yourself at home
+            - heading "From download to watching." [level=2] [ref=f3e49]
+          - paragraph [ref=f3e50]: Have your provider details handy. BruTV takes care of the browsing.
+        - list [ref=f3e51]:
+          - listitem [ref=f3e52]:
+            - generic [aria-hidden] [ref=f3e53]: "1"
+            - heading "Choose your device" [level=3] [ref=f3e54]
+            - paragraph [ref=f3e55]:
+              - text: Find the
+              - link "download below" [ref=f3e56] [cursor=pointer]:
+                - /url: "#downloads"
+              - text: for your phone, tablet, or TV. Apple beta access uses TestFlight; Android can install the APK directly.
+          - listitem [ref=f3e57]:
+            - generic [aria-hidden] [ref=f3e58]: "2"
+            - heading "Add your TV source" [level=3] [ref=f3e59]
+            - paragraph [ref=f3e60]: Paste an M3U playlist URL, or enter the server, username, and password for your Xtream Codes provider. Compatible sign-in QR codes work on iPhone and Android.
+          - listitem [ref=f3e61]:
+            - generic [aria-hidden] [ref=f3e62]: "3"
+            - heading "Pick something good" [level=3] [ref=f3e63]
+            - paragraph [ref=f3e64]: Browse categories, search for a channel, and save your favorites. Movies and series appear when your provider includes them.
+      - region [ref=f3e65]:
+        - generic [ref=f3e66]:
+          - generic [ref=f3e67]:
+            - paragraph [ref=f3e68]: Less searching. More watching.
+            - heading "Everything you need. Room to enjoy it." [level=2] [ref=f3e69]: Everything you need.Room to enjoy it.
+            - generic [ref=f3e70]:
+              - article [ref=f3e71]:
+                - generic [ref=f3e76]:
+                  - heading "Find your usual channel" [level=3] [ref=f3e77]
+                  - paragraph [ref=f3e78]: Search, categories, quality filters, and favorites keep your lineup easy to browse. Open the channel guide without leaving the player.
+              - article [ref=f3e79]:
+                - generic [ref=f3e83]:
+                  - heading "A player that fits your screen" [level=3] [ref=f3e84]
+                  - paragraph [ref=f3e85]: Native playback, touch controls on phones, and remote navigation on Android TV. Picture in Picture is available on supported Apple and Android devices.
+              - article [ref=f3e86]:
+                - generic [ref=f3e92]:
+                  - heading "Pause a moment. Catch up later." [level=3] [ref=f3e93]
+                  - paragraph [ref=f3e94]: Compatible live HLS channels can use a temporary local buffer for pause and rewind. Enable live recording in Playback settings where available, and use Go Live to return to the broadcast.
+              - article [ref=f3e95]:
+                - generic [ref=f3e100]:
+                  - heading "No ads in your way" [level=3] [ref=f3e101]
+                  - paragraph [ref=f3e102]:
+                    - text: BruTV has no advertising or analytics SDKs. Your source connects from your device to your provider.
+                    - link "Read the privacy details." [ref=f3e103] [cursor=pointer]:
+                      - /url: /brutv/privacy/
+          - figure [ref=f3e104]:
+            - img "BruTV on iPad, with the channel guide open beside a live broadcast" [ref=f3e105]
+            - generic [ref=f3e106]: Browse the next channel while the current one plays.Actual iPad screenshot.
+      - region [ref=f3e107]:
+        - generic [ref=f3e108]:
+          - paragraph [ref=f3e109]: Take BruTV with you
+          - heading "Find your device. Get comfortable." [level=2] [ref=f3e110]
+          - paragraph [ref=f3e111]: One place for downloads and platform availability. Store approval and beta access can take time; the options below reflect the current release path.
+        - generic [ref=f3e112]:
+          - article [ref=f3e113]:
+            - generic [ref=f3e114]:
+              - generic [ref=f3e115]: Direct download
+              - generic [ref=f3e116]: v1.0.1
+            - heading "Android & Fire TV" [level=3] [ref=f3e121]
+            - paragraph [ref=f3e122]: For Android phones, tablets, Android TV, Google TV, and Android-based Fire TV devices.
+            - link "Download BruTV Android APK version 1.0.1, build 4" [ref=f3e123] [cursor=pointer]:
+              - /url: /brutv/downloads/BruTV-android-1.0.1-4.apk
+              - text: Download Android APK
+              - generic [aria-hidden] [ref=f3e124]: ↓
+            - paragraph [ref=f3e125]: Version 1.0.1 · Build 4 · 4.3 MB
+            - generic [ref=f3e126]:
+              - paragraph [ref=f3e127]: Installing the APK
+              - paragraph [ref=f3e128]: Open the downloaded file and allow installation from your browser or file app when Android asks. On Fire TV, open this page in Downloader and download the APK.
+              - link "TV installation help →" [ref=f3e129] [cursor=pointer]:
+                - /url: "#fire-tv-help"
+            - paragraph [ref=f3e130]: Android 6.0 or later. Android-based Fire TV requires Fire OS 6 or later. Vega OS uses a separate app.
+          - article [ref=f3e131]:
+            - generic [ref=f3e132]: TestFlight beta
+            - heading "iPhone & iPad" [level=3] [ref=f3e137]
+            - paragraph [ref=f3e138]: A native Apple player with channel browsing, movies, series, and Picture in Picture.
+            - link "Open TestFlight" [ref=f3e139] [cursor=pointer]:
+              - /url: https://testflight.apple.com/join/6twEYnQy
+              - text: Open TestFlight
+              - generic [aria-hidden] [ref=f3e140]: ↗
+            - paragraph [ref=f3e141]: Beta availability depends on Apple review.
+            - generic [ref=f3e142]:
+              - paragraph [ref=f3e143]: Joining the beta
+              - paragraph [ref=f3e144]: Install Apple's TestFlight app, then open the invitation above on your iPhone or iPad. If the beta is unavailable, Apple review or tester capacity may still be pending.
+            - paragraph [ref=f3e145]: Requires iOS 17 or iPadOS 17 or later.
+          - article [ref=f3e146]:
+            - generic [ref=f3e147]: Amazon review pending
+            - heading "Amazon Vega OS" [level=3] [ref=f3e152]
+            - paragraph [ref=f3e153]: A separate BruTV app for Vega-based Fire TV devices, with a layout made for the remote.
+            - paragraph [ref=f3e154]: Awaiting Amazon Appstore approval
+            - paragraph [ref=f3e155]: A public store link will appear when available.
+            - generic [ref=f3e156]:
+              - paragraph [ref=f3e157]: Check your Fire TV operating system
+              - paragraph [ref=f3e158]: Vega OS devices cannot install Android APK files. If your device runs Fire OS 6 or later, use the Android download instead.
+            - paragraph [ref=f3e159]: Submitted to Amazon for review. Public availability is not yet confirmed.
+      - region [ref=f3e160]:
+        - generic [ref=f3e161]:
+          - paragraph [ref=f3e162]: A little help
+          - heading "Let's get you watching." [level=2] [ref=f3e163]
+          - paragraph [ref=f3e164]: A few answers for your first setup, your TV remote, or a stream that needs a hand.
+          - complementary [ref=f3e165]:
+            - heading "Need a hand?" [level=3] [ref=f3e166]
+            - paragraph [ref=f3e167]: Email your device model, BruTV version, and what happened. Please leave out passwords, sign-in QR codes, and private playlist URLs.
+            - link "Contact Bruno →" [ref=f3e168] [cursor=pointer]:
+              - /url: mailto:me@brunovolpato.com?subject=BruTV%20Support
+        - generic [ref=f3e169]:
+          - group [ref=f3e170]:
+            - generic "Does BruTV include TV channels?" [ref=f3e171] [cursor=pointer]
+            - paragraph [ref=f3e172]: You add your own compatible TV source. Ask your provider for an M3U playlist URL or Xtream Codes server, username, and password. BruTV does not sell subscriptions or supply channels.
+          - group [ref=f3e173]:
+            - generic "How do I install BruTV on Android TV or Fire TV?" [ref=f3e174] [cursor=pointer]
+          - group [ref=f3e175]:
+            - generic "Can I use my phone to sign in on the TV?" [ref=f3e176] [cursor=pointer]
+          - group [ref=f3e177]:
+            - generic "Why can I rewind some live channels, but not others?" [ref=f3e178] [cursor=pointer]
+          - group [ref=f3e179]:
+            - generic "A channel is buffering or will not play. What can I try?" [ref=f3e180] [cursor=pointer]
+          - group [ref=f3e181]:
+            - generic "Where do my sign-in details go?" [ref=f3e182] [cursor=pointer]
+      - region [ref=f3e183]:
+        - generic [ref=f3e184]:
+          - heading "Your next favorite show is waiting." [level=2] [ref=f3e185]
+          - paragraph [ref=f3e186]: Bring your playlist. Make yourself comfortable.
+        - link "Get BruTV" [ref=f3e187] [cursor=pointer]:
+          - /url: "#downloads"
+          - text: Get BruTV
+          - generic [aria-hidden] [ref=f3e188]: ↑
+    - contentinfo [ref=f3e189]:
+      - paragraph [ref=f3e190]:
+        - text: BruTV. Made by
+        - link "Bruno Volpato" [ref=f3e191] [cursor=pointer]:
+          - /url: /
+        - text: .
+      - navigation "Footer navigation" [ref=f3e192]:
+        - link "Privacy policy" [ref=f3e193] [cursor=pointer]:
+          - /url: /brutv/privacy/
+        - link "Support" [ref=f3e194] [cursor=pointer]:
+          - /url: mailto:me@brunovolpato.com?subject=BruTV%20Support
+        - link "brunovolpato.com" [ref=f3e195] [cursor=pointer]:
+          - /url: /

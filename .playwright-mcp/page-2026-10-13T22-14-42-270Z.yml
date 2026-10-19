@@ -1,0 +1,72 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - link "BruTV home" [ref=e4] [cursor=pointer]:
+      - /url: /brutv/
+      - generic [ref=e5]:
+        - generic [ref=e6]: BruTV
+        - generic [ref=e7]: Player
+    - link "← Back to BruTV" [ref=e8] [cursor=pointer]:
+      - /url: /brutv/
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - paragraph [ref=e11]: BruTV · Privacy
+      - heading "How BruTV handles your data." [level=1] [ref=e12]
+      - paragraph [ref=e13]: BruTV uses the TV sources you add to sign in, browse, and play streams. Provider details are kept in local storage or memory and sent in requests to your chosen provider. Playback, artwork, and metadata can also involve other services. This policy explains those connections and the differences between platforms.
+      - paragraph [ref=e14]: Last updated October 13, 2026
+    - generic [ref=e15]:
+      - generic [ref=e16]:
+        - heading "Information saved on your device" [level=2] [ref=e17]
+        - paragraph [ref=e18]: "BruTV keeps source details and preferences on your device. The current apps handle them as follows:"
+        - list [ref=e19]:
+          - listitem [ref=e20]:
+            - strong [ref=e21]: "Android:"
+            - text: Saved profiles, credentials, favorites, recent channels, settings, and playback positions are encrypted using Android Keystore and excluded from backup. Imported M3U files are copied into private app storage and excluded from backup; those file copies do not have additional app-level encryption.
+          - listitem [ref=e22]:
+            - strong [ref=e23]: "iPhone, iPad, and Mac:"
+            - text: Saved profiles and credentials use local app preferences storage (UserDefaults). BruTV does not apply a separate encryption layer to those saved profile values.
+          - listitem [ref=e24]:
+            - strong [ref=e25]: "Amazon Vega:"
+            - text: Provider sign-in details, favorites, and recent channels remain in memory for the current session. Ending the app process clears that session state.
+        - paragraph [ref=e26]: Apps can also cache channel logos, artwork, and catalog information. BruTV does not operate a backend for syncing your profiles or viewing history.
+      - generic [ref=e27]:
+        - heading "Provider, media, and artwork requests" [level=2] [ref=e28]
+        - paragraph [ref=e29]: When you add a source, BruTV uses the server address, username, password, or playlist URL you supply to make the required sign-in, catalog, and playback requests. Requests go directly from your device to your chosen provider and the hosts used by that source. Provider responses and playlists can direct BruTV to video delivery networks, channel-logo hosts, artwork hosts, or metadata services.
+        - paragraph [ref=e30]: These services can receive your IP address, request time, and requested URLs. Some provider and stream URLs include credentials. BruTV does not operate a proxy or logging backend, and we do not know how each provider or host logs requests, retains information, or links it to your account. Their own privacy terms govern their handling of those requests.
+      - generic [ref=e31]:
+        - heading "HTTP connections" [level=2] [ref=e32]
+        - paragraph [ref=e33]: BruTV accepts HTTP as well as HTTPS sources. HTTP traffic is unencrypted, so credentials, playlist URLs, and media requests sent over HTTP can be visible to someone who can observe that connection. Use HTTPS URLs when your provider supports them. Local storage protection does not encrypt an HTTP connection.
+      - generic [ref=e34]:
+        - heading "Sign-in links, QR codes, and TV pairing" [level=2] [ref=e35]
+        - paragraph [ref=e36]: Shared sign-in links and QR codes contain source details, including provider credentials, in readable form. Anyone who receives the link or code may be able to use that source. Share them only with people you trust, and keep them out of public screenshots and support messages.
+        - paragraph [ref=e37]: Android's Pair with phone feature transfers source details to the TV over your local network using an encrypted pairing exchange. The pairing receiver runs only while pairing is open, accepts one transfer, and expires after three minutes. This pairing exchange is separate from a shared sign-in QR code.
+      - generic [ref=e38]:
+        - heading "Temporary playback files" [level=2] [ref=e39]
+        - paragraph [ref=e40]: Supported streams can use a bounded, temporary video buffer on your device for pause and rewind. BruTV removes the buffer when playback closes or you change channels, and cleans stale session files the next time the app starts. The buffer is not uploaded to the app developer or kept as a recording library. Where a local playback server is used, it listens only on your device and serves the temporary buffer to the player.
+      - generic [ref=e41]:
+        - heading "Advertising and playback statistics" [level=2] [ref=e42]
+        - paragraph [ref=e43]: BruTV has no in-app advertising and does not integrate an advertising network or a standalone analytics SDK. Android and Apple playback statistics, such as buffer duration, bitrate, and stalls, are measured locally for the player. BruTV does not send those local statistics to a developer-operated backend.
+        - paragraph [ref=e44]:
+          - text: The Amazon Vega player uses Amazon's platform media services, including its media metrics service.
+          - link "Amazon's media-player documentation" [ref=e45] [cursor=pointer]:
+            - /url: https://developer.amazon.com/docs/vega/0.21/media-player-setup
+          - text: describes that service as enabling playback analytics and monitoring. We have not verified the exact fields, retention period, or whether those metrics are linked to an Amazon account. Amazon handles its platform services under its privacy terms and your device privacy settings.
+      - generic [ref=e46]:
+        - heading "Removing your local data" [level=2] [ref=e47]
+        - paragraph [ref=e48]: Remove saved profiles in BruTV where available, clear app data through your device settings, or uninstall the app. On Android, removing an imported-file profile also deletes its private playlist copy. Ending the Vega app process clears its in-memory sign-in state. On Mac, deleting BruTV can leave preferences and caches; contact support for help removing them. Device or operating-system backups follow their own settings.
+        - paragraph [ref=e49]: Removing local app data does not remove records held by your provider, media hosts, or Amazon's platform services. Refer to those services for their data-removal options.
+      - generic [ref=e50]:
+        - heading "Contact" [level=2] [ref=e51]
+        - paragraph [ref=e52]:
+          - text: For questions about this policy or BruTV's privacy practices, email
+          - link "me@brunovolpato.com" [ref=e53] [cursor=pointer]:
+            - /url: mailto:me@brunovolpato.com?subject=BruTV%20Privacy
+          - text: . Please do not include provider passwords, private playlist URLs, or sign-in QR codes in your message.
+    - complementary [ref=e54]:
+      - paragraph [ref=e55]: This policy covers the BruTV app. The brunovolpato.com website is a separate service with its own data practices.
+  - contentinfo [ref=e56]:
+    - paragraph [ref=e57]: BruTV by Bruno Volpato
+    - navigation "Footer links" [ref=e58]:
+      - link "BruTV App" [ref=e59] [cursor=pointer]:
+        - /url: /brutv/
+      - link "brunovolpato.com" [ref=e60] [cursor=pointer]:
+        - /url: /

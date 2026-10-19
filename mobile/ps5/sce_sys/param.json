@@ -1,0 +1,24 @@
+{
+  "ageLevel": { "default": 13 },
+  "applicationCategoryType": 65536,
+  "applicationDrmType": "free",
+  "attribute": 1644167168,
+  "attribute2": 0,
+  "attribute3": 1048576,
+  "conceptId": "99241",
+  "contentBadgeType": 2,
+  "contentId": "IV0000-PPSA99241_00-BRUTVPS5APP00001",
+  "contentVersion": "01.000.000",
+  "downloadDataSize": 256,
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": { "titleName": "BruTV" },
+    "pt-BR": { "titleName": "BruTV" }
+  },
+  "masterVersion": "01.00",
+  "pubtools": { "creationDate": "2026-10-17 00:00:00", "toolVersion": "2.00" },
+  "requiredSystemSoftwareVersion": "0x0000000000000000",
+  "sdkVersion": "0x0000000000000000",
+  "titleId": "PPSA99241",
+  "versionFileUri": ""
+}

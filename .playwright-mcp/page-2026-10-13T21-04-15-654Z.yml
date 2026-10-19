@@ -1,0 +1,48 @@
+- generic [ref=f8e2]:
+  - banner [ref=f8e3]:
+    - link "BruTV Support home" [ref=f8e4] [cursor=pointer]:
+      - /url: /brutv/
+      - generic [ref=f8e8]: BruTV
+    - link "Support" [ref=f8e9] [cursor=pointer]:
+      - /url: /brutv/
+  - main [ref=f8e10]:
+    - generic [ref=f8e11]:
+      - paragraph [ref=f8e12]: BruTV · Privacy
+      - heading "How BruTV handles your data." [level=1] [ref=f8e13]
+      - paragraph [ref=f8e14]: BruTV stores provider sign-in information and viewing preferences on your device and sends requests to the provider you choose. Storage details depend on the platform. This policy describes the BruTV app on its supported platforms.
+      - paragraph [ref=f8e15]: Last updated October 12, 2026
+    - generic [ref=f8e16]:
+      - generic [ref=f8e17]:
+        - heading "Information saved on your device" [level=2] [ref=f8e18]
+        - paragraph [ref=f8e19]: BruTV saves the provider connection details and credentials you enter, along with preferences such as favorites and viewing history. This information stays in the app's private storage or memory on your device. The storage method depends on the platform, and BruTV does not sync this information to a server operated by the app developer. On the current Amazon Vega build, provider sign-in details remain in memory for the app session and are not saved on the TV.
+      - generic [ref=f8e20]:
+        - heading "Connections to your provider" [level=2] [ref=f8e21]
+        - paragraph [ref=f8e22]: When you sign in, browse, or play a stream, BruTV sends the information needed for that request, including your provider credentials, directly to the provider server you configured. Your provider receives ordinary network information, such as your IP address. BruTV does not operate a proxy, intermediate gateway, or logging server. The provider's own privacy policy governs its use of information it receives.
+      - generic [ref=f8e23]:
+        - heading "Artwork and media services" [level=2] [ref=f8e24]
+        - paragraph [ref=f8e25]: Channel logos and poster artwork may be requested from remote image hosts. Those hosts can receive ordinary request metadata, such as your IP address and the time of the request, under their own privacy practices.
+      - generic [ref=f8e26]:
+        - heading "Temporary playback files" [level=2] [ref=f8e27]
+        - paragraph [ref=f8e28]: Supported streams can use a bounded, temporary video buffer on your device for pause and rewind. BruTV removes the buffer when playback closes or you change channels, and cleans stale session files the next time the app starts. The buffer is not uploaded to the app developer or kept as a recording library. Where a local playback server is used, it listens only on your device and serves the temporary buffer to the player.
+      - generic [ref=f8e29]:
+        - heading "Analytics and advertising" [level=2] [ref=f8e30]
+        - paragraph [ref=f8e31]: BruTV does not include third-party analytics, advertising SDKs, tracking frameworks, or diagnostic telemetry collectors.
+      - generic [ref=f8e32]:
+        - heading "Removing your local data" [level=2] [ref=f8e33]
+        - paragraph [ref=f8e34]: Clear BruTV's data through your device's app settings where available, or uninstall the app. On Mac, deleting BruTV can leave preferences and caches; contact support for help removing remaining local data. Your provider may separately retain sign-in or viewing request records under its own policy.
+      - generic [ref=f8e35]:
+        - heading "Contact" [level=2] [ref=f8e36]
+        - paragraph [ref=f8e37]:
+          - text: For questions about this policy or BruTV's privacy practices, email
+          - link "me@brunovolpato.com" [ref=f8e38] [cursor=pointer]:
+            - /url: mailto:me@brunovolpato.com?subject=BruTV%20Privacy
+          - text: . Please do not include provider passwords or playlist URLs in your message.
+    - complementary [ref=f8e39]:
+      - paragraph [ref=f8e40]: This policy covers the BruTV app. The brunovolpato.com website is a separate service with its own data practices.
+  - contentinfo [ref=f8e41]:
+    - paragraph [ref=f8e42]: BruTV by Bruno Volpato
+    - navigation "Footer links" [ref=f8e43]:
+      - link "Support" [ref=f8e44] [cursor=pointer]:
+        - /url: /brutv/
+      - link "brunovolpato.com" [ref=f8e45] [cursor=pointer]:
+        - /url: /
