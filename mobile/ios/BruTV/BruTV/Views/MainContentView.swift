@@ -394,9 +394,15 @@ public struct MainContentView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            Text("\("Live".localized) • \(playback.telemetry.bufferDurationFormatted) \("buffered".localized)")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.cyan)
+                            if playback.settings.showStatsHUD {
+                                Text("\("Live".localized) • \(playback.telemetry.bufferDurationFormatted) \("buffered".localized)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.cyan)
+                            } else {
+                                Text("Live TV".localized)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.cyan.opacity(0.85))
+                            }
                         }
                     } else if let vod = playback.currentVOD {
                         miniPlayerThumbnail {

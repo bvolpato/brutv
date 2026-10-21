@@ -171,6 +171,9 @@ public final class LocalizationManager: ObservableObject {
         // MARK: - Live TV View
         "All Channels": "Todos os Canais",
         "ALL CHANNELS": "TODOS OS CANAIS",
+        "Select a Category": "Escolha uma Categoria",
+        "Search categories...": "Buscar categorias...",
+        "Back to Categories": "Voltar às Categorias",
         "Search channels...": "Buscar canais...",
         "Clear search": "Limpar busca",
         "Removes the channel search text.": "Remove o texto de busca de canais.",
