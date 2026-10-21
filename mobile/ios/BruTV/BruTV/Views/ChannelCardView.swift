@@ -30,19 +30,19 @@ public struct ChannelCardView: View {
                     ZStack {
                         RoundedRectangle(cornerRadius: 10)
                             .fill(Color(white: 0.12))
-                            .frame(width: 58, height: 58)
+                            .frame(width: 46, height: 46)
 
                         CachedAsyncImage(url: stream.iconURL) {
                             ZStack {
                                 Circle()
                                     .fill(Color.cyan.opacity(0.15))
-                                    .frame(width: 36, height: 36)
+                                    .frame(width: 30, height: 30)
                                 Image(systemName: "tv")
-                                    .font(.system(size: 18))
+                                    .font(.system(size: 16))
                                     .foregroundColor(.cyan)
                             }
                         }
-                        .frame(width: 48, height: 48)
+                        .frame(width: 38, height: 38)
                     }
 
                     // Channel Info
@@ -73,18 +73,14 @@ public struct ChannelCardView: View {
                                 )
                         }
 
-                        HStack(spacing: 5) {
-                            if isSelected {
+                        if isSelected {
+                            HStack(spacing: 5) {
                                 Image(systemName: "waveform")
                                     .font(.system(size: 11, weight: .bold))
                                     .foregroundColor(.cyan)
                                 Text("Playing now".localized)
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(.cyan)
-                            } else {
-                                Text("Live Broadcast".localized)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.gray)
                             }
                         }
                     }

@@ -605,6 +605,7 @@ public struct PlayerView: View {
                 InteractiveTimelineScrubber(
                     value: isScrubbing ? scrubTime : playback.vodCurrentTime,
                     range: 0...max(1.0, playback.vodDuration),
+                    bufferedValue: playback.vodCurrentTime + playback.telemetry.bufferDuration,
                     onSeek: { targetTime in
                         isScrubbing = false
                         playback.seek(to: targetTime)
@@ -732,7 +733,9 @@ public struct PlayerView: View {
                 }
             }
 
-            compactBufferIndicator
+            if playback.settings.showStatsHUD {
+                compactBufferIndicator
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -1046,83 +1049,58 @@ public struct PlayerView: View {
         let seekStart = isSeekable ? playback.liveSeekStart : 0.0
         let seekEnd = isSeekable ? max(playback.liveSeekStart + 0.1, playback.liveSeekEnd) : 1.0
         let playhead = isSeekable ? playback.livePlayhead : 1.0
+        let diff = seekEnd - playhead
 
-        return VStack(spacing: 6) {
-            InteractiveTimelineScrubber(
-                value: playhead,
-                range: seekStart...seekEnd,
-                onSeek: { targetTime in
-                    guard isSeekable else { return }
-                    playback.seekLive(to: targetTime)
-                    scheduleControlsAutoHide()
-                },
-                onScrubbingChanged: { scrubbing, _ in
-                    if scrubbing {
-                        controlsTimer?.invalidate()
-                    }
-                },
-                formatTime: { targetTime in
-                    let diff = seekEnd - targetTime
-                    if !isSeekable || diff < 2.0 {
-                        return "LIVE".localized
-                    } else {
-                        return "-" + formatTime(diff)
-                    }
-                }
-            )
-            .disabled(!isSeekable)
-            .opacity(isSeekable ? 1.0 : 0.45)
-            .accessibilityLabel("Live rewind position".localized)
-            .accessibilityIdentifier("playerLiveSeekSlider")
+        return VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                // Time behind live
+                Text(diff < 2.0 || !isSeekable ? "LIVE".localized : "-" + formatTime(diff))
+                    .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundColor(diff < 2.0 || !isSeekable ? .green : .cyan)
+                    .frame(minWidth: 44, alignment: .leading)
 
-            HStack(spacing: 8) {
-                Button {
-                    playback.seekLive(by: -10)
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: "gobackward.10")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
+                InteractiveTimelineScrubber(
+                    value: playhead,
+                    range: seekStart...seekEnd,
+                    bufferedValue: playhead + playback.telemetry.bufferDuration,
+                    onSeek: { targetTime in
+                        guard isSeekable else { return }
+                        playback.seekLive(to: targetTime)
+                        scheduleControlsAutoHide()
+                    },
+                    onScrubbingChanged: { scrubbing, _ in
+                        if scrubbing {
+                            controlsTimer?.invalidate()
+                        }
+                    },
+                    formatTime: { targetTime in
+                        let targetDiff = seekEnd - targetTime
+                        if !isSeekable || targetDiff < 2.0 {
+                            return "LIVE".localized
+                        } else {
+                            return "-" + formatTime(targetDiff)
+                        }
+                    }
+                )
                 .disabled(!isSeekable)
                 .opacity(isSeekable ? 1.0 : 0.45)
-                .accessibilityLabel("Rewind 10 seconds".localized)
-
-                Button {
-                    playback.seekLive(by: 10)
-                    scheduleControlsAutoHide()
-                } label: {
-                    Image(systemName: "goforward.10")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 30))
-                .disabled(!isSeekable)
-                .opacity(isSeekable ? 1.0 : 0.45)
-                .accessibilityLabel("Forward 10 seconds".localized)
-
-                if playback.isRecoveringLiveBuffer {
-                    Text("Buffering rewind…".localized)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.cyan.opacity(0.85))
-                        .lineLimit(1)
-                }
-
-                Spacer()
+                .accessibilityLabel("Live rewind position".localized)
+                .accessibilityIdentifier("playerLiveSeekSlider")
 
                 if playback.shouldShowGoLive {
                     Button {
                         playback.goLive()
                         scheduleControlsAutoHide()
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 3) {
                             Circle().fill(Color.red).frame(width: 5, height: 5)
                             Text("GO LIVE".localized)
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.system(size: 9, weight: .heavy))
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
                     }
-                    .buttonStyle(MediaControlButtonStyle(isActive: true, size: 28))
+                    .buttonStyle(MediaControlButtonStyle(isActive: true, size: 26))
                     .accessibilityIdentifier("playerGoLiveButton")
                 } else {
                     HStack(spacing: 4) {
@@ -1131,6 +1109,40 @@ public struct PlayerView: View {
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.green)
                     }
+                    .frame(minWidth: 44, alignment: .trailing)
+                }
+            }
+
+            if isSeekable {
+                HStack(spacing: 8) {
+                    Button {
+                        playback.seekLive(by: -10)
+                        scheduleControlsAutoHide()
+                    } label: {
+                        Image(systemName: "gobackward.10")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 28))
+                    .accessibilityLabel("Rewind 10 seconds".localized)
+
+                    Button {
+                        playback.seekLive(by: 10)
+                        scheduleControlsAutoHide()
+                    } label: {
+                        Image(systemName: "goforward.10")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 28))
+                    .accessibilityLabel("Forward 10 seconds".localized)
+
+                    if playback.isRecoveringLiveBuffer {
+                        Text("Buffering rewind…".localized)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.cyan.opacity(0.85))
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
                 }
             }
         }
