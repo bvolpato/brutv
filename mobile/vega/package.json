@@ -34,7 +34,7 @@
     "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "metro-react-native-babel-preset": "0.77.0",
-    "typescript": "7.0.2"
+    "typescript": "5.9.3"
   },
   "kepler": {
     "projectType": "application",
