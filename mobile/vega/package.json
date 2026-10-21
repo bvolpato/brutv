@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=18 <23"
+    "node": ">=20.17.0 <23",
+    "npm": ">=11.10.0"
   },
   "scripts": {
     "test": "tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js",
