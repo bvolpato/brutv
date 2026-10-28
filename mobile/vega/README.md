@@ -26,7 +26,7 @@ SDK 0.23.9221 produces validated armv7 and x86_64 VPKGs for version 1.0.0, build
 
 ## Local source checks
 
-Use Node 18 or 20 for the documented SDK track, Java 21+, Python 3 and Git. Node 22 was used for the source checks above. The shell helper uses upstream Shaka's own Python build, which manages its build dependencies. It builds in a new temporary checkout and writes only ignored generated artifacts inside this project.
+Use Node 22 and npm 11.21 or later, Java 21+, Python 3 and Git. Older npm releases can fail when the seven-day dependency age policy reaches a Git dependency in Shaka's build tools. The shell helper uses upstream Shaka's own Python build, which manages its build dependencies. It builds in a new temporary checkout and writes only ignored generated artifacts inside this project.
 
 ```sh
 cd mobile/vega
@@ -34,9 +34,11 @@ npm ci --ignore-scripts
 npm test
 npm run setup:shaka
 npm run typecheck
+mkdir -p build/ci
+npm run bundle -- --platform kepler --entry-file index.js --dev false --bundle-output build/ci/index.bundle --assets-dest build/ci/assets --max-workers 2
 ```
 
-`setup:shaka` is an explicit step. It does not install the Vega SDK. Its generated `src/media/shaka/` directory is required before TypeScript checking or Metro/native builds; it is reproducible from the checked-in source archive and upstream tag.
+`setup:shaka` is an explicit step. It compiles the release player library and TypeScript declarations without building the unused upstream UI, demos, or debug variants. It does not install the Vega SDK. Its generated `src/media/shaka/` directory is required before TypeScript checking or Metro/native builds; it is reproducible from the checked-in source archive and upstream tag. Tests, bundling, and native build scripts run `setup:metro` to adapt the locked Metro 0.76 installations to image-size 2. Direct React Native CLI use after a clean install requires `npm run setup:metro` first.
 
 ## Native build and run
 
@@ -76,13 +78,13 @@ SDK 0.24 introduces an OS 1.2 minimum/target manifest declaration and an early-a
 
 Run a native build and emulator smoke test, then test real hardware before distribution. Verify remote navigation across long catalogs, input/keyboard behavior, media keys, pause/seek/live behavior, app suspend/resume, decoder release, subtitle/audio tracks, network drops, adaptive rendition switching and low-memory behavior. Add platform media-controls integration and confirmed secure credential storage before promising parity with the finished Android/iOS apps. Measure startup-to-first-frame, rebuffers, JS-frame latency and memory on the actual stick.
 
-The SDK 0.23 / RN 0.72 dependency security gate remains open. After the scoped codegen override, `npm audit --omit=dev` reports 37 findings: 26 high and 11 moderate, with no critical findings. That command audits the entire declared production dependency tree, which includes code-generation and CLI tools; it does not identify only code emitted into the app.
+The dependency hardening retains SDK 0.23, React Native 0.72, and React 18.2. W3C Media 2.2.21 removes the obsolete code-generation dependencies, as described in [Amazon's security fix](https://www.developer.amazon.com/docs/vega/0.22/vega-release-notes). It requires the `IW3cmedia_2` system interface on Vega OS 1.1 build 4459 or later. The package set still needs native packaging and physical-device playback validation before distribution; earlier native candidate results do not validate these dependency changes.
 
-The removed critical chain ran through `@amazon-devices/react-native-w3cmedia@2.1.99` and `react-native-tscodegen-types@0.66.0` into an obsolete nested React Native 0.60.6 and CLI tree. A scoped npm override now resolves that codegen helper to the app's existing React Native 0.72.0. Source checks and native packaging pass with the override; the media runtime package remains unchanged.
+The CLI is aligned to the compatible 11.4.1 release, removing its vulnerable `ip` dependency. Locked overrides select patched `fast-xml-parser`, `image-size`, `lodash`, and `toml` releases. The Metro compatibility patch adapts the image-size named export and converts file-path inputs to buffers. It fails if a different Metro version needs review. Tests read the real app icon through every locked Metro installation.
 
-The final split JavaScript source map contains none of the eight direct advisory leaf packages in the remaining audit. The VPKG contains JavaScript/Hermes bundles, resources, and metadata, with no embedded ELF libraries. SDK stability analysis reports no unstable or unresolved libraries. These are dependency-layout checks; they do not audit system-distributed native binaries, exercise exploitability, establish playback correctness, or approve release.
+On October 28, 2026, both the full dependency audit and `npm audit --omit=dev` report no critical, high, or moderate findings. Six low-severity package entries propagate one unpatched [deepmerge advisory, GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4), through React Native's CLI configuration dependencies. No alert is suppressed. A compatible upstream fix remains required.
 
-The source uses maintained `@xmldom/xmldom` instead of the old sample's deprecated `xmldom` parser, with no audit entry for the maintained parser. Before release, address the build-chain advisories, inspect the final VPKG/native dependencies, and evaluate the official SDK 0.24 / RN 0.83 migration with its OS 1.2 device restriction. A newer track is the recommended follow-up, but its security result must be measured rather than assumed. `npm audit fix --force` would cross platform compatibility boundaries and was not applied.
+The npm audit covers the declared dependency tree, including CLI and build tools. It does not establish which code ships in a VPKG or whether a particular stream can exploit it. Regenerate and inspect the final VPKG and native dependencies before release. A future SDK 0.24 / RN 0.83 migration also needs its matching dependency/template set and OS 1.2 validation; `npm audit fix --force` is not a substitute for that migration.
 
 For Appstore distribution, follow [Amazon's Vega submission guide](https://developer.amazon.com/docs/vega/0.23/app-submission.html). Set increasing package version/build numbers, inspect them with `vega exec vpt info <path-to-vpkg> --json`, supply app icon/screenshots/support/privacy details, and complete certification. Amazon requires testing on a physical Fire TV Stick before submission. Open the [Appstore App List](https://developer.amazon.com/apps-and-games/console/apps/list.html#/) for submissions. The general CMS root returned `User not authorized`, but the Appstore-specific route is accessible. Account identity verification is cleared. Amazon confirms that the armv7 build 3 submission is Under Review, with descriptions, genuine emulator screenshots, privacy disclosures, and transparent review instructions. Physical-device video and audio validation remain unverified. The Live App Testing form prohibits personal-information collection; provider authentication is disclosed, so that beta draft remains unsubmitted. Amazon approval and public availability have not been confirmed.
 

@@ -4,20 +4,22 @@
   "private": true,
   "engines": {
     "node": ">=20.17.0 <23",
-    "npm": ">=11.10.0"
+    "npm": ">=11.21.0"
   },
   "scripts": {
-    "test": "tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js",
+    "test": "npm run setup:metro && tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js test/tooling.test.cjs",
     "typecheck": "tsc --noEmit",
     "setup:shaka": "bash scripts/build-shaka.sh",
-    "build:debug": "react-native build-kepler --build-type Debug",
-    "build:release": "react-native build-kepler --build-type Release",
+    "setup:metro": "node scripts/patch-metro.cjs",
+    "bundle": "npm run setup:metro && react-native bundle",
+    "build:debug": "npm run setup:metro && react-native build-kepler --build-type Debug",
+    "build:release": "npm run setup:metro && react-native build-kepler --build-type Release",
     "build:app": "npm run build:release && npm run build:debug"
   },
   "dependencies": {
     "@amazon-devices/kepler-file-system": "0.0.4",
     "@amazon-devices/react-native-kepler": "2.0.9000000000",
-    "@amazon-devices/react-native-w3cmedia": "2.1.99",
+    "@amazon-devices/react-native-w3cmedia": "2.2.21",
     "@babel/runtime": "7.29.10",
     "@xmldom/xmldom": "0.9.12",
     "base-64": "1.0.0",
@@ -29,7 +31,7 @@
     "@amazon-devices/kepler-cli-platform": "0.22.14",
     "@babel/core": "7.29.7",
     "@babel/plugin-transform-react-jsx": "7.29.7",
-    "@react-native-community/cli": "11.3.2",
+    "@react-native-community/cli": "11.4.1",
     "@react-native/metro-config": "0.72.6",
     "@types/node": "18.19.130",
     "@types/react": "18.2.75",
@@ -48,10 +50,10 @@
     "api": 0.1
   },
   "overrides": {
-    "@amazon-devices/react-native-w3cmedia": {
-      "react-native-tscodegen-types": {
-        "react-native": "$react-native"
-      }
-    }
+    "@react-native-community/cli": "$@react-native-community/cli",
+    "fast-xml-parser": "5.7.0",
+    "image-size": "2.0.3",
+    "lodash": "4.18.1",
+    "toml": "5.0.1"
   }
 }
