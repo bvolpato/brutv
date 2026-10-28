@@ -151,7 +151,7 @@ jobs:
           npm test
           npm run typecheck
       - name: Build production Vega JavaScript bundle
-        run: npx --no-install react-native bundle --entry-file index.js --platform kepler --dev false --bundle-output "$RUNNER_TEMP/brutv-vega.bundle" --assets-dest "$RUNNER_TEMP/brutv-vega-assets"
+        run: npm run bundle -- --entry-file index.js --platform kepler --dev false --bundle-output "$RUNNER_TEMP/brutv-vega.bundle" --assets-dest "$RUNNER_TEMP/brutv-vega-assets" --max-workers 2
       - name: Check high severity dependency advisories
         run: npm audit --audit-level=high
 

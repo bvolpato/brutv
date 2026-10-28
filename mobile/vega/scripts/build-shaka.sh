@@ -19,7 +19,7 @@ if [ "$(git rev-parse HEAD)" != 9ef114308b71e304327540f138de36f46f4a8f39 ]; then
   exit 1
 fi
 for patch in "$task_build"/shaka-rel/shaka-patch/*.patch; do git apply "$patch"; done
-python3 build/all.py
+python3 build/build.py --name compiled --mode release +@complete -@ui
 mkdir -p "$task_root/src/media/shaka"
 cp dist/shaka-player.compiled.js "$task_root/src/media/shaka/"
 cp dist/shaka-player.compiled.d.ts "$task_root/src/media/shaka/"
