@@ -1,0 +1,178 @@
+name: BruTV CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-core:
+    name: Swift core tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run portable Swift tests
+        run: ./test.sh --core
+
+  apple:
+    name: Apple builds and unit tests
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode 26
+        run: |
+          xcode_app=$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' | sort -V | tail -n 1)
+          if [[ -z "$xcode_app" ]]; then
+            echo "error: Xcode 26 is not installed on this runner" >&2
+            exit 1
+          fi
+          sudo xcode-select --switch "$xcode_app/Contents/Developer"
+          xcodebuild -version
+      - name: Run iOS unit tests
+        run: |
+          simulator_id=$(xcrun simctl list devices available --json | jq -r '[.devices[][] | select(.name | startswith("iPhone "))][0].udid // empty')
+          if [[ -z "$simulator_id" ]]; then
+            echo "error: no available iPhone simulator is installed" >&2
+            exit 1
+          fi
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/BruTV.xcresult" \
+            -only-testing BruTVTests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Build tvOS simulator app
+        run: |
+          xcodebuild build \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV-tvOS \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/tvos-derived-data" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Build Mac Catalyst app
+        run: |
+          xcodebuild build \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/catalyst-derived-data" \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Upload iOS test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-unit-test-results
+          path: ${{ runner.temp }}/BruTV.xcresult
+          retention-days: 7
+          if-no-files-found: ignore
+
+  android:
+    name: Android tests, lint, and APK builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            mobile/android/**/*.gradle*
+            mobile/android/gradle/wrapper/gradle-wrapper.properties
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          accept-android-sdk-licenses: true
+          packages: ''
+      - name: Install Android API 37 and platform tools
+        run: sdkmanager --install 'platform-tools' 'platforms;android-37.0'
+      - name: Run Android tests and lint
+        run: ./mobile/android/test.sh --no-daemon --max-workers=2 --console=plain
+      - name: Build debug and preview APKs
+        run: ./mobile/android/gradlew --no-daemon --max-workers=2 --console=plain -p mobile/android :app:assembleDebug :app:assemblePreview
+      - name: Upload APKs and Gradle reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apks-and-reports
+          path: |
+            mobile/android/app/build/outputs/apk/debug/*.apk
+            mobile/android/app/build/outputs/apk/preview/*.apk
+            mobile/android/app/build/reports/**
+            mobile/android/app/build/test-results/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+  vega:
+    name: Vega source tests and production bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: mobile/vega
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/vega/package-lock.json
+      - name: Verify preinstalled Python 3.12
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+      - name: Install pinned npm and lockfile dependencies
+        run: |
+          npm install --global npm@11.21.0
+          npm ci --ignore-scripts
+      - name: Build pinned Amazon-patched Shaka
+        run: npm run setup:shaka
+      - name: Test and typecheck Vega sources
+        run: |
+          npm test
+          npm run typecheck
+      - name: Build production Vega JavaScript bundle
+        run: npm run bundle -- --entry-file index.js --platform kepler --dev false --bundle-output "$RUNNER_TEMP/brutv-vega.bundle" --assets-dest "$RUNNER_TEMP/brutv-vega-assets" --max-workers 2
+      - name: Check high severity dependency advisories
+        run: npm audit --audit-level=high
+
+  ps5-desktop:
+    name: PS5 desktop build and media tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake ninja-build pkg-config \
+            libsdl2-dev libgl-dev libavformat-dev libavcodec-dev libavutil-dev \
+            libswscale-dev libswresample-dev libcurl4-openssl-dev \
+            nlohmann-json3-dev ffmpeg xvfb
+      - name: Build and test desktop player
+        run: ./mobile/ps5/test.sh

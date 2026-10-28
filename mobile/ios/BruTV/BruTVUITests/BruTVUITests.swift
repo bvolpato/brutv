@@ -354,11 +354,31 @@ final class BruTVUITests: XCTestCase {
                                       bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (0, 0) }
         context.draw(part, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let lumas = (0..<(width * height)).map { index -> Double in
-            0.299 * Double(pixels[index * 4]) + 0.587 * Double(pixels[index * 4 + 1]) + 0.114 * Double(pixels[index * 4 + 2])
+        let pixelCount = width * height
+        var lumas = [Double]()
+        lumas.reserveCapacity(pixelCount)
+        for pixelIndex in 0..<pixelCount {
+            let offset = pixelIndex * 4
+            let red = Double(pixels[offset])
+            let green = Double(pixels[offset + 1])
+            let blue = Double(pixels[offset + 2])
+            let luma = 0.299 * red + 0.587 * green + 0.114 * blue
+            lumas.append(luma)
         }
-        let mean = lumas.reduce(0, +) / Double(lumas.count)
-        let spread = (lumas.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(lumas.count)).squareRoot()
+
+        let sampleCount = Double(lumas.count)
+        var lumaSum = 0.0
+        for luma in lumas {
+            lumaSum += luma
+        }
+        let mean = lumaSum / sampleCount
+        var squaredDeviationSum = 0.0
+        for luma in lumas {
+            let difference = luma - mean
+            squaredDeviationSum += difference * difference
+        }
+        let variance = squaredDeviationSum / sampleCount
+        let spread = variance.squareRoot()
         return (mean, spread)
     }
 
