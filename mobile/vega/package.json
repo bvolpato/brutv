@@ -4,7 +4,7 @@
   "private": true,
   "engines": {
     "node": ">=20.17.0 <23",
-    "npm": ">=11.10.0"
+    "npm": ">=11.21.0"
   },
   "scripts": {
     "test": "npm run setup:metro && tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js test/tooling.test.cjs",

@@ -103,7 +103,7 @@ jobs:
           accept-android-sdk-licenses: true
           packages: ''
       - name: Install Android API 37 and platform tools
-        run: sdkmanager --install 'platform-tools' 'platforms;android-37'
+        run: sdkmanager --install 'platform-tools' 'platforms;android-37.0'
       - name: Run Android tests and lint
         run: ./mobile/android/test.sh --no-daemon --max-workers=2 --console=plain
       - name: Build debug and preview APKs
@@ -142,7 +142,7 @@ jobs:
           python-version: '3.12'
       - name: Install pinned npm and lockfile dependencies
         run: |
-          npm install --global npm@11.10.0
+          npm install --global npm@11.21.0
           npm ci --ignore-scripts
       - name: Build pinned Amazon-patched Shaka
         run: npm run setup:shaka

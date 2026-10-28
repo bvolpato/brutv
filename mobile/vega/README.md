@@ -26,7 +26,7 @@ SDK 0.23.9221 produces validated armv7 and x86_64 VPKGs for version 1.0.0, build
 
 ## Local source checks
 
-Use Node 22 and npm 11.10 or later, Java 21+, Python 3 and Git. The shell helper uses upstream Shaka's own Python build, which manages its build dependencies. It builds in a new temporary checkout and writes only ignored generated artifacts inside this project.
+Use Node 22 and npm 11.21 or later, Java 21+, Python 3 and Git. Older npm releases can fail when the seven-day dependency age policy reaches a Git dependency in Shaka's build tools. The shell helper uses upstream Shaka's own Python build, which manages its build dependencies. It builds in a new temporary checkout and writes only ignored generated artifacts inside this project.
 
 ```sh
 cd mobile/vega
