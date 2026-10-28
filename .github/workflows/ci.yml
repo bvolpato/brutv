@@ -56,6 +56,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/BruTV.xcresult" \
             -only-testing BruTVTests \
+            -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Build tvOS simulator app
         run: |
