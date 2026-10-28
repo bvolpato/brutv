@@ -34,6 +34,7 @@ npm ci --ignore-scripts
 npm test
 npm run setup:shaka
 npm run typecheck
+mkdir -p build/ci
 npm run bundle -- --platform kepler --entry-file index.js --dev false --bundle-output build/ci/index.bundle --assets-dest build/ci/assets --max-workers 2
 ```
 
