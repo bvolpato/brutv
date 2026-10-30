@@ -9,6 +9,7 @@ public struct LiveTVView: View {
     @State private var selectedCategoryID: String = "ALL"
     @State private var streams: [LiveStream] = []
     @State private var searchText: String = ""
+    @FocusState private var isChannelSearchFocused: Bool
     @State private var categorySearchText: String = ""
     @State private var selectedQuality: StreamQuality = .all
     @State private var showFavoritesOnly: Bool = false
@@ -438,6 +439,7 @@ public struct LiveTVView: View {
                     TextField("Search channels...".localized, text: $searchText)
                         .textFieldStyle(.plain)
                         .foregroundColor(.white)
+                        .focused($isChannelSearchFocused)
                         .accessibilityIdentifier("channelSearchField")
                     if !searchText.isEmpty {
                         Button {
@@ -586,6 +588,7 @@ public struct LiveTVView: View {
                             stream: stream,
                             isSelected: playback.currentStream?.id == stream.id
                         ) {
+                            isChannelSearchFocused = false
                             playback.play(stream: stream, from: filteredStreams)
                         }
                     }

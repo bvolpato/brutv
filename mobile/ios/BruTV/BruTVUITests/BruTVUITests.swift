@@ -215,7 +215,10 @@ final class BruTVUITests: XCTestCase {
         field.typeText("https://ui-fixture.example.test/channels.m3u")
         app.buttons["connectButton"].tap()
 
-        let category = app.buttons["General"]
+        navigate(app, to: "Live TV")
+        let category = app.buttons.matching(
+            NSPredicate(format: "identifier == %@ OR label == %@", "categoryItem_General", "General")
+        ).firstMatch
         XCTAssertTrue(category.waitForExistence(timeout: 5), "Playlist groups not shown")
         category.tap()
         let card = firstChannel(app)
@@ -333,12 +336,17 @@ final class BruTVUITests: XCTestCase {
         firstChannel(app).tap()
         revealControls(app)
         app.buttons["playerMinimizeButton"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "Opening a channel must dismiss the search keyboard")
 
         defer { XCUIDevice.shared.orientation = .portrait }
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             XCUIDevice.shared.orientation = orientation
             let mini = app.buttons["miniPlayer"]
-            XCTAssertTrue(mini.waitForExistence(timeout: 5) && mini.isHittable)
+            let reachable = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == true AND hittable == true"),
+                object: mini
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [reachable], timeout: 5), .completed, "Mini player is not reachable after rotation")
             XCTAssertEqual(search.value as? String, "Fixture One", "Resizing discarded the channel filter")
             XCTAssertEqual(app.buttons.matching(identifier: "channelCard").count, 1)
         }
