@@ -48,6 +48,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Select Xcode 27.1
+        id: xcode
         run: |
           xcode_app=/Applications/Xcode_27.1.app
           if [[ ! -d "$xcode_app" ]]; then
@@ -92,6 +93,7 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Run adaptive iPhone UI tests
+        if: ${{ !cancelled() && steps.simulators.outcome == 'success' }}
         run: |
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
@@ -103,6 +105,7 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Run adaptive iPad UI tests
+        if: ${{ !cancelled() && steps.simulators.outcome == 'success' }}
         run: |
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
@@ -114,6 +117,7 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Run iPhone Duo UI tests
+        if: ${{ !cancelled() && steps.simulators.outcome == 'success' }}
         run: |
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
@@ -125,6 +129,7 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Build tvOS simulator app
+        if: ${{ !cancelled() && steps.xcode.outcome == 'success' }}
         run: |
           xcodebuild build \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
@@ -133,6 +138,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/tvos-derived-data" \
             CODE_SIGNING_ALLOWED=NO
       - name: Build Mac Catalyst app
+        if: ${{ !cancelled() && steps.xcode.outcome == 'success' }}
         run: |
           xcodebuild build \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
