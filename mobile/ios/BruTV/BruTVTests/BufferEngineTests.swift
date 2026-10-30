@@ -138,8 +138,8 @@ final class BufferEngineTests: XCTestCase {
         manager.play(stream: LiveStream(id: 99994, name: "Local audio", directURLString: url.absoluteString))
         manager.prepareAndPlay(url: url, resumePosition: 3)
         manager.togglePlayPause()
-        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
-        XCTAssertTrue(ready)
+        let ready = try await waitUntil(timeout: 15) { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready, "Item did not become ready: status=\(String(describing: manager.player.currentItem?.status)), error=\(String(describing: manager.player.currentItem?.error))")
         manager.togglePlayPause()
         manager.player.pause()
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -157,8 +157,8 @@ final class BufferEngineTests: XCTestCase {
         manager.play(stream: LiveStream(id: 99995, name: "Local audio", directURLString: url.absoluteString))
         manager.prepareAndPlay(url: url, resumePosition: 3)
         manager.togglePlayPause()
-        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
-        XCTAssertTrue(ready)
+        let ready = try await waitUntil(timeout: 15) { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready, "Item did not become ready: status=\(String(describing: manager.player.currentItem?.status)), error=\(String(describing: manager.player.currentItem?.error))")
         XCTAssertFalse(manager.isPlaybackRequested)
         XCTAssertEqual(manager.playbackState, .paused)
 
@@ -175,8 +175,8 @@ final class BufferEngineTests: XCTestCase {
     }
 
     @MainActor
-    private func waitUntil(_ condition: () -> Bool) async throws -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while !condition(), ProcessInfo.processInfo.systemUptime < deadline {
             try await Task.sleep(nanoseconds: 20_000_000)
         }
