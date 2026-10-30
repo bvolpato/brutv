@@ -32,11 +32,16 @@ public:
         }
         queued_ += seconds;
         totalFrames_ += frames;
+        std::size_t crossings = 0;
         for (std::size_t index = 0; index < frames * 2; ++index) {
             if (samples[index] != 0) {
                 ++nonzeroSamples_;
             }
         }
+        for (std::size_t index = 2; index < frames * 2; index += 2) {
+            if ((samples[index] >= 0) != (samples[index - 2] >= 0)) ++crossings;
+        }
+        if (frames > 100) frequency_ = crossings * 48000.0 / (2.0 * frames);
         return true;
     }
 
@@ -68,6 +73,11 @@ public:
         return nonzeroSamples_;
     }
 
+    double frequency() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return frequency_;
+    }
+
 private:
     void update() const {
         const auto now = Clock::now();
@@ -83,6 +93,7 @@ private:
     bool paused_ = false;
     std::size_t totalFrames_ = 0;
     std::size_t nonzeroSamples_ = 0;
+    double frequency_ = 0;
 };
 
 template <typename Predicate>
@@ -193,10 +204,116 @@ void controls(const std::string& path) {
             "Playback diagnostics exposed credentials.");
 }
 
+void tracks(const std::string& path) {
+    auto sink = std::make_shared<CountingSink>();
+    brutv::Player player(sink);
+    player.open(path, false);
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.currentSeconds > 0.15;
+    }, std::chrono::seconds(4));
+    const auto initial = player.status();
+    require(initial.audioTracks.size() == 2, "Both audio tracks were not discovered.");
+    require(initial.subtitleTracks.size() == 1, "The text subtitle track was not discovered.");
+    player.cycleAudioTrack();
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.audioTrack != initial.audioTrack && sink->frequency() > 700;
+    }, std::chrono::seconds(3));
+    player.cycleSubtitleTrack();
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.subtitleText.find("Caption regression") != std::string::npos;
+    }, std::chrono::seconds(3));
+    player.cycleSubtitleTrack();
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.subtitleTrack == -1 && status.subtitleText.empty();
+    }, std::chrono::seconds(3));
+    player.stop();
+}
+
+void liveRewind(const std::string& url) {
+    brutv::Player player(std::make_shared<CountingSink>());
+    player.open(url, true);
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.liveRewind && status.currentSeconds > 0.15;
+    }, std::chrono::seconds(8));
+    player.setPaused(true);
+    const auto paused = player.status();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    const auto recording = player.status();
+    require(std::abs(recording.currentSeconds - paused.currentSeconds) < 0.01,
+        "Live pause did not freeze playback.");
+    require(recording.recordedBytes > paused.recordedBytes &&
+        recording.windowEndSeconds > paused.windowEndSeconds + 0.5,
+        "Live recording did not continue while playback was paused.");
+    player.seekRelative(0.8);
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.currentSeconds > paused.currentSeconds + 0.6 &&
+            status.state == brutv::Player::State::Paused;
+    }, std::chrono::seconds(3));
+    player.seekRelative(-0.7);
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.currentSeconds < paused.currentSeconds + 0.3;
+    }, std::chrono::seconds(3));
+    player.goLive();
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.state == brutv::Player::State::Playing &&
+            status.windowEndSeconds - status.currentSeconds < 1.5;
+    }, std::chrono::seconds(3));
+    player.stop();
+    require(player.status().recordedBytes == 0 && !player.status().liveRewind,
+        "Stopping did not release the live recording.");
+}
+
+void liveDirectFallback(const std::string& url) {
+    brutv::Player player(std::make_shared<CountingSink>());
+    player.open(url, true);
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.currentSeconds > 0.2 && status.state == brutv::Player::State::Playing;
+    }, std::chrono::seconds(8));
+    const auto status = player.status();
+    require(!status.liveRewind && status.recordedBytes == 0,
+        "Unavailable temporary storage incorrectly advertised live rewind.");
+    require(status.rewindMessage.find("Continuing with direct playback") != std::string::npos,
+        "Unavailable live storage was not explained to the viewer.");
+    player.stop();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
+    if (argc == 3 && (std::string(argv[1]) == "--live" || std::string(argv[1]) == "--live-direct")) {
+        try {
+            if (std::string(argv[1]) == "--live") {
+                liveRewind(argv[2]);
+                std::cout << "Live recording during pause, rewind and Go Live passed.\n";
+            } else {
+                liveDirectFallback(argv[2]);
+                std::cout << "Unavailable live storage falls back to direct playback.\n";
+            }
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
+    if (argc < 2 || argc > 3) {
         std::cerr << "Usage: brutv_player_test <two-second video+audio fixture path or URL>\n";
         return 2;
     }
@@ -204,6 +321,7 @@ int main(int argc, char** argv) {
         decodeFixture(argv[1], true);
         decodeFixture(argv[1], false);
         controls(argv[1]);
+        if (argc == 3) tracks(argv[2]);
         std::cout << "Media decode, audio resampling, timing, controls and lifecycle passed.\n";
         return 0;
     } catch (const std::exception& error) {

@@ -84,16 +84,10 @@ public struct MainContentView: View {
             }
         #else
         ZStack(alignment: .bottom) {
-            // Adaptive iPad Split View vs iPhone Tab View
-            if horizontalSizeClass == .regular {
-                ipadLayout
-            } else {
-                iphoneLayout
-            }
+            adaptiveLayout
 
-            // Floating Mini-Player bar when a stream is playing and not fullscreen
-            if playback.currentStream != nil || playback.currentVOD != nil {
-                if !isPlayerFullScreen {
+            if #unavailable(iOS 26.1) {
+                if showsMiniPlayer {
                     miniPlayerBar
                         .padding(.bottom, horizontalSizeClass == .regular ? 16 : 56)
                         .padding(.horizontal, 16)
@@ -121,6 +115,29 @@ public struct MainContentView: View {
         }
         #endif
     }
+
+    private var showsMiniPlayer: Bool {
+        !isPlayerFullScreen && (playback.currentStream != nil || playback.currentVOD != nil)
+    }
+
+    #if !os(tvOS)
+    @ViewBuilder
+    private var adaptiveLayout: some View {
+        if #available(iOS 26.1, *) {
+            iphoneLayout
+                .tabViewStyle(.sidebarAdaptable)
+                .tabBarMinimizeBehavior(.never)
+                .tabViewBottomAccessory(isEnabled: showsMiniPlayer) {
+                    miniPlayerBar
+                }
+        } else if #available(iOS 18.0, *) {
+            iphoneLayout
+                .tabViewStyle(.sidebarAdaptable)
+        } else {
+            ipadLayout
+        }
+    }
+    #endif
 
     #if os(tvOS)
     private var tvosLayout: some View {
@@ -261,15 +278,16 @@ public struct MainContentView: View {
                     .padding(.vertical, 12)
                 }
             }
-            .frame(width: 88)
+            .frame(width: horizontalSizeClass == .regular ? 88 : 0)
+            .clipped()
+            .accessibilityHidden(horizontalSizeClass != .regular)
             .background(Color(hex: "#0e1422"))
 
             Divider()
+                .opacity(horizontalSizeClass == .regular ? 1 : 0)
 
-            NavigationStack {
-                detailView(for: selectedSection ?? .home)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            iphoneLayout
+                .toolbar(horizontalSizeClass == .regular ? .hidden : .visible, for: .tabBar)
         }
     }
 
@@ -325,24 +343,6 @@ public struct MainContentView: View {
             .tag(NavigationSection.settings)
         }
         .tint(.cyan)
-    }
-
-    @ViewBuilder
-    private func detailView(for section: NavigationSection) -> some View {
-        switch section {
-        case .home:
-            HomeView(onNavigate: { selectedSection = $0 })
-        case .liveTV:
-            LiveTVView()
-        case .movies:
-            VODView()
-        case .series:
-            SeriesView()
-        case .favorites:
-            FavoritesView(onNavigate: { selectedSection = $0 })
-        case .settings:
-            SettingsView()
-        }
     }
 
     /// A 16:9 live picture of what is playing. The placeholder (channel logo) shows
@@ -445,7 +445,7 @@ public struct MainContentView: View {
             .accessibilityHint("Opens the full screen player".localized)
             .accessibilityIdentifier("miniPlayer")
 
-            if playback.currentStream != nil && playback.activePlaylist.count > 1 {
+            if horizontalSizeClass == .regular && playback.currentStream != nil && playback.activePlaylist.count > 1 {
                 Button {
                     playback.previousChannel()
                 } label: {
@@ -468,7 +468,7 @@ public struct MainContentView: View {
             .help((playback.isPlaybackRequested ? "Pause playback" : "Resume playback").localized)
             .accessibilityIdentifier("miniPlayerPlayPause")
 
-            if playback.currentStream != nil && playback.activePlaylist.count > 1 {
+            if horizontalSizeClass == .regular && playback.currentStream != nil && playback.activePlaylist.count > 1 {
                 Button {
                     playback.nextChannel()
                 } label: {

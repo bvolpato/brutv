@@ -63,6 +63,26 @@ const CategoryTVButton = memo(function CategoryTVButton({
   );
 });
 
+const ContentTVButton = memo(function ContentTVButton({item, onPress}: {item: ContentItem; onPress: () => void}) {
+  const [focused, setFocused] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  return <TouchableOpacity
+    accessibilityRole="button"
+    accessibilityLabel={item.group ? `${item.name}, ${item.group}` : item.name}
+    onFocus={() => setFocused(true)}
+    onBlur={() => setFocused(false)}
+    onPress={onPress}
+    activeOpacity={1}
+    style={[styles.contentCard, focused && styles.contentCardFocused]}
+  >
+    {item.logo && !imageFailed
+      ? <Image source={{uri: item.logo}} style={styles.contentArtwork} resizeMode="cover" onError={() => setImageFailed(true)} />
+      : <View style={styles.contentArtworkFallback}><Text style={styles.contentArtworkIcon}>▶</Text></View>}
+    <Text numberOfLines={2} style={styles.contentTitle}>{item.name}</Text>
+    {!!item.group && <Text numberOfLines={1} style={styles.contentGroup}>{item.group}</Text>}
+  </TouchableOpacity>;
+});
+
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
   const splashOpacity = useRef(new Animated.Value(1)).current;
@@ -222,7 +242,7 @@ export default function App() {
     setPlayer(item);
   };
 
-  if (player) return <PlayerScreen key={player.id} item={player} onClose={closePlayer}/>;
+  if (player) return <PlayerScreen key={player.id} item={player} language={language} onClose={closePlayer}/>;
 
   return <View style={styles.screen}>
     <View style={styles.header}>
@@ -373,7 +393,7 @@ export default function App() {
               }
               renderItem={({item}) => (
                 <View style={styles.card}>
-                  <TVButton label={item.name} onPress={() => { void openItem(item); }}/>
+                  <ContentTVButton item={item} onPress={() => { void openItem(item); }}/>
                 </View>
               )}
             />
@@ -420,6 +440,13 @@ const styles = StyleSheet.create({
   row: {flexDirection: 'row', alignItems: 'center'},
   half: {flex: 1},
   card: {flex: 1, maxWidth: '33.333%'},
+  contentCard: {minHeight: 182, margin: 8, padding: 10, backgroundColor: '#172233', borderRadius: 14, borderWidth: 3, borderColor: '#263b55'},
+  contentCardFocused: {borderColor: '#5eead4', backgroundColor: '#254559'},
+  contentArtwork: {width: '100%', height: 116, borderRadius: 9, backgroundColor: '#0c1626'},
+  contentArtworkFallback: {width: '100%', height: 116, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#0c1626'},
+  contentArtworkIcon: {fontSize: 34, color: '#5eead4'},
+  contentTitle: {fontSize: 18, color: '#fff', fontWeight: '600', marginTop: 9},
+  contentGroup: {fontSize: 13, color: '#94a3b8', marginTop: 4},
   detail: {padding: 20, backgroundColor: '#172233', borderRadius: 16},
   error: {color: '#ffb4a8', fontSize: 20, margin: 12},
 

@@ -3,7 +3,23 @@ import Combine
 
 @MainActor
 public final class AccountStore: ObservableObject {
-    public static let shared = AccountStore()
+    public static let shared = AccountStore(client: makeApplicationClient())
+
+    private static func makeApplicationClient() -> XtreamCodesClient {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        let environment = ProcessInfo.processInfo.environment
+        let hasProvider = ["BRUTV_PLAYBACK_SERVER", "BRUTV_PLAYBACK_USERNAME", "BRUTV_PLAYBACK_PASSWORD"]
+            .allSatisfy { !(environment[$0] ?? "").isEmpty }
+        let isDemo = arguments.contains("--demo-login") || arguments.contains("--play-demo")
+        if arguments.contains("--ui-fixtures") || (isDemo && !hasProvider) {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [UITestSourceProtocol.self]
+            return XtreamCodesClient(session: URLSession(configuration: configuration))
+        }
+        #endif
+        return XtreamCodesClient()
+    }
 
     @Published public private(set) var currentProfile: ServerProfile?
     @Published public private(set) var authResponse: AuthResponse?
@@ -249,3 +265,87 @@ public final class AccountStore: ObservableObject {
         client.adoptSource(from: client.makeIndependentClient())
     }
 }
+
+#if DEBUG
+/// Offline transport used only by explicitly launched UI tests.
+private final class UITestSourceProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url, url.host == "ui-fixture.example.test" else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
+        do {
+            let body: Data
+            if url.path.hasSuffix(".m3u") {
+                body = Data("""
+                #EXTM3U
+                #EXTINF:-1 tvg-id="fixture-1" group-title="General",Fixture One HD
+                \(try Self.audioURL().absoluteString)
+                #EXTINF:-1 tvg-id="fixture-2" group-title="General",Fixture Two HD
+                \(try Self.audioURL().absoluteString)
+                """.utf8)
+            } else {
+                let action = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "action" })?.value
+                let object: Any
+                switch action {
+                case "get_live_categories":
+                    object = [["category_id": "general", "category_name": "General"]]
+                case "get_live_streams":
+                    let audio = try Self.audioURL().absoluteString
+                    object = [
+                        ["stream_id": 1, "name": "Fixture One HD", "category_id": "general", "brutv_direct_url": audio],
+                        ["stream_id": 2, "name": "Fixture Two HD", "category_id": "general", "brutv_direct_url": audio],
+                    ]
+                case "get_vod_categories", "get_vod_streams", "get_series_categories", "get_series":
+                    object = []
+                case "get_short_epg":
+                    object = ["epg_listings": []]
+                case nil:
+                    object = ["user_info": ["username": "fixture-user", "auth": 1, "status": "Active"], "server_info": [:]]
+                default:
+                    client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+                    return
+                }
+                body = try JSONSerialization.data(withJSONObject: object)
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: body)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+
+    private static func audioURL() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("brutv-ui-fixture.wav")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let sampleBytes: UInt32 = 16_000 * 120 * 2
+        var data = Data("RIFF".utf8)
+        func append<T: FixedWidthInteger>(_ value: T) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+        append(sampleBytes + 36)
+        data.append(Data("WAVEfmt ".utf8))
+        append(UInt32(16))
+        append(UInt16(1))
+        append(UInt16(1))
+        append(UInt32(16_000))
+        append(UInt32(32_000))
+        append(UInt16(2))
+        append(UInt16(16))
+        data.append(Data("data".utf8))
+        append(sampleBytes)
+        data.append(Data(repeating: 0, count: Int(sampleBytes)))
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+}
+#endif

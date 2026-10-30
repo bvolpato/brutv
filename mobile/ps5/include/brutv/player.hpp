@@ -33,6 +33,11 @@ class Player {
 public:
     enum class State { Idle, Opening, Buffering, Playing, Paused, Ended, Error };
 
+    struct Track {
+        int id = -1;
+        std::string label;
+    };
+
     struct Status {
         State state = State::Idle;
         std::string message;
@@ -45,6 +50,16 @@ public:
         bool live = true;
         float volume = 1.0F;
         std::uint64_t droppedFrames = 0;
+        std::vector<Track> audioTracks;
+        std::vector<Track> subtitleTracks;
+        int audioTrack = -1;
+        int subtitleTrack = -1;
+        std::string subtitleText;
+        bool liveRewind = false;
+        std::string rewindMessage;
+        double windowStartSeconds = 0.0;
+        double windowEndSeconds = 0.0;
+        std::size_t recordedBytes = 0;
     };
 
     explicit Player(std::shared_ptr<AudioSink> audioSink = {});
@@ -62,6 +77,9 @@ public:
     void setPaused(bool paused);
     void togglePause();
     void seekRelative(double seconds);
+    void goLive();
+    void cycleAudioTrack();
+    void cycleSubtitleTrack();
     void setVolume(float volume);
     Status status() const;
 

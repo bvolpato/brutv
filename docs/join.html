@@ -8,7 +8,6 @@
   <meta name="description" content="Open your subscription in BruTV or download the app for Apple TV, iOS, iPadOS, macOS, and Android.">
   <meta name="author" content="Bruno Volpato">
   <meta name="robots" content="noindex,follow">
-  <meta name="apple-itunes-app" content="app-id=6754930353">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://brunovolpato.com/brutv/join.html">
   <meta property="og:title" content="Join BruTV · Next-Generation IPTV Player">
@@ -246,6 +245,9 @@
 
     .qr-container {
       background: #ffffff;
+      color: var(--bg-start);
+      font-size: 14px;
+      line-height: 1.5;
       padding: 12px;
       border-radius: 14px;
       margin-bottom: 12px;
@@ -259,6 +261,17 @@
 
     .qr-container svg, .qr-container img {
       display: block;
+    }
+
+    .manual-link {
+      width: 100%;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      background: var(--bg-start);
+      color: var(--text-main);
+      font-size: 14px;
     }
 
     .qr-caption {
@@ -347,19 +360,18 @@
 
     <div class="action-group">
       <!-- 1. Open App Directly -->
-      <a id="btn-open-app" href="#" class="btn btn-primary">
+      <a id="btn-open-app" href="brutv://login" class="btn btn-primary">
         <span>▶</span>
         <span id="txt-open-app">Open in BruTV App</span>
       </a>
 
-      <!-- 2. Apple App Store Button -->
-      <a id="btn-apple" href="https://apps.apple.com/app/brutv/id6754930353" class="btn btn-secondary" target="_blank" rel="noopener">
+      <a id="btn-apple" href="https://testflight.apple.com/join/6twEYnQy" class="btn btn-secondary" target="_blank" rel="noopener">
         <span>🍎</span>
-        <span id="txt-download-apple">Download on Apple App Store</span>
+        <span id="txt-download-apple">Join Apple Beta (TestFlight)</span>
       </a>
 
       <!-- 3. Direct Android APK Download Button -->
-      <a id="btn-apk" href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-4.apk" class="btn btn-secondary" download="BruTV-android-1.0.1-4.apk">
+      <a id="btn-apk" href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-6.apk" class="btn btn-secondary" download="BruTV-android-1.0.1-6.apk">
         <span>🤖</span>
         <span id="txt-download-apk">Download Android APK (Direct)</span>
       </a>
@@ -370,10 +382,10 @@
     <div class="divider" id="txt-or">Or connect another screen</div>
 
     <div class="qr-card">
-      <div id="qr-code" class="qr-container">
+      <div id="qr-code" class="qr-container" role="status" aria-live="polite">
         <!-- Live QR Code Canvas / SVG generated via JS -->
       </div>
-      <p class="qr-caption" id="txt-qr-hint">Scan with camera on Apple TV, iPhone, iPad, or Android.</p>
+      <p class="qr-caption" id="txt-qr-hint">Scan with the camera on your iPhone, iPad, or Android device.</p>
     </div>
 
     <div style="margin-top: 14px;">
@@ -381,6 +393,7 @@
         <span>📋</span>
         <span id="txt-copy">Copy Sign-In Link</span>
       </button>
+      <input id="manual-link" class="manual-link" type="text" readonly hidden aria-label="Sign-in link to copy manually">
     </div>
 
     <div class="security-note">
@@ -390,30 +403,32 @@
 
     <div class="platforms">
       <div class="platform-pill"><span></span> Apple TV, iOS & Mac</div>
-      <a href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-4.apk" class="platform-pill" style="text-decoration: none; color: inherit;" download>
+      <a href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-6.apk" class="platform-pill" style="text-decoration: none; color: inherit;" download>
         <span>🤖</span> Android APK (v1.0.1) ↓
       </a>
     </div>
   </div>
 
-  <div id="toast" class="toast">Link copied!</div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- Lightweight Vanilla QR Code Generator -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-  <script>
+  <script data-cfasync="false" src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script data-cfasync="false">
     const translations = {
       en: {
         back: "Back to BruTV",
         title: "Join BruTV",
         subtitle: "The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.",
         openApp: "Open in BruTV App",
-        downloadApple: "Download on Apple App Store",
+        downloadApple: "Join Apple Beta (TestFlight)",
         downloadApk: "Download Android APK (Direct)",
         apkDetails: "For Android phones, tablets, Android TV & Fire TV",
         or: "Or connect another screen",
-        qrHint: "Scan with camera on Apple TV, iPhone, iPad, or Android.",
+        qrHint: "Scan with the camera on your iPhone, iPad, or Android device.",
+        qrUnavailable: "QR code unavailable. Open the app or copy the sign-in link below.",
         copy: "Copy Sign-In Link",
         copied: "Link copied to clipboard!",
+        manualCopy: "Select and copy the sign-in link below.",
         security: "This sign-in link includes your subscription access. Only share it with people and devices you trust."
       },
       pt: {
@@ -421,18 +436,21 @@
         title: "Entrar no BruTV",
         subtitle: "O melhor reprodutor IPTV para Apple TV, iPhone, iPad, Mac e Android.",
         openApp: "Abrir no App BruTV",
-        downloadApple: "Baixar na App Store (Apple)",
+        downloadApple: "Participar do Beta Apple (TestFlight)",
         downloadApk: "Baixar APK para Android (Direto)",
         apkDetails: "Para celulares Android, tablets, Android TV e Fire TV",
         or: "Ou conecte em outra tela",
-        qrHint: "Aponte a câmera na Apple TV, iPhone, iPad ou Android.",
+        qrHint: "Use a câmera do seu iPhone, iPad ou aparelho Android.",
+        qrUnavailable: "QR code indisponível. Abra o app ou copie o link de acesso abaixo.",
         copy: "Copiar Link de Acesso",
         copied: "Link copiado para a área de transferência!",
+        manualCopy: "Selecione e copie o link de acesso abaixo.",
         security: "Este link contém o acesso da sua assinatura. Compartilhe apenas com pessoas e aparelhos de sua confiança."
       }
     };
 
     let currentLang = "en";
+    let qrUnavailable = false;
 
     function detectLanguage() {
       const navLang = (navigator.language || navigator.userLanguage || "en").toLowerCase();
@@ -441,6 +459,7 @@
 
     function setLanguage(lang) {
       currentLang = lang;
+      document.documentElement.lang = lang === "pt" ? "pt-BR" : "en";
       document.getElementById("lang-en").classList.toggle("active", lang === "en");
       document.getElementById("lang-pt").classList.toggle("active", lang === "pt");
 
@@ -456,6 +475,8 @@
       document.getElementById("txt-qr-hint").innerText = t.qrHint;
       document.getElementById("txt-copy").innerText = t.copy;
       document.getElementById("txt-security").innerText = t.security;
+      document.getElementById("manual-link").setAttribute("aria-label", t.manualCopy);
+      if (qrUnavailable) document.getElementById("qr-code").textContent = t.qrUnavailable;
 
       updatePlatformDownloadButton();
     }
@@ -517,20 +538,34 @@
             svg.setAttribute('height', '180');
           }
         } else {
-          qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(deepLink)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;">`;
+          showQRUnavailable();
         }
       } catch (e) {
-        qrContainer.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(deepLink)}" alt="QR Code" width="180" height="180" style="border-radius: 8px;">`;
+        showQRUnavailable();
       }
     }
 
-    function copySetupLink() {
-      const currentUrl = window.location.href;
-      navigator.clipboard.writeText(currentUrl).then(() => {
+    function showQRUnavailable() {
+      qrUnavailable = true;
+      const container = document.getElementById("qr-code");
+      container.innerHTML = "";
+      container.textContent = translations[currentLang].qrUnavailable;
+    }
+
+    async function copySetupLink() {
+      const link = parseDeepLink();
+      const input = document.getElementById("manual-link");
+      try {
+        await navigator.clipboard.writeText(link);
+        input.hidden = true;
         showToast(translations[currentLang].copied);
-      }).catch(() => {
-        showToast("Copied: " + currentUrl);
-      });
+      } catch (error) {
+        input.value = link;
+        input.hidden = false;
+        input.focus();
+        input.select();
+        showToast(translations[currentLang].manualCopy);
+      }
     }
 
     function showToast(msg) {
@@ -542,7 +577,7 @@
       }, 2500);
     }
 
-    window.addEventListener("DOMContentLoaded", () => {
+    function initializeJoinPage() {
       const lang = detectLanguage();
       setLanguage(lang);
 
@@ -553,14 +588,20 @@
       renderQRCode(deepLink);
 
       // On mobile devices, attempt direct app launch if sign-in params present
-      const hasParams = window.location.search.length > 1 || window.location.hash.length > 1;
+      const hasParams = deepLink !== "brutv://login";
       const platform = detectPlatform();
       if (hasParams && (platform === "ios" || platform === "android")) {
         setTimeout(() => {
           window.location.href = deepLink;
         }, 500);
       }
-    });
+    }
+
+    if (document.readyState === "loading") {
+      window.addEventListener("DOMContentLoaded", initializeJoinPage, {once: true});
+    } else {
+      initializeJoinPage();
+    }
   </script>
 </body>
 </html>

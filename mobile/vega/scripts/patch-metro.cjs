@@ -15,17 +15,23 @@ if (metros.length === 0) {
   throw new Error('No locked Metro installation found.');
 }
 
+let patched = 0;
 for (const [location, metadata] of metros) {
   if (!['0.76.5', '0.76.9'].includes(metadata.version)) {
     throw new Error(`Review the image-size compatibility patch for Metro ${metadata.version}.`);
   }
   const assetsPath = path.join(projectRoot, location, 'src/Assets.js');
+  // npm may hoist a duplicate package to a shared node_modules location. Lockfile
+  // entries that are not materialized by the installed tree do not need patching.
+  if (!fs.existsSync(assetsPath)) continue;
   const source = fs.readFileSync(assetsPath, 'utf8');
   if (source.includes(oldImport)) {
     fs.writeFileSync(assetsPath, source.replace(oldImport, newImport));
   } else if (!source.includes(newImport)) {
     throw new Error(`Unexpected image-size import in ${assetsPath}.`);
   }
+  patched++;
 }
 
+if (patched === 0) throw new Error('No installed Metro Assets.js file was found.');
 console.log('Metro 0.76 uses the patched image-size 2 API.');

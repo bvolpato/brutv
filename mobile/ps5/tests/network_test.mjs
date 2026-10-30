@@ -16,6 +16,19 @@ const server = createServer(async (req, res) => {
     const info = await stat(filename);
     if (!info.isFile()) { res.writeHead(404).end(); return; }
     requested.add(pathname);
+    if (pathname === '/live.ts') {
+      res.writeHead(200, {'Content-Type': 'video/mp2t'});
+      const source = createReadStream(filename, {highWaterMark: Math.ceil(info.size / 100 / 188) * 188});
+      source.pause();
+      const timer = setInterval(() => {
+        const chunk = source.read();
+        if (chunk) res.write(chunk);
+      }, 100);
+      source.once('end', () => { clearInterval(timer); res.end(); });
+      source.once('error', () => { clearInterval(timer); res.destroy(); });
+      res.once('close', () => { clearInterval(timer); source.destroy(); });
+      return;
+    }
     const range = req.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
     const start = range ? Number(range[1]) : 0;
     const end = range?.[2] ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
@@ -42,6 +55,13 @@ try {
       child.once('exit', code => { clearTimeout(deadline); code === 0 ? done() : reject(new Error(`Player test exited ${code}`)); });
     });
   }
+  for (const mode of ['--live', '--live-direct']) await new Promise((done, reject) => {
+    const env = mode === '--live-direct' ? {...process.env, TMPDIR: resolve(root, 'missing-temp-directory')} : process.env;
+    const child = spawn(binary, [mode, base + '/live.ts'], {stdio: 'inherit', env});
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Live recording test timed out')); }, 30000);
+    child.once('error', error => { clearTimeout(deadline); reject(error); });
+    child.once('exit', code => { clearTimeout(deadline); code === 0 ? done() : reject(new Error(`Live recording test exited ${code}`)); });
+  });
   if (!requested.has('/video.mp4') || !requested.has('/hls/index.m3u8') ||
       ![...requested].some(path => path.endsWith('.ts'))) {
     throw new Error('The player did not fetch both the MP4 and HLS segments');

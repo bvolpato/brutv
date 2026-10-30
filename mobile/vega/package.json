@@ -7,13 +7,16 @@
     "npm": ">=11.21.0"
   },
   "scripts": {
-    "test": "npm run setup:metro && tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js test/tooling.test.cjs",
+    "postinstall": "npm run setup:all",
+    "test": "npm run setup:all && tsc -p tsconfig.domain.json && node --test build-domain/test/*.test.js test/tooling.test.cjs",
     "typecheck": "tsc --noEmit",
     "setup:shaka": "bash scripts/build-shaka.sh",
     "setup:metro": "node scripts/patch-metro.cjs",
-    "bundle": "npm run setup:metro && react-native bundle",
-    "build:debug": "npm run setup:metro && react-native build-kepler --build-type Debug",
-    "build:release": "npm run setup:metro && react-native build-kepler --build-type Release",
+    "setup:deepmerge": "node scripts/patch-deepmerge.cjs",
+    "setup:all": "npm run setup:metro && npm run setup:deepmerge",
+    "bundle": "npm run setup:all && react-native bundle",
+    "build:debug": "npm run setup:all && react-native build-kepler --build-type Debug",
+    "build:release": "npm run setup:all && react-native build-kepler --build-type Release",
     "build:app": "npm run build:release && npm run build:debug"
   },
   "dependencies": {

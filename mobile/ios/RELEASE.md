@@ -87,7 +87,7 @@ Certificate and provisioning profile variables also accept `_BASE64` in place of
 
 ## macOS prerequisites
 
-- **macOS** with a stable **Xcode 26+** version and the required platform SDKs.
+- **macOS** with **Xcode 27.1+** and the required platform SDKs for iPhone Duo support.
 - **Apple Developer Account** with access to Team ID `83BXSDT7QC` (Bruno Candido Volpato da Cunha).
 - Command line utilities: `xcodebuild`, `xcrun`, `sips`, `security`.
 
@@ -111,11 +111,19 @@ IOS_SIM_DESTINATION="platform=iOS Simulator,name=iPad Pro 13-inch (M5)" ./mobile
 
 ## 2. Running Automated Tests
 
-Run the full unit and UI test suite on a Mac with Xcode:
+Run the full unit and UI test suite on a Mac with Xcode 27.1 or later:
 
 ```bash
 ./mobile/ios/BruTV/test.sh
 ```
+
+Default UI tests use `--ui-fixtures`: a debug-only offline transport supplies synthetic authentication, catalogs, and playlists. Media controls use a generated local silent WAV file. This verifies navigation and player lifecycle without provider credentials or network access; it does not establish decoded-video quality.
+
+Debug `--demo-login` and `--play-demo` launches also use these fixtures unless all three provider credential variables are supplied. The test-credential fill button appears only in explicit fixture mode.
+
+The optional `testLiveChannelShowsVideoInPlayerAndMiniPlayer` test requires `TEST_RUNNER_BRUTV_PLAYBACK_SERVER`, `TEST_RUNNER_BRUTV_PLAYBACK_USERNAME`, `TEST_RUNNER_BRUTV_PLAYBACK_PASSWORD`, and `TEST_RUNNER_BRUTV_PLAYBACK_CHANNEL` in the environment passed to `xcodebuild`. It skips when any value is missing. Supply credentials through the environment and keep them out of scripts and logs.
+
+`testNavigationAndPlaybackSurviveResizing` checks filter and mini-player continuity during rotation. `testPlayerControlsFitAfterRotation` checks that transport controls stay inside the window and remain tappable. Run the suite on an iPhone, iPad, and iPhone Duo simulator. A default Duo launch and rotation do not exercise every pose: manually open, close, partially fold, and use Split View in Xcode 27.1 Device Hub while browsing and playing media. Confirm that reserved regions remain clear and playback continues. Physical-device video, audio, PiP, accessibility, and fold transitions remain separate release checks.
 
 If the default simulator is unavailable, list installed devices and select an available simulator UDID:
 
