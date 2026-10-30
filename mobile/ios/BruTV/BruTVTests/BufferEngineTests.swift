@@ -135,11 +135,11 @@ final class BufferEngineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let manager = PlaybackManager()
         defer { manager.stop() }
-        manager.play(stream: LiveStream(id: 99994, name: "Local audio", directURLString: url.absoluteString))
+        guard try await startAudioFixture(manager, url: url, streamID: 99994) else { return }
         manager.prepareAndPlay(url: url, resumePosition: 3)
         manager.togglePlayPause()
-        let ready = try await waitUntil(timeout: 15) { manager.player.currentItem?.status == .readyToPlay }
-        XCTAssertTrue(ready, "Item did not become ready: status=\(String(describing: manager.player.currentItem?.status)), error=\(String(describing: manager.player.currentItem?.error))")
+        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready, "Paused replacement did not become ready: \(playbackDiagnostics(manager))")
         manager.togglePlayPause()
         manager.player.pause()
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -154,11 +154,11 @@ final class BufferEngineTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let manager = PlaybackManager()
         defer { manager.stop() }
-        manager.play(stream: LiveStream(id: 99995, name: "Local audio", directURLString: url.absoluteString))
+        guard try await startAudioFixture(manager, url: url, streamID: 99995) else { return }
         manager.prepareAndPlay(url: url, resumePosition: 3)
         manager.togglePlayPause()
-        let ready = try await waitUntil(timeout: 15) { manager.player.currentItem?.status == .readyToPlay }
-        XCTAssertTrue(ready, "Item did not become ready: status=\(String(describing: manager.player.currentItem?.status)), error=\(String(describing: manager.player.currentItem?.error))")
+        let ready = try await waitUntil { manager.player.currentItem?.status == .readyToPlay }
+        XCTAssertTrue(ready, "Paused replacement did not become ready: \(playbackDiagnostics(manager))")
         XCTAssertFalse(manager.isPlaybackRequested)
         XCTAssertEqual(manager.playbackState, .paused)
 
@@ -172,6 +172,23 @@ final class BufferEngineTests: XCTestCase {
         let position = CMTimeGetSeconds(manager.player.currentTime())
         XCTAssertGreaterThanOrEqual(position, 2.9)
         XCTAssertLessThan(position, 4.5)
+    }
+
+    @MainActor
+    private func startAudioFixture(_ manager: PlaybackManager, url: URL, streamID: Int) async throws -> Bool {
+        manager.play(stream: LiveStream(id: streamID, name: "Local audio", directURLString: url.absoluteString))
+        let started = try await waitUntil(timeout: 30) { manager.playbackState == .playing }
+        XCTAssertTrue(started, "Initial WAV fixture did not start: \(playbackDiagnostics(manager))")
+        return started
+    }
+
+    @MainActor
+    private func playbackDiagnostics(_ manager: PlaybackManager) -> String {
+        let item = manager.player.currentItem
+        let url = (item?.asset as? AVURLAsset)?.url.lastPathComponent ?? "none"
+        return "file=\(url), itemStatus=\(item?.status.rawValue ?? -1), playerStatus=\(manager.player.status.rawValue), " +
+            "transport=\(manager.player.timeControlStatus.rawValue), rate=\(manager.player.rate), requested=\(manager.isPlaybackRequested), " +
+            "error=\(String(describing: item?.error))"
     }
 
     @MainActor
