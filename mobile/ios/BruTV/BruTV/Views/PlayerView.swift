@@ -1278,6 +1278,13 @@ public struct PlayerView: View {
 
     private func scheduleControlsAutoHide() {
         controlsTimer?.invalidate()
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--ui-fixtures") && arguments.contains("--ui-keep-player-controls-visible") {
+            showControls = true
+            return
+        }
+        #endif
         guard playback.playbackState == .playing else {
             showControls = true
             return
