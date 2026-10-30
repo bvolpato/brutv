@@ -7,9 +7,12 @@ final class BruTVUITests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func launchLoggedIn() -> XCUIApplication {
+    private func launchLoggedIn(keepPlayerControlsVisible: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--reset-session", "--ui-fixtures", "--demo-login", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        if keepPlayerControlsVisible {
+            app.launchArguments.append("--ui-keep-player-controls-visible")
+        }
         app.launch()
         return app
     }
@@ -144,7 +147,7 @@ final class BruTVUITests: XCTestCase {
 
     private func launchLoggedOut() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments = ["--reset-session", "--ui-fixtures", "--ui-keep-player-controls-visible", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 10), "Login screen not shown")
         return app
@@ -374,6 +377,24 @@ final class BruTVUITests: XCTestCase {
                 XCTAssertLessThanOrEqual(button.frame.maxY, window.maxY)
             }
         }
+    }
+
+    func testPlayerControlsAutoHideAndRevealDuringPlayback() throws {
+        let app = launchLoggedIn(keepPlayerControlsVisible: false)
+        firstChannel(app).tap()
+        let back = app.buttons["playerBackButton"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "Player controls did not appear")
+        let video = app.otherElements["playerVideo"]
+        let playing = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value BEGINSWITH %@", "playing"),
+            object: video
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 10), .completed, "Fixture did not start playing")
+        XCTAssertTrue(back.waitForNonExistence(timeout: 10), "Player controls did not auto-hide")
+        XCTAssertTrue((video.value as? String)?.hasPrefix("playing") == true, "Auto-hide interrupted playback")
+
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 5), "Tapping the player did not reveal controls")
     }
 
     func testLogoutReturnsToLoginScreen() throws {
