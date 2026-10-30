@@ -118,7 +118,7 @@ final class BruTVUITests: XCTestCase {
                 if cell.exists { return cell }
                 let btn = app.collectionViews.buttons[name].firstMatch
                 if btn.exists { return btn }
-                let generalBtn = app.buttons[name]
+                let generalBtn = app.buttons[name].firstMatch
                 if generalBtn.exists { return generalBtn }
             }
             return nil

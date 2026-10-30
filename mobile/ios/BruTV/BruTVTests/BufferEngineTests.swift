@@ -177,9 +177,34 @@ final class BufferEngineTests: XCTestCase {
     @MainActor
     private func startAudioFixture(_ manager: PlaybackManager, url: URL, streamID: Int) async throws -> Bool {
         manager.play(stream: LiveStream(id: streamID, name: "Local audio", directURLString: url.absoluteString))
-        let started = try await waitUntil(timeout: 30) { manager.playbackState == .playing }
+        let ready = try await waitUntil(timeout: 30) { manager.player.status == .readyToPlay }
+        XCTAssertTrue(ready, "Initial WAV player did not become ready: \(playbackDiagnostics(manager))")
+        guard ready else { return false }
+
+        manager.player.pause()
+        let paused = try await waitUntil { manager.player.rate == 0 && !manager.isPlaybackRequested }
+        XCTAssertTrue(paused, "Initial WAV player did not pause for preroll: \(playbackDiagnostics(manager))")
+        XCTAssertEqual(manager.player.status, .readyToPlay)
+        guard paused, manager.player.status == .readyToPlay else { return false }
+
+        let preroll = PrerollCompletion()
+        manager.player.preroll(atRate: 1) { finished in
+            Task { @MainActor in preroll.finished = finished }
+        }
+        defer { manager.player.cancelPendingPrerolls() }
+        let completed = try await waitUntil(timeout: 30) { preroll.finished != nil }
+        XCTAssertTrue(completed && preroll.finished == true, "Initial WAV preroll did not finish: \(playbackDiagnostics(manager))")
+        guard completed, preroll.finished == true else { return false }
+
+        manager.player.play()
+        let started = try await waitUntil { manager.playbackState == .playing }
         XCTAssertTrue(started, "Initial WAV fixture did not start: \(playbackDiagnostics(manager))")
         return started
+    }
+
+    @MainActor
+    private final class PrerollCompletion {
+        var finished: Bool?
     }
 
     @MainActor
@@ -188,6 +213,7 @@ final class BufferEngineTests: XCTestCase {
         let url = (item?.asset as? AVURLAsset)?.url.lastPathComponent ?? "none"
         return "file=\(url), itemStatus=\(item?.status.rawValue ?? -1), playerStatus=\(manager.player.status.rawValue), " +
             "transport=\(manager.player.timeControlStatus.rawValue), rate=\(manager.player.rate), requested=\(manager.isPlaybackRequested), " +
+            "waiting=\(manager.player.reasonForWaitingToPlay?.rawValue ?? "none"), " +
             "error=\(String(describing: item?.error))"
     }
 
