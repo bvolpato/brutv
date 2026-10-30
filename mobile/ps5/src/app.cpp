@@ -1356,12 +1356,19 @@ struct App::Impl {
             player->togglePause();
             showPlayerHud = true;
         } else if (key == Key::Rewind) {
-            if (!playingLive)
-                player->seekRelative(-10.0);
+            player->seekRelative(-10.0);
             showPlayerHud = true;
         } else if (key == Key::Forward) {
-            if (!playingLive)
-                player->seekRelative(30.0);
+            player->seekRelative(playingLive ? 10.0 : 30.0);
+            showPlayerHud = true;
+        } else if (key == Key::PreviousTab) {
+            player->cycleAudioTrack();
+            showPlayerHud = true;
+        } else if (key == Key::NextTab) {
+            player->cycleSubtitleTrack();
+            showPlayerHud = true;
+        } else if (key == Key::Search && playingLive) {
+            player->goLive();
             showPlayerHud = true;
         } else if (key == Key::Up) {
             changeVolume(0.05F);
@@ -1891,6 +1898,30 @@ struct App::Impl {
             gfx.text(playerStateText(), 660, 425, 22,
                      playerStatus.state == Player::State::Error ? kRed : kMuted, 600);
         }
+        if (!playerStatus.subtitleText.empty()) {
+            std::vector<std::string> lines;
+            std::istringstream words(playerStatus.subtitleText);
+            std::string word;
+            std::string line;
+            while (words >> word && lines.size() < 3) {
+                const std::string next = line.empty() ? word : line + " " + word;
+                if (!line.empty() && gfx.textWidth(next, 32) > 1450) {
+                    lines.push_back(line);
+                    line = word;
+                } else {
+                    line = next;
+                }
+            }
+            if (!line.empty() && lines.size() < 3) lines.push_back(line);
+            const float bottom = showPlayerHud ? 811.0F : 1000.0F;
+            const float top = bottom - static_cast<float>(lines.size()) * 43.0F;
+            gfx.rect(200, top - 10, 1520, bottom - top + 22, {0, 0, 0, 0.78F}, 8);
+            for (std::size_t index = 0; index < lines.size(); ++index) {
+                const float width = gfx.textWidth(lines[index], 32);
+                gfx.text(lines[index], (kWidth - width) * 0.5F,
+                    top + static_cast<float>(index) * 43.0F, 32, kText, 1480);
+            }
+        }
         if (!showPlayerHud && hasVideoFrame)
             return;
         gfx.rect(0, 0, kWidth, 174, {0.015F, 0.025F, 0.045F, 0.92F});
@@ -1918,6 +1949,16 @@ struct App::Impl {
             gfx.text(formatTime(playerStatus.currentSeconds) + "  /  " +
                          formatTime(playerStatus.durationSeconds),
                      80, 897, 18, kMuted, 300);
+        } else if (playingLive && playerStatus.liveRewind) {
+            const double window = playerStatus.windowEndSeconds - playerStatus.windowStartSeconds;
+            const float progress = static_cast<float>(window > 0 ? std::clamp(
+                (playerStatus.currentSeconds - playerStatus.windowStartSeconds) / window, 0.0, 1.0) : 1.0);
+            gfx.rect(79, 876, 1760, 5, rgb(65, 83, 99), 3);
+            gfx.rect(79, 876, 1760.0F * progress, 5, kCyan, 3);
+            const double behind = std::max(0.0, playerStatus.windowEndSeconds - playerStatus.currentSeconds);
+            gfx.text(formatTime(window) + " saved | " + formatTime(behind) + " behind live | " +
+                std::to_string(playerStatus.recordedBytes / 1024 / 1024) + " MiB", 80, 897, 18, kMuted, 900);
+            controlHint(Button::Triangle, "Go live", 1430, 897);
         } else if (playingLive && !epgEntries.empty()) {
             const auto now = static_cast<std::int64_t>(std::time(nullptr));
             auto current =
@@ -1936,7 +1977,7 @@ struct App::Impl {
         controlHint(Button::Options, "HUD", 80, 974);
         controlHint(Button::Cross, playerStatus.state == Player::State::Paused ? "Resume" : "Pause",
                     260, 974);
-        const Color seekColor = playingLive ? rgb(84, 101, 116) : kMuted;
+        const Color seekColor = playingLive && !playerStatus.liveRewind ? rgb(84, 101, 116) : kMuted;
         gfx.button(Button::L2, 570, 974, 29, seekColor);
         gfx.button(Button::R2, 611, 974, 29, seekColor);
         gfx.text("Seek", 658, 977, 19, seekColor, 120);
@@ -1946,6 +1987,17 @@ struct App::Impl {
                      std::to_string(static_cast<int>(std::round(settings.volume * 100.0F))) + "%",
                  1038, 977, 19, kMuted, 300);
         controlHint(Button::Circle, "Stop / return", 1498, 974);
+        auto selectedTrack = [](const auto& tracks, int selected, const char* fallback) {
+            const auto found = std::find_if(tracks.begin(), tracks.end(), [selected](const auto& track) {
+                return track.id == selected;
+            });
+            return found == tracks.end() ? std::string(fallback) : found->label;
+        };
+        controlHint(Button::L1, "Audio: " + selectedTrack(playerStatus.audioTracks, playerStatus.audioTrack, "None"), 80, 1030);
+        controlHint(Button::R1, "Subtitles: " + selectedTrack(playerStatus.subtitleTracks, playerStatus.subtitleTrack, "Off"), 730, 1030);
+        const std::string message = !playerStatus.rewindMessage.empty()
+            ? playerStatus.rewindMessage : playerStatus.message;
+        if (!message.empty()) gfx.text(shortened(message, 130), 80, 940, 17, kMuted, 1700);
         if (playingLive)
             gfx.text("LIVE", 1705, 53, 17, kRed, 75);
     }

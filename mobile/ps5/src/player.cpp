@@ -1,7 +1,9 @@
 #include "brutv/player.hpp"
+#include "brutv/timeshift.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/codec_desc.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
@@ -36,6 +38,10 @@ constexpr std::size_t kMaxFrames = 6;
 constexpr double kMaxAudioSeconds = 0.5;
 constexpr auto kIoTimeout = std::chrono::seconds(15);
 constexpr double kNoTime = std::numeric_limits<double>::quiet_NaN();
+
+struct RewindUnavailable : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 struct RequestOptions {
     std::string userAgent;
@@ -113,6 +119,7 @@ struct Session {
     AVFormatContext* format = nullptr;
     AVCodecContext* video = nullptr;
     AVCodecContext* audio = nullptr;
+    AVCodecContext* subtitle = nullptr;
     AVPacket* packet = nullptr;
     AVFrame* decoded = nullptr;
     SwsContext* scaler = nullptr;
@@ -122,6 +129,10 @@ struct Session {
     int resampleFormat = -1;
     int videoIndex = -1;
     int audioIndex = -1;
+    int subtitleIndex = -1;
+    std::vector<AVCodecParameters*> streamParameters;
+    std::vector<AVRational> timeBases;
+    AVRational frameRate{0, 1};
     double origin = kNoTime;
     double offset = 0.0;
     double lastRawVideo = kNoTime;
@@ -141,12 +152,14 @@ struct Session {
         av_packet_free(&packet);
         avcodec_free_context(&video);
         avcodec_free_context(&audio);
+        avcodec_free_context(&subtitle);
+        for (auto*& parameters : streamParameters) avcodec_parameters_free(&parameters);
         avformat_close_input(&format);
     }
 };
 
-AVCodecContext* openDecoder(AVFormatContext* format, int index) {
-    const AVCodec* codec = avcodec_find_decoder(format->streams[index]->codecpar->codec_id);
+AVCodecContext* openDecoder(const AVCodecParameters* parameters, AVRational timebase) {
+    const AVCodec* codec = avcodec_find_decoder(parameters->codec_id);
     if (!codec) {
         throw std::runtime_error("This source uses an unsupported codec.");
     }
@@ -154,11 +167,11 @@ AVCodecContext* openDecoder(AVFormatContext* format, int index) {
     if (!context) {
         throw std::runtime_error("Cannot allocate a media decoder.");
     }
-    int result = avcodec_parameters_to_context(context, format->streams[index]->codecpar);
+    int result = avcodec_parameters_to_context(context, parameters);
     if (result >= 0) {
         context->thread_count = 2;
         context->max_pixels = 3840LL * 2160LL;
-        context->pkt_timebase = format->streams[index]->time_base;
+        context->pkt_timebase = timebase;
         result = avcodec_open2(context, codec, nullptr);
     }
     if (result < 0) {
@@ -166,6 +179,54 @@ AVCodecContext* openDecoder(AVFormatContext* format, int index) {
         throw std::runtime_error("Cannot initialize a media decoder: " + avError(result));
     }
     return context;
+}
+
+std::string trackLabel(const AVStream* stream, const char* kind, int number) {
+    const auto* title = av_dict_get(stream->metadata, "title", nullptr, 0);
+    const auto* language = av_dict_get(stream->metadata, "language", nullptr, 0);
+    std::string label = title ? title->value : std::string(kind) + " " + std::to_string(number);
+    if (language && std::string(language->value) != "und") {
+        label += " (" + std::string(language->value) + ")";
+    }
+    if (label.size() > 120) label.resize(120);
+    return label;
+}
+
+std::string subtitleText(const AVSubtitleRect* rect) {
+    std::string input;
+    if (rect->text) {
+        input = rect->text;
+    } else if (rect->ass) {
+        input = rect->ass;
+        std::size_t start = 0;
+        for (int field = 0; field < 8; ++field) {
+            const auto comma = input.find(',', start);
+            if (comma == std::string::npos) return {};
+            start = comma + 1;
+        }
+        input.erase(0, start);
+    }
+    std::string result;
+    bool override = false;
+    bool tag = false;
+    for (std::size_t index = 0; index < input.size() && result.size() < 2048; ++index) {
+        const char value = input[index];
+        if (value == '{') { override = true; continue; }
+        if (value == '}' && override) { override = false; continue; }
+        if (value == '<') { tag = true; continue; }
+        if (value == '>' && tag) { tag = false; continue; }
+        if (override || tag) continue;
+        if (value == '\\' && index + 1 < input.size()) {
+            const char next = input[index + 1];
+            if (next == 'N' || next == 'n' || next == 'h') {
+                result += next == 'h' ? ' ' : '\n';
+                ++index;
+                continue;
+            }
+        }
+        if (static_cast<unsigned char>(value) >= 0x20 || value == '\n') result += value;
+    }
+    return result;
 }
 
 } // namespace
@@ -182,6 +243,8 @@ struct Player::Impl {
     std::thread worker;
     std::atomic<bool> stopping{false};
     std::atomic<bool> seekInterrupt{false};
+    std::atomic<bool> capturingLive{false};
+    std::atomic<bool> captureStopping{false};
     std::atomic<std::int64_t> deadline{0};
     std::atomic<float> volume{1.0F};
     Status snapshot;
@@ -194,13 +257,19 @@ struct Player::Impl {
     double audioEnd = kNoTime;
     Clock::time_point clockAnchor = Clock::now();
     double seekTarget = kNoTime;
+    int requestedAudio = -2;
+    int requestedSubtitle = -2;
+    struct Cue { double start; double end; std::string text; };
+    std::deque<Cue> cues;
     std::uint64_t serial = 0;
 
     static int interrupt(void* opaque) {
         auto* self = static_cast<Impl*>(opaque);
         const auto limit = self->deadline.load(std::memory_order_relaxed);
         return self->stopping.load(std::memory_order_relaxed) ||
-               self->seekInterrupt.load(std::memory_order_relaxed) ||
+               self->captureStopping.load(std::memory_order_relaxed) ||
+               (self->seekInterrupt.load(std::memory_order_relaxed) &&
+                !self->capturingLive.load(std::memory_order_relaxed)) ||
                (limit != 0 && monotonicNanoseconds() >= limit);
     }
 
@@ -262,6 +331,7 @@ struct Player::Impl {
         }
         std::lock_guard<std::mutex> lock(mutex);
         frames.clear();
+        cues.clear();
         ++serial;
         clockBase = std::max(0.0, position);
         lastClock = clockBase;
@@ -282,6 +352,13 @@ struct Player::Impl {
 
     bool openSource(Session& session, const std::string& url, double resumePosition,
                     const RequestOptions& request) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            snapshot.liveRewind = false;
+            snapshot.recordedBytes = 0;
+            snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+            snapshot.rewindMessage.clear();
+        }
         session.format = avformat_alloc_context();
         if (!session.format) {
             throw std::runtime_error("Cannot allocate a media reader.");
@@ -329,11 +406,21 @@ struct Player::Impl {
         if (session.videoIndex < 0 && session.audioIndex < 0) {
             throw std::runtime_error("This source contains no playable video or audio stream.");
         }
+        for (unsigned index = 0; index < session.format->nb_streams; ++index) {
+            auto* parameters = avcodec_parameters_alloc();
+            if (!parameters) throw std::runtime_error("Cannot retain stream information.");
+            session.streamParameters.push_back(parameters);
+            if (avcodec_parameters_copy(parameters, session.format->streams[index]->codecpar) < 0) {
+                throw std::runtime_error("Cannot retain stream information.");
+            }
+            session.timeBases.push_back(session.format->streams[index]->time_base);
+        }
         if (session.videoIndex >= 0) {
-            session.video = openDecoder(session.format, session.videoIndex);
+            session.video = openDecoder(session.streamParameters[session.videoIndex], session.timeBases[session.videoIndex]);
+            session.frameRate = av_guess_frame_rate(session.format, session.format->streams[session.videoIndex], nullptr);
         }
         if (session.audioIndex >= 0) {
-            session.audio = openDecoder(session.format, session.audioIndex);
+            session.audio = openDecoder(session.streamParameters[session.audioIndex], session.timeBases[session.audioIndex]);
         }
         session.packet = av_packet_alloc();
         session.decoded = av_frame_alloc();
@@ -348,6 +435,23 @@ struct Player::Impl {
         session.nextAudio = resumePosition;
         session.useAudioOutput = session.audio && static_cast<bool>(sink);
         std::lock_guard<std::mutex> lock(mutex);
+        snapshot.audioTracks.clear();
+        snapshot.subtitleTracks.clear();
+        for (unsigned index = 0; index < session.format->nb_streams; ++index) {
+            const auto* stream = session.format->streams[index];
+            const auto* codec = avcodec_descriptor_get(stream->codecpar->codec_id);
+            if (!avcodec_find_decoder(stream->codecpar->codec_id)) continue;
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                snapshot.audioTracks.push_back({static_cast<int>(index),
+                    trackLabel(stream, "Audio", static_cast<int>(snapshot.audioTracks.size()) + 1)});
+            } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE && codec &&
+                       (codec->props & AV_CODEC_PROP_TEXT_SUB)) {
+                snapshot.subtitleTracks.push_back({static_cast<int>(index),
+                    trackLabel(stream, "Subtitles", static_cast<int>(snapshot.subtitleTracks.size()) + 1)});
+            }
+        }
+        snapshot.audioTrack = session.audioIndex;
+        snapshot.subtitleTrack = -1;
         snapshot.hasVideo = session.video != nullptr;
         snapshot.hasAudio = session.audio != nullptr;
         snapshot.durationSeconds = session.format->duration > 0
@@ -366,7 +470,7 @@ struct Player::Impl {
             return fallback;
         }
         const double raw = static_cast<double>(timestamp) *
-            av_q2d(session.format->streams[streamIndex]->time_base);
+            av_q2d(session.timeBases[streamIndex]);
         if (!std::isfinite(session.origin)) {
             session.origin = raw;
         }
@@ -392,9 +496,7 @@ struct Player::Impl {
             throw std::runtime_error("Video exceeds the supported 4K software decode limit.");
         }
         const double pts = frameTime(session, frame, session.videoIndex, false);
-        const AVRational frameRate = av_guess_frame_rate(
-            session.format, session.format->streams[session.videoIndex], frame);
-        const double fps = av_q2d(frameRate);
+        const double fps = av_q2d(session.frameRate);
         session.nextVideo = pts + (fps >= 1.0 && fps <= 240.0 ? 1.0 / fps : 1.0 / 25.0);
         if (pts + 0.02 < session.discardBefore) {
             return true;
@@ -616,14 +718,94 @@ struct Player::Impl {
         return receiveFrames(session, decoder, audio);
     }
 
-    void processSeek(Session& session) {
+    void decodeSubtitle(Session& session, AVPacket* packet) {
+        AVSubtitle decoded{};
+        int available = 0;
+        const int result = avcodec_decode_subtitle2(session.subtitle, &decoded, &available, packet);
+        if (result >= 0 && available) {
+            const double raw = decoded.pts != AV_NOPTS_VALUE
+                ? static_cast<double>(decoded.pts) / AV_TIME_BASE
+                : packet->pts != AV_NOPTS_VALUE
+                    ? packet->pts * av_q2d(session.timeBases[session.subtitleIndex])
+                    : session.nextVideo + (std::isfinite(session.origin) ? session.origin : 0.0);
+            const double start = raw - (std::isfinite(session.origin) ? session.origin : 0.0) +
+                session.offset + decoded.start_display_time / 1000.0;
+            const double end = raw - (std::isfinite(session.origin) ? session.origin : 0.0) +
+                session.offset + decoded.end_display_time / 1000.0;
+            std::string text;
+            for (unsigned index = 0; index < decoded.num_rects; ++index) {
+                const auto value = subtitleText(decoded.rects[index]);
+                if (!value.empty()) {
+                    if (!text.empty()) text += '\n';
+                    text += value;
+                }
+                if (text.size() >= 2048) { text.resize(2048); break; }
+            }
+            if (!text.empty() && std::isfinite(start) && std::isfinite(end) && end > start) {
+                std::lock_guard<std::mutex> lock(mutex);
+                while (!cues.empty() && (cues.front().end < clockLocked() || cues.size() >= 256)) {
+                    cues.pop_front();
+                }
+                cues.push_back({start, std::min(end, start + 120.0), std::move(text)});
+            }
+        }
+        avsubtitle_free(&decoded);
+    }
+
+    double takeSeek(Session& session) {
         double target;
+        int audio;
+        int subtitle;
         {
             std::lock_guard<std::mutex> lock(mutex);
             target = seekTarget;
+            audio = requestedAudio;
+            subtitle = requestedSubtitle;
             seekTarget = kNoTime;
+            requestedAudio = requestedSubtitle = -2;
             seekInterrupt.store(false);
         }
+        if (audio != -2 && audio != session.audioIndex) {
+            auto* decoder = openDecoder(session.streamParameters[audio], session.timeBases[audio]);
+            avcodec_free_context(&session.audio);
+            session.audio = decoder;
+            session.audioIndex = audio;
+            session.useAudioOutput = static_cast<bool>(sink);
+            std::lock_guard<std::mutex> lock(mutex);
+            snapshot.audioTrack = audio;
+        }
+        if (subtitle != -2 && subtitle != session.subtitleIndex) {
+            auto* decoder = subtitle >= 0 ? openDecoder(session.streamParameters[subtitle], session.timeBases[subtitle]) : nullptr;
+            avcodec_free_context(&session.subtitle);
+            session.subtitle = decoder;
+            session.subtitleIndex = subtitle;
+            std::lock_guard<std::mutex> lock(mutex);
+            snapshot.subtitleTrack = subtitle;
+            cues.clear();
+        }
+        return target;
+    }
+
+    void resetDecoders(Session& session, double target) {
+        if (session.video) avcodec_flush_buffers(session.video);
+        if (session.audio) avcodec_flush_buffers(session.audio);
+        if (session.subtitle) avcodec_flush_buffers(session.subtitle);
+        swr_free(&session.resampler);
+        session.lastRawAudio = kNoTime;
+        session.lastRawVideo = kNoTime;
+        session.nextAudio = target;
+        session.nextVideo = target;
+        session.discardBefore = target;
+        session.preview = true;
+        resetOutput(target);
+        std::lock_guard<std::mutex> lock(mutex);
+        snapshot.state = paused ? State::Paused : State::Buffering;
+        snapshot.message = "Seeking…";
+        snapshot.rewindMessage.clear();
+    }
+
+    void processSeek(Session& session) {
+        const double target = takeSeek(session);
         if (!std::isfinite(target)) {
             return;
         }
@@ -641,27 +823,24 @@ struct Player::Impl {
             snapshot.message = "This source does not support seeking: " + avError(result);
             return;
         }
-        if (session.video) {
-            avcodec_flush_buffers(session.video);
-        }
-        if (session.audio) {
-            avcodec_flush_buffers(session.audio);
-        }
-        swr_free(&session.resampler);
-        session.lastRawAudio = kNoTime;
-        session.lastRawVideo = kNoTime;
-        session.nextAudio = target;
-        session.nextVideo = target;
         session.offset = 0.0;
-        session.discardBefore = target;
-        session.preview = true;
-        resetOutput(target);
-        std::lock_guard<std::mutex> lock(mutex);
-        snapshot.state = paused ? State::Paused : State::Buffering;
-        snapshot.message = "Seeking…";
+        resetDecoders(session, target);
     }
 
-    int playSession(Session& session) {
+    bool consumePacket(Session& session) {
+        if (session.packet->stream_index == session.videoIndex) {
+            return decodePacket(session, session.video, false, session.packet);
+        }
+        if (session.packet->stream_index == session.audioIndex) {
+            return decodePacket(session, session.audio, true, session.packet);
+        }
+        if (session.subtitle && session.packet->stream_index == session.subtitleIndex) {
+            decodeSubtitle(session, session.packet);
+        }
+        return true;
+    }
+
+    int playDirectSession(Session& session) {
         for (;;) {
             if (stopping.load()) {
                 return AVERROR_EXIT;
@@ -689,18 +868,192 @@ struct Player::Impl {
                 av_packet_unref(session.packet);
                 throw std::runtime_error("Media packet exceeds the supported size limit.");
             }
-            bool keepGoing = true;
-            if (session.packet->stream_index == session.videoIndex) {
-                keepGoing = decodePacket(session, session.video, false, session.packet);
-            } else if (session.packet->stream_index == session.audioIndex) {
-                keepGoing = decodePacket(session, session.audio, true, session.packet);
-            }
+            const bool keepGoing = consumePacket(session);
             av_packet_unref(session.packet);
             if (!keepGoing && stopping.load()) {
                 return AVERROR_EXIT;
             }
         }
     }
+
+    int playLiveSession(Session& session) {
+        std::unique_ptr<PacketSpool> spool;
+        try {
+            spool = std::make_unique<PacketSpool>();
+        } catch (const std::exception&) {
+            throw RewindUnavailable("Temporary live rewind storage is unavailable.");
+        }
+        const double initialOrigin = session.origin;
+        const double initialOffset = session.offset;
+        session.origin = 0.0;
+        session.offset = 0.0;
+        capturingLive.store(true);
+        captureStopping.store(false);
+        int captureResult = AVERROR_EOF;
+        bool storageFailed = false;
+        struct Capture {
+            Impl& owner;
+            Session& session;
+            double origin;
+            double offset;
+            std::thread thread;
+            void stop() {
+                owner.captureStopping.store(true);
+                owner.changed.notify_all();
+                if (thread.joinable()) thread.join();
+                owner.capturingLive.store(false);
+                owner.captureStopping.store(false);
+                session.origin = origin;
+                session.offset = offset;
+            }
+            ~Capture() { stop(); }
+        } capture{*this, session, initialOrigin, initialOffset, {}};
+        capture.thread = std::thread([&] {
+            AVPacket* packet = av_packet_alloc();
+            double origin = initialOrigin;
+            double timeline = initialOffset;
+            std::vector<double> previous(session.timeBases.size(), kNoTime);
+            double offset = initialOffset;
+            auto waitingForKeyframe = Clock::now();
+            try {
+                if (!packet) throw RewindUnavailable("Cannot allocate the live recorder buffer.");
+                while (!stopping.load() && !captureStopping.load()) {
+                    beginIo();
+                    captureResult = av_read_frame(session.format, packet);
+                    endIo();
+                    if (captureResult < 0) break;
+                    if (packet->size > 64 * 1024 * 1024) {
+                        throw RewindUnavailable("A live packet exceeds the recording limit.");
+                    }
+                    if (packet->stream_index < 0 || static_cast<std::size_t>(packet->stream_index) >= session.timeBases.size()) {
+                        av_packet_unref(packet);
+                        continue;
+                    }
+                    const auto timebase = session.timeBases[packet->stream_index];
+                    if (timebase.num <= 0 || timebase.den <= 0) {
+                        throw RewindUnavailable("The live source has invalid media timing.");
+                    }
+                    const auto stamp = packet->dts != AV_NOPTS_VALUE ? packet->dts : packet->pts;
+                    if (stamp != AV_NOPTS_VALUE) {
+                        const double raw = stamp * av_q2d(timebase);
+                        if (!std::isfinite(origin)) origin = raw;
+                        auto& last = previous[packet->stream_index];
+                        if (std::isfinite(last) && (raw - last > 30.0 || raw - last < -3.0)) {
+                            offset = timeline - (raw - origin);
+                            std::fill(previous.begin(), previous.end(), kNoTime);
+                        }
+                        last = raw;
+                        timeline = std::max(timeline, raw - origin + offset);
+                    }
+                    const auto retime = [&](std::int64_t value) {
+                        if (value == AV_NOPTS_VALUE) return value;
+                        const long double adjusted = std::round(
+                            (static_cast<long double>(value) * timebase.num / timebase.den -
+                             (std::isfinite(origin) ? origin : 0.0) + offset) * timebase.den / timebase.num);
+                        if (!std::isfinite(adjusted) || adjusted <= std::numeric_limits<std::int64_t>::min() ||
+                            adjusted > std::numeric_limits<std::int64_t>::max()) {
+                            throw RewindUnavailable("The live source has invalid media timing.");
+                        }
+                        return static_cast<std::int64_t>(adjusted);
+                    };
+                    packet->pts = retime(packet->pts);
+                    packet->dts = retime(packet->dts);
+                    const bool keyframe = session.videoIndex < 0 ||
+                        (packet->stream_index == session.videoIndex && (packet->flags & AV_PKT_FLAG_KEY));
+                    if (!spool->append(packet, timeline, keyframe)) {
+                        throw RewindUnavailable("The live recorder cannot retain a complete video keyframe group within its storage limit.");
+                    }
+                    av_packet_unref(packet);
+                    const auto saved = spool->snapshot();
+                    if (saved.bytes > 0) waitingForKeyframe = Clock::now();
+                    else if (Clock::now() - waitingForKeyframe > std::chrono::seconds(8)) {
+                        throw RewindUnavailable("The live source does not provide recordable keyframes.");
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        snapshot.liveRewind = saved.bytes > 0;
+                        snapshot.windowStartSeconds = saved.startSeconds;
+                        snapshot.windowEndSeconds = saved.endSeconds;
+                        snapshot.recordedBytes = saved.bytes;
+                        const std::string filling = "Waiting for a video keyframe to resume live recording.";
+                        if (saved.bytes == 0) snapshot.rewindMessage = filling;
+                        else if (snapshot.rewindMessage == filling) snapshot.rewindMessage.clear();
+                    }
+                    changed.notify_all();
+                }
+            } catch (const std::exception&) {
+                storageFailed = true;
+            }
+            av_packet_free(&packet);
+            endIo();
+            spool->close();
+            changed.notify_all();
+        });
+        std::uint64_t cursor = 0;
+        for (;;) {
+            if (stopping.load()) return AVERROR_EXIT;
+            if (seekInterrupt.load()) {
+                const double target = takeSeek(session);
+                if (std::isfinite(target)) {
+                    cursor = spool->seek(target);
+                    resetDecoders(session, target);
+                }
+            }
+            if (!waitActive(session.preview)) continue;
+            PacketSpool::ReadResult result;
+            try {
+                result = spool->read(cursor, session.packet);
+            } catch (const std::exception&) {
+                throw RewindUnavailable("Cannot read temporary live rewind storage.");
+            }
+            if (result == PacketSpool::ReadResult::Expired) {
+                const auto saved = spool->snapshot();
+                resetDecoders(session, saved.startSeconds);
+                std::lock_guard<std::mutex> lock(mutex);
+                snapshot.rewindMessage = "Your pause exceeded the saved window. Playback moved to the earliest saved point.";
+                continue;
+            }
+            if (result == PacketSpool::ReadResult::Waiting) {
+                std::unique_lock<std::mutex> lock(mutex);
+                changed.wait_for(lock, std::chrono::milliseconds(10));
+                continue;
+            }
+            if (result == PacketSpool::ReadResult::Finished) {
+                capture.stop();
+                if (storageFailed) throw RewindUnavailable("Live rewind stopped because temporary storage is unavailable or the stream exceeds its limit.");
+                return captureResult;
+            }
+            consumePacket(session);
+            av_packet_unref(session.packet);
+        }
+    }
+
+    int playSession(Session& session) {
+        if (!snapshot.live) return playDirectSession(session);
+        try {
+            return playLiveSession(session);
+        } catch (const RewindUnavailable& error) {
+            double current;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                current = std::max(clockLocked(), snapshot.windowEndSeconds);
+            }
+            resetDecoders(session, current);
+            if (session.format->pb) {
+                session.format->pb->error = 0;
+                session.format->pb->eof_reached = 0;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                snapshot.liveRewind = false;
+                snapshot.recordedBytes = 0;
+                snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+                snapshot.rewindMessage = std::string(error.what()) + " Continuing with direct playback.";
+            }
+            return playDirectSession(session);
+        }
+    }
+
 
     void finishPlayback(Session& session) {
         if (session.video && !decodePacket(session, session.video, false, nullptr)) {
@@ -775,6 +1128,12 @@ struct Player::Impl {
                         failure = error.what();
                     }
                 }
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    snapshot.liveRewind = false;
+                    snapshot.recordedBytes = 0;
+                    snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+                }
                 if (stopping.load()) {
                     break;
                 }
@@ -822,6 +1181,7 @@ struct Player::Impl {
         }
         std::lock_guard<std::mutex> lock(mutex);
         frames.clear();
+        cues.clear();
         snapshot = {};
         snapshot.volume = volume.load();
         paused = false;
@@ -831,6 +1191,7 @@ struct Player::Impl {
         clockBase = 0.0;
         lastClock = 0.0;
         seekTarget = kNoTime;
+        requestedAudio = requestedSubtitle = -2;
         seekInterrupt.store(false);
         ++serial;
     }
@@ -913,13 +1274,63 @@ void Player::seekRelative(double seconds) {
         return;
     }
     if (impl_->snapshot.live) {
-        impl_->snapshot.message = "Seeking is unavailable for live sources.";
-        return;
+        if (!impl_->snapshot.liveRewind) {
+            impl_->snapshot.message = "Live rewind is unavailable for this source.";
+            return;
+        }
+        impl_->seekTarget = std::clamp(impl_->clockLocked() + seconds,
+            impl_->snapshot.windowStartSeconds, impl_->snapshot.windowEndSeconds);
+    } else {
+        const double upper = impl_->snapshot.durationSeconds > 0.0
+            ? std::max(0.0, impl_->snapshot.durationSeconds - 0.1)
+            : std::numeric_limits<double>::max();
+        impl_->seekTarget = std::clamp(impl_->clockLocked() + seconds, 0.0, upper);
     }
-    const double upper = impl_->snapshot.durationSeconds > 0.0
-        ? std::max(0.0, impl_->snapshot.durationSeconds - 0.1)
-        : std::numeric_limits<double>::max();
-    impl_->seekTarget = std::clamp(impl_->clockLocked() + seconds, 0.0, upper);
+    impl_->seekInterrupt.store(true);
+    impl_->changed.notify_all();
+}
+
+void Player::goLive() {
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (!impl_->snapshot.live || !impl_->snapshot.liveRewind ||
+            impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
+        impl_->seekTarget = std::max(impl_->snapshot.windowStartSeconds,
+            impl_->snapshot.windowEndSeconds - 0.5);
+        impl_->clockBase = impl_->clockLocked();
+        impl_->lastClock = impl_->clockBase;
+        impl_->clockAnchor = Clock::now();
+        impl_->paused = false;
+        if (impl_->sink) impl_->sink->setPaused(false);
+        impl_->seekInterrupt.store(true);
+    }
+    impl_->changed.notify_all();
+}
+
+void Player::cycleAudioTrack() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto& tracks = impl_->snapshot.audioTracks;
+    if (tracks.size() < 2 || impl_->snapshot.state == State::Opening ||
+        impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
+    const int current = impl_->requestedAudio == -2 ? impl_->snapshot.audioTrack : impl_->requestedAudio;
+    auto selected = std::find_if(tracks.begin(), tracks.end(), [current](const Track& track) { return track.id == current; });
+    if (selected == tracks.end() || ++selected == tracks.end()) selected = tracks.begin();
+    impl_->requestedAudio = selected->id;
+    impl_->seekTarget = impl_->clockLocked();
+    impl_->seekInterrupt.store(true);
+    impl_->changed.notify_all();
+}
+
+void Player::cycleSubtitleTrack() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto& tracks = impl_->snapshot.subtitleTracks;
+    if (tracks.empty() || impl_->snapshot.state == State::Opening ||
+        impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
+    const int current = impl_->requestedSubtitle == -2 ? impl_->snapshot.subtitleTrack : impl_->requestedSubtitle;
+    auto selected = std::find_if(tracks.begin(), tracks.end(), [current](const Track& track) { return track.id == current; });
+    if (selected == tracks.end()) impl_->requestedSubtitle = tracks.front().id;
+    else impl_->requestedSubtitle = ++selected == tracks.end() ? -1 : selected->id;
+    impl_->seekTarget = impl_->clockLocked();
     impl_->seekInterrupt.store(true);
     impl_->changed.notify_all();
 }
@@ -935,6 +1346,12 @@ Player::Status Player::status() const {
     Status status = impl_->snapshot;
     status.currentSeconds = impl_->clockLocked();
     status.volume = impl_->volume.load();
+    for (const auto& cue : impl_->cues) {
+        if (cue.start <= status.currentSeconds && status.currentSeconds < cue.end) {
+            if (!status.subtitleText.empty()) status.subtitleText += '\n';
+            status.subtitleText += cue.text;
+        }
+    }
     return status;
 }
 

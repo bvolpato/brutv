@@ -112,7 +112,7 @@ public final class LocalizationManager: ObservableObject {
         "Scan a BruTV sign-in QR code with the camera or from a photo.": "Escaneie o QR Code de acesso do BruTV com a câmera ou foto.",
         "Paste a BruTV sign-in link or playlist URL.": "Cole um link de acesso ou URL de lista de reprodução.",
         "Got a BruTV QR code? Tap Scan QR Code. Got a link? Copy it, then tap Paste.": "Tem um QR Code do BruTV? Toque em Escanear. Tem um link? Copie e toque em Colar.",
-        "Fill Demo Credentials (example.invalid)": "Preencher Dados de Demonstração (example.invalid)",
+        "Fill Test Credentials": "Preencher Dados de Teste",
         "SAVED PROFILES": "PERFIS SALVOS",
         "SERVER ADDRESS": "ENDEREÇO DO SERVIDOR",
         "USERNAME": "USUÁRIO",

@@ -253,14 +253,19 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     }
 
     #if DEBUG
-    /// Test account for Debug builds and UI tests only. Release builds hold no credentials.
-    public static let demo = ServerProfile(
-        name: "Demo Account",
-        serverURL: "http://example.invalid",
-        username: "REDACTED_USERNAME",
-        password: "REDACTED_PASSWORD",
-        lastConnected: Date(),
-        isActive: true
-    )
+    public static var demo: ServerProfile {
+        let environment = ProcessInfo.processInfo.environment
+        let usesProvider = !ProcessInfo.processInfo.arguments.contains("--ui-fixtures") &&
+            ["BRUTV_PLAYBACK_SERVER", "BRUTV_PLAYBACK_USERNAME", "BRUTV_PLAYBACK_PASSWORD"]
+                .allSatisfy { !(environment[$0] ?? "").isEmpty }
+        return ServerProfile(
+            name: "Demo Account",
+            serverURL: usesProvider ? environment["BRUTV_PLAYBACK_SERVER"]! : "https://ui-fixture.example.test",
+            username: usesProvider ? environment["BRUTV_PLAYBACK_USERNAME"]! : "fixture-user",
+            password: usesProvider ? environment["BRUTV_PLAYBACK_PASSWORD"]! : "fixture-password",
+            lastConnected: Date(),
+            isActive: true
+        )
+    }
     #endif
 }

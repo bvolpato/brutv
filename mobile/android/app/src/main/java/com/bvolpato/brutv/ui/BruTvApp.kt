@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +49,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -105,12 +108,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -155,6 +160,7 @@ import java.io.File
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val BruTvColors = darkColorScheme(
     primary = Color(0xFF41E0D0),
@@ -450,7 +456,8 @@ private fun WelcomePage(
         Column(
             Modifier
                 .then(if (centered) Modifier.width(620.dp).align(Alignment.Center) else Modifier.fillMaxWidth().align(Alignment.Center))
-                .padding(if (isTv) 48.dp else 28.dp),
+                .padding(if (isTv) 48.dp else 28.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(18.dp),
             horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
         ) {
@@ -461,16 +468,43 @@ private fun WelcomePage(
             if (!state.initialized) {
                 CircularProgressIndicator(color = Aqua)
             } else {
-                if (isTv) ActionButton("Pair with phone", onPair, Modifier.focusRequester(pairFocus), icon = Icons.Outlined.Devices, primary = true, isTv = true)
-                ActionButton("Connect with Xtream", onAddXtream, icon = Icons.Outlined.InsertLink, primary = !isTv, isTv = isTv)
-                ActionButton("Add an M3U playlist URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = isTv)
-                ActionButton("Import an M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = isTv)
-                if (!isTv) ActionButton("Scan a BruTV QR code", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
-                ActionButton("Paste a sign-in link", onPasteLink, icon = Icons.Outlined.ContentPaste, isTv = isTv)
+                if (isTv) WelcomeActionButton("Pair with phone", onPair, Modifier.focusRequester(pairFocus), icon = Icons.Outlined.Devices, primary = true, isTv = true)
+                WelcomeActionButton("Connect with Xtream", onAddXtream, icon = Icons.Outlined.InsertLink, primary = !isTv, isTv = isTv)
+                WelcomeActionButton("Add an M3U playlist URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = isTv)
+                WelcomeActionButton("Import an M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = isTv)
+                if (!isTv) WelcomeActionButton("Scan a BruTV QR code", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                WelcomeActionButton("Paste a sign-in link", onPasteLink, icon = Icons.Outlined.ContentPaste, isTv = isTv)
             }
             Text("Your provider login stays on this device. Use links and QR codes only with people you trust.", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun WelcomeActionButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    primary: Boolean = false,
+    isTv: Boolean,
+) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
+    ActionButton(
+        label = label,
+        onClick = onClick,
+        modifier = modifier
+            .bringIntoViewRequester(bringIntoViewRequester)
+            .onFocusChanged { focusState ->
+                if (focusState.isFocused) {
+                    coroutineScope.launch { bringIntoViewRequester.bringIntoView() }
+                }
+            },
+        icon = icon,
+        primary = primary,
+        isTv = isTv,
+    )
 }
 
 @Composable
@@ -1109,66 +1143,93 @@ private fun CatalogPage(
         }
 
         Column(Modifier.weight(1f).fillMaxHeight()) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = if (isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    val itemCount = state.visibleEntries.size
-                    Text("$itemCount ${if (itemCount == 1) "item" else (if (isPt) "itens" else "items")}", style = MaterialTheme.typography.bodySmall, color = Muted)
-                }
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val itemCount = state.visibleEntries.size
+                val itemCountLabel = "$itemCount ${if (itemCount == 1) "item" else (if (isPt) "itens" else "items")}"
+                if (maxWidth < 560.dp) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(
+                                title,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(itemCountLabel, style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1)
+                        }
 
-                if (hasCategories && !isTv && !tablet) {
-                    FilterChip(
-                        selected = showCategoryDrawer || state.selectedCategoryId != null,
-                        onClick = { showCategoryDrawer = !showCategoryDrawer },
-                        label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = { Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = Aqua) },
-                    )
-                }
+                        CatalogSearchField(
+                            value = state.searchText,
+                            onValueChange = viewModel::setSearchText,
+                            isPt = isPt,
+                            isTv = isTv,
+                            editingSearch = editingSearch,
+                            onBeginEditing = { editingSearch = true },
+                            focusManager = focusManager,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
 
-                OutlinedTextField(
-                    value = state.searchText,
-                    onValueChange = viewModel::setSearchText,
-                    singleLine = true,
-                    readOnly = isTv && !editingSearch,
-                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                    placeholder = { Text(if (isPt) "Buscar" else "Search") },
-                    modifier = Modifier.width(if (isTv) 300.dp else 140.dp).then(
-                        if (isTv) Modifier.onPreviewKeyEvent { event ->
-                            val key = event.nativeKeyEvent
-                            when (key.keyCode) {
-                                KeyEvent.KEYCODE_DPAD_UP,
-                                KeyEvent.KEYCODE_DPAD_DOWN,
-                                KeyEvent.KEYCODE_DPAD_LEFT,
-                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                    if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
-                                        val direction = when (key.keyCode) {
-                                            KeyEvent.KEYCODE_DPAD_UP -> FocusDirection.Up
-                                            KeyEvent.KEYCODE_DPAD_DOWN -> FocusDirection.Down
-                                            KeyEvent.KEYCODE_DPAD_LEFT -> FocusDirection.Left
-                                            else -> FocusDirection.Right
-                                        }
-                                        focusManager.moveFocus(direction)
-                                    }
-                                    !editingSearch
-                                }
-                                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                    if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) editingSearch = true
-                                    true
-                                }
-                                else -> false
+                        FlowRow(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            if (hasCategories && !isTv && !tablet) {
+                                FilterChip(
+                                    selected = showCategoryDrawer || state.selectedCategoryId != null,
+                                    onClick = { showCategoryDrawer = !showCategoryDrawer },
+                                    label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    leadingIcon = { Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = Aqua) },
+                                )
                             }
-                        } else Modifier,
-                    ),
-                )
-                if (state.destination == BruTvDestination.LIVE) FilterChip(
-                    selected = state.onlyFavorites,
-                    onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
-                    label = { Text(if (isPt) "Salvos" else "Saved") },
-                )
+                            if (state.destination == BruTvDestination.LIVE) FilterChip(
+                                selected = state.onlyFavorites,
+                                onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
+                                label = { Text(if (isPt) "Salvos" else "Saved") },
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(title, style = if (isTv) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                            Text(itemCountLabel, style = MaterialTheme.typography.bodySmall, color = Muted)
+                        }
+
+                        if (hasCategories && !isTv && !tablet) {
+                            FilterChip(
+                                selected = showCategoryDrawer || state.selectedCategoryId != null,
+                                onClick = { showCategoryDrawer = !showCategoryDrawer },
+                                label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                leadingIcon = { Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = Aqua) },
+                            )
+                        }
+
+                        CatalogSearchField(
+                            value = state.searchText,
+                            onValueChange = viewModel::setSearchText,
+                            isPt = isPt,
+                            isTv = isTv,
+                            editingSearch = editingSearch,
+                            onBeginEditing = { editingSearch = true },
+                            focusManager = focusManager,
+                            modifier = Modifier.width(if (isTv) 300.dp else 140.dp),
+                        )
+                        if (state.destination == BruTvDestination.LIVE) FilterChip(
+                            selected = state.onlyFavorites,
+                            onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
+                            label = { Text(if (isPt) "Salvos" else "Saved") },
+                        )
+                    }
+                }
             }
 
             if (state.destination == BruTvDestination.FAVORITES || state.destination == BruTvDestination.RECENTS) {
@@ -1233,6 +1294,54 @@ private fun CatalogPage(
             }
         }
     }
+}
+
+@Composable
+private fun CatalogSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    isPt: Boolean,
+    isTv: Boolean,
+    editingSearch: Boolean,
+    onBeginEditing: () -> Unit,
+    focusManager: FocusManager,
+    modifier: Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        readOnly = isTv && !editingSearch,
+        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+        placeholder = { Text(if (isPt) "Buscar" else "Search") },
+        modifier = modifier.then(
+            if (isTv) Modifier.onPreviewKeyEvent { event ->
+                val key = event.nativeKeyEvent
+                when (key.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP,
+                    KeyEvent.KEYCODE_DPAD_DOWN,
+                    KeyEvent.KEYCODE_DPAD_LEFT,
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) {
+                            val direction = when (key.keyCode) {
+                                KeyEvent.KEYCODE_DPAD_UP -> FocusDirection.Up
+                                KeyEvent.KEYCODE_DPAD_DOWN -> FocusDirection.Down
+                                KeyEvent.KEYCODE_DPAD_LEFT -> FocusDirection.Left
+                                else -> FocusDirection.Right
+                            }
+                            focusManager.moveFocus(direction)
+                        }
+                        !editingSearch
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        if (!editingSearch && key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) onBeginEditing()
+                        true
+                    }
+                    else -> false
+                }
+            } else Modifier,
+        ),
+    )
 }
 
 @Composable

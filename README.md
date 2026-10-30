@@ -63,7 +63,7 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
 - **Designed for Apple TV, iPad, iPhone, and Mac:**
   - Native Apple TV (tvOS) target with Siri Remote focus engine, Play/Pause remote toggle, and up/down channel zapping.
   - Native tvOS Top Shelf extension showcasing favorites and continue-watching queues with instant deep linking.
-  - Multi-column `NavigationSplitView` sidebar on iPad and Mac.
+  - Adaptive tab and sidebar navigation on iPhone, iPad, and Mac.
   - Native Picture-in-Picture (PiP) and background audio playback.
   - On Mac Catalyst, double-click toggles full screen, and the Esc key exits full screen.
   - Dark glassmorphism Apple TV aesthetic across all screens.
@@ -169,11 +169,6 @@ If BruTV is not installed, the `brutv://` link does nothing. The person must ins
 
 ---
 
-## Test Credentials
+## Test data
 
-Debug builds have a **"Fill Demo Credentials (example.invalid)"** button on the login screen. UI tests use the same account:
-- **Server:** `http://example.invalid`
-- **Username:** `REDACTED_USERNAME`
-- **Password:** `REDACTED_PASSWORD`
-
-Release builds do not contain this account. The code is inside `#if DEBUG` blocks. App Review and store screenshots use the public playlist `https://iptv-org.github.io/iptv/countries/br.m3u`.
+Debug and UI test flows use synthetic local fixtures. They do not include a provider account or contact a subscription service. To test an authorized provider, supply its credentials locally through the opt-in integration-test environment described in the Apple release guide. Never commit account credentials or include them in screenshots.

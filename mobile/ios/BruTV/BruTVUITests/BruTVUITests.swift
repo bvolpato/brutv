@@ -9,7 +9,7 @@ final class BruTVUITests: XCTestCase {
 
     private func launchLoggedIn() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo-login"]
+        app.launchArguments = ["--reset-session", "--ui-fixtures", "--demo-login", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         return app
     }
@@ -39,6 +39,12 @@ final class BruTVUITests: XCTestCase {
             }
             if !card.exists {
                 navigate(app, to: "Live TV", file: file, line: line)
+            }
+        }
+        if !card.exists {
+            let allChannels = app.buttons["ALL CHANNELS"]
+            if allChannels.waitForExistence(timeout: 5) {
+                allChannels.tap()
             }
         }
         XCTAssertTrue(card.waitForExistence(timeout: 30), "Channel list did not load", file: file, line: line)
@@ -138,7 +144,7 @@ final class BruTVUITests: XCTestCase {
 
     private func launchLoggedOut() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--reset-session"]
+        app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 10), "Login screen not shown")
         return app
@@ -152,7 +158,7 @@ final class BruTVUITests: XCTestCase {
     func testDemoLoginButton() throws {
         let app = launchLoggedOut()
 
-        let demoButton = app.buttons["Fill Demo Credentials (example.invalid)"]
+        let demoButton = app.buttons["Fill Test Credentials"]
         XCTAssertTrue(demoButton.waitForExistence(timeout: 4.0))
         XCTAssertFalse(app.buttons["connectButton"].isEnabled, "Connect must be disabled with empty fields")
         demoButton.tap()
@@ -166,6 +172,7 @@ final class BruTVUITests: XCTestCase {
 
         // Relaunch without --demo-login: the saved session must skip the login screen.
         let relaunched = XCUIApplication()
+        relaunched.launchArguments = ["--ui-fixtures", "--no-splash"]
         relaunched.launch()
         firstChannel(relaunched)
         XCTAssertFalse(relaunched.buttons["connectButton"].exists)
@@ -177,7 +184,7 @@ final class BruTVUITests: XCTestCase {
         let app = launchLoggedOut()
 
         // This is the URL a sign-in QR code carries.
-        let link = "brutv://login?server=http%3A%2F%2Fexample.invalid&username=REDACTED_USERNAME&password=REDACTED_PASSWORD"
+        let link = "brutv://login?server=https%3A%2F%2Fui-fixture.example.test&username=fixture-user&password=fixture-password"
         app.open(URL(string: link)!)
 
         firstChannel(app)
@@ -205,12 +212,13 @@ final class BruTVUITests: XCTestCase {
         let field = app.textFields["playlistField"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
-        field.typeText("https://iptv-org.github.io/iptv/countries/br.m3u")
+        field.typeText("https://ui-fixture.example.test/channels.m3u")
         app.buttons["connectButton"].tap()
 
+        let category = app.buttons["General"]
+        XCTAssertTrue(category.waitForExistence(timeout: 5), "Playlist groups not shown")
+        category.tap()
         let card = firstChannel(app)
-        // Groups from the playlist become category chips.
-        XCTAssertTrue(app.buttons["General"].waitForExistence(timeout: 5), "Playlist groups not shown")
 
         card.tap()
         revealControls(app)
@@ -296,10 +304,12 @@ final class BruTVUITests: XCTestCase {
         let search = app.textFields["channelSearchField"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
-        search.typeText("Globo")
+        search.typeText("Fixture One")
 
-        let globo = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] 'Globo'")).firstMatch
-        XCTAssertTrue(globo.waitForExistence(timeout: 10), "No Globo channel after search")
+        let fixture = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] 'Fixture One'")).firstMatch
+        XCTAssertTrue(fixture.waitForExistence(timeout: 10), "No matching channel after search")
+        XCTAssertFalse(app.buttons.matching(identifier: "channelCard")
+            .matching(NSPredicate(format: "label CONTAINS[c] 'Fixture Two'")).firstMatch.exists)
         firstChannel(app)
     }
 
@@ -311,6 +321,51 @@ final class BruTVUITests: XCTestCase {
             navigate(app, to: name)
         }
         firstChannel(app)
+    }
+
+    func testNavigationAndPlaybackSurviveResizing() throws {
+        let app = launchLoggedOut()
+        app.open(URL(string: "brutv://login?server=https%3A%2F%2Fui-fixture.example.test&username=fixture-user&password=fixture-password")!)
+        firstChannel(app)
+        let search = app.textFields["channelSearchField"]
+        search.tap()
+        search.typeText("Fixture One")
+        firstChannel(app).tap()
+        revealControls(app)
+        app.buttons["playerMinimizeButton"].tap()
+
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
+            XCUIDevice.shared.orientation = orientation
+            let mini = app.buttons["miniPlayer"]
+            XCTAssertTrue(mini.waitForExistence(timeout: 5) && mini.isHittable)
+            XCTAssertEqual(search.value as? String, "Fixture One", "Resizing discarded the channel filter")
+            XCTAssertEqual(app.buttons.matching(identifier: "channelCard").count, 1)
+        }
+
+        app.buttons["miniPlayer"].tap()
+        revealControls(app)
+        XCTAssertTrue(app.buttons["playerPlayPauseButton"].isHittable)
+    }
+
+    func testPlayerControlsFitAfterRotation() throws {
+        let app = launchLoggedIn()
+        openFirstChannel(app)
+        app.buttons["playerPlayPauseButton"].tap()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            revealControls(app)
+            let window = app.windows.firstMatch.frame
+            for identifier in ["playerBackButton", "playerCloseButton", "playerGuideButton", "playerPrevButton", "playerPlayPauseButton", "playerNextButton", "playerMuteButton", "playerMoreOptionsButton"] {
+                let button = app.buttons[identifier]
+                XCTAssertTrue(button.exists && button.isHittable, "\(identifier) is not reachable")
+                XCTAssertGreaterThanOrEqual(button.frame.minX, window.minX)
+                XCTAssertLessThanOrEqual(button.frame.maxX, window.maxX)
+                XCTAssertGreaterThanOrEqual(button.frame.minY, window.minY)
+                XCTAssertLessThanOrEqual(button.frame.maxY, window.maxY)
+            }
+        }
     }
 
     func testLogoutReturnsToLoginScreen() throws {
@@ -406,8 +461,16 @@ final class BruTVUITests: XCTestCase {
     /// frames on screen each time, so it fails on audio-only playback.
     /// Override the channel with `TEST_RUNNER_BRUTV_PLAYBACK_CHANNEL`.
     func testLiveChannelShowsVideoInPlayerAndMiniPlayer() throws {
-        let channel = ProcessInfo.processInfo.environment["BRUTV_PLAYBACK_CHANNEL"] ?? "A Fazenda 02"
-        let app = launchLoggedIn()
+        let environment = ProcessInfo.processInfo.environment
+        let keys = ["BRUTV_PLAYBACK_SERVER", "BRUTV_PLAYBACK_USERNAME", "BRUTV_PLAYBACK_PASSWORD", "BRUTV_PLAYBACK_CHANNEL"]
+        guard keys.allSatisfy({ !(environment[$0] ?? "").isEmpty }),
+              let channel = environment["BRUTV_PLAYBACK_CHANNEL"] else {
+            throw XCTSkip("Set BRUTV_PLAYBACK_SERVER, USERNAME, PASSWORD and CHANNEL for provider video validation")
+        }
+        let app = XCUIApplication()
+        app.launchArguments = ["--reset-session", "--demo-login", "--no-splash"]
+        app.launchEnvironment = Dictionary(uniqueKeysWithValues: keys.map { ($0, environment[$0]!) })
+        app.launch()
         firstChannel(app)
 
         let search = app.textFields["channelSearchField"]
@@ -467,6 +530,7 @@ final class BruTVUITests: XCTestCase {
         // Relaunch: the setting is saved. Then restore it.
         app.terminate()
         let relaunched = XCUIApplication()
+        relaunched.launchArguments = ["--ui-fixtures", "--no-splash"]
         relaunched.launch()
         firstChannel(relaunched)
         navigate(relaunched, to: "Settings")

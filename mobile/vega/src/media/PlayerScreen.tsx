@@ -6,8 +6,9 @@ import {ContentItem} from '../domain/catalog';
 import {PlaybackPosition, PlaybackSession, PlaybackStatus} from './PlaybackSession';
 import {vegaAdapter} from './vegaAdapter';
 import {TVButton} from '../TVButton';
+import {localizePlayerMessage, PlayerLanguage, playerText} from './playerCopy';
 
-export function PlayerScreen({item, onClose}: {item: ContentItem; onClose: () => void}) {
+export function PlayerScreen({item, language, onClose}: {item: ContentItem; language: PlayerLanguage; onClose: () => void}) {
   const [status, setStatus] = useState<PlaybackStatus>('loading');
   const [attempt, setAttempt] = useState(0);
   const [position, setPosition] = useState<PlaybackPosition>();
@@ -37,29 +38,31 @@ export function PlayerScreen({item, onClose}: {item: ContentItem; onClose: () =>
   }, [item.url, item.kind, attempt, onClose]);
   const behind = position?.live ? Math.max(0, (position.liveTarget ?? position.end) - position.position) : 0;
   const canRewind = !!position && position.end - position.start > 1;
+  const text = playerText(language);
+  const message = localizePlayerMessage(position?.message || recordingMessage, language);
   return <View style={styles.screen}>
     <KeplerVideoSurfaceView style={styles.surface}
       onSurfaceViewCreated={handle => { surface.current = handle; session.current?.surfaceCreated(handle); }}
       onSurfaceViewDestroyed={handle => { surface.current = undefined; session.current?.surfaceDestroyed(handle); }}/>
     <View style={styles.overlay}>
       <Text style={styles.title}>{item.name}</Text>
-      <Text style={styles.status}>{status === 'error' ? 'Playback failed. Check the provider and source format, then retry.' : status}</Text>
+      <Text style={styles.status}>{text.status[status]}</Text>
       {item.kind === 'live' && <Text style={styles.status}>
-        {position?.expired ? 'Your pause exceeded the saved window. Playback moved to the earliest saved point. ' : ''}
-        {position?.message || recordingMessage || (position?.recording
-          ? `Saving live TV in temporary storage · ${Math.round(position.recordedSeconds || 0)} seconds saved · ${Math.round((position.recordedBytes || 0) / 1024 / 1024)} MB`
-          : 'Checking live rewind support…')}
-        {behind > 3 ? ` · ${Math.round(behind)} seconds behind live` : ''}
+        {position?.expired ? `${text.expired} ` : ''}
+        {message || (position?.recording
+          ? text.recording(Math.round(position.recordedSeconds || 0), Math.round((position.recordedBytes || 0) / 1024 / 1024))
+          : text.checking)}
+        {behind > 3 ? ` ${text.behind(Math.round(behind))}` : ''}
       </Text>}
       <View style={styles.row}>
-        <TVButton label="Back to library" preferred onPress={onClose}/>
-        {status === 'error' ? <TVButton label="Retry" onPress={() => setAttempt(value => value + 1)}/> : <>
-          <TVButton label={status === 'paused' ? 'Play' : 'Pause'} onPress={() => { void session.current?.toggle().catch(() => setStatus('error')); }}/>
+        <TVButton label={text.back} preferred onPress={onClose}/>
+        {status === 'error' ? <TVButton label={text.retry} onPress={() => setAttempt(value => value + 1)}/> : <>
+          <TVButton label={status === 'paused' ? text.play : text.pause} onPress={() => { void session.current?.toggle().catch(() => setStatus('error')); }}/>
           {(item.kind !== 'live' || canRewind) && <>
-            <TVButton label="Back 10 seconds" onPress={() => session.current?.seek(-10)}/>
-            <TVButton label="Forward 10 seconds" onPress={() => session.current?.seek(10)}/>
+            <TVButton label={text.back10} onPress={() => session.current?.seek(-10)}/>
+            <TVButton label={text.forward10} onPress={() => session.current?.seek(10)}/>
           </>}
-          {item.kind === 'live' && behind > 3 && <TVButton label="Go live" onPress={() => {void session.current?.goLive().catch(() => setStatus('error'));}}/>}
+          {item.kind === 'live' && behind > 3 && <TVButton label={text.goLive} onPress={() => {void session.current?.goLive().catch(() => setStatus('error'));}}/>}
         </>}
       </View>
     </View>

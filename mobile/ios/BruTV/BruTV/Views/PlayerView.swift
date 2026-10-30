@@ -631,56 +631,22 @@ public struct PlayerView: View {
                     .frame(minWidth: 44, alignment: .trailing)
             }
 
-            // Buttons Row
-            HStack(spacing: 0) {
-                // Left group
-                HStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
                     audioSubtitleMenu
-                }
-
-                Spacer(minLength: 8)
-
-                // Center playback group
-                HStack(spacing: 12) {
-                    if !playback.activeEpisodeList.isEmpty {
-                        Button {
-                            playback.previousEpisode()
-                            scheduleControlsAutoHide()
-                        } label: {
-                            Image(systemName: "backward.end.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 36))
-                        .disabled(!playback.hasPreviousEpisode)
-                        .opacity(playback.hasPreviousEpisode ? 1.0 : 0.35)
-                        .help("Previous Episode".localized)
-                    }
-
-                    vodRewindButton
-                    playPauseButton
-                    vodForwardButton
-
-                    if !playback.activeEpisodeList.isEmpty {
-                        Button {
-                            playback.nextEpisode()
-                            scheduleControlsAutoHide()
-                        } label: {
-                            Image(systemName: "forward.end.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 36))
-                        .disabled(!playback.hasNextEpisode)
-                        .opacity(playback.hasNextEpisode ? 1.0 : 0.35)
-                        .help("Next Episode".localized)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                // Right group
-                HStack(spacing: 8) {
+                    vodTransportControls
                     muteButton
                     moreOptionsMenu
+                }
+                .fixedSize(horizontal: true, vertical: false)
+
+                VStack(spacing: 10) {
+                    vodTransportControls
+                    HStack(spacing: 16) {
+                        audioSubtitleMenu
+                        muteButton
+                        moreOptionsMenu
+                    }
                 }
             }
         }
@@ -702,34 +668,76 @@ public struct PlayerView: View {
         .frame(maxWidth: 580)
     }
 
+    private var vodTransportControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                if !playback.activeEpisodeList.isEmpty { episodeButton(previous: true) }
+                vodSeekControls
+                if !playback.activeEpisodeList.isEmpty { episodeButton(previous: false) }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            VStack(spacing: 10) {
+                vodSeekControls
+                if !playback.activeEpisodeList.isEmpty {
+                    HStack(spacing: 12) {
+                        episodeButton(previous: true)
+                        episodeButton(previous: false)
+                    }
+                }
+            }
+        }
+    }
+
+    private var vodSeekControls: some View {
+        HStack(spacing: 12) {
+            vodRewindButton
+            playPauseButton
+            vodForwardButton
+        }
+    }
+
+    private func episodeButton(previous: Bool) -> some View {
+        let isEnabled = previous ? playback.hasPreviousEpisode : playback.hasNextEpisode
+        let title = (previous ? "Previous Episode" : "Next Episode").localized
+        return Button {
+            if previous { playback.previousEpisode() } else { playback.nextEpisode() }
+            scheduleControlsAutoHide()
+        } label: {
+            Image(systemName: previous ? "backward.end.fill" : "forward.end.fill")
+                .font(.system(size: 14, weight: .semibold))
+        }
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 36))
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1.0 : 0.35)
+        .accessibilityLabel(title)
+        .help(title)
+    }
+
     private var liveControlsDeck: some View {
         VStack(spacing: 10) {
             if playback.settings.liveRewind {
                 liveTimeshiftControls
             }
 
-            HStack(spacing: 0) {
-                // Left group
-                HStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
                     guideButton
                     audioSubtitleMenu
-                }
-
-                Spacer(minLength: 8)
-
-                // Center playback group
-                HStack(spacing: 12) {
-                    prevChannelButton
-                    playPauseButton
-                    nextChannelButton
-                }
-
-                Spacer(minLength: 8)
-
-                // Right group
-                HStack(spacing: 8) {
+                    liveTransportControls
                     muteButton
                     moreOptionsMenu
+                }
+                .fixedSize(horizontal: true, vertical: false)
+
+                VStack(spacing: 10) {
+                    liveTransportControls
+                    HStack(spacing: 16) {
+                        guideButton
+                        audioSubtitleMenu
+                        muteButton
+                        moreOptionsMenu
+                    }
                 }
             }
 
@@ -753,6 +761,14 @@ public struct PlayerView: View {
         )
         .shadow(color: Color.black.opacity(0.5), radius: 18, x: 0, y: 6)
         .frame(maxWidth: 580)
+    }
+
+    private var liveTransportControls: some View {
+        HStack(spacing: 12) {
+            prevChannelButton
+            playPauseButton
+            nextChannelButton
+        }
     }
 
     private var vodRewindButton: some View {
@@ -1287,7 +1303,7 @@ struct MediaControlButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(width: isCircular ? size : nil, height: isCircular ? size : nil)
-            .frame(minWidth: isCircular ? size : 38, minHeight: isCircular ? size : 38)
+            .frame(minWidth: max(44, size), minHeight: max(44, size))
             .foregroundColor(isPrimary ? .black : (isActive ? .cyan : .white))
             .background(
                 Group {

@@ -25,37 +25,103 @@ jobs:
       - name: Run portable Swift tests
         run: ./test.sh --core
 
-  apple:
-    name: Apple builds and unit tests
-    runs-on: macos-15
-    timeout-minutes: 45
+  join-page:
+    name: Join page behavior
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select Xcode 26
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Test sign-in link initialization and QR privacy
+        run: node --test tools/join-page.test.mjs
+
+  apple:
+    name: Apple builds and adaptive UI tests
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode 27.1
         run: |
-          xcode_app=$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' | sort -V | tail -n 1)
-          if [[ -z "$xcode_app" ]]; then
-            echo "error: Xcode 26 is not installed on this runner" >&2
+          xcode_app=/Applications/Xcode_27.1.app
+          if [[ ! -d "$xcode_app" ]]; then
+            echo "error: Xcode 27.1 is required for iPhone Duo validation" >&2
             exit 1
           fi
           sudo xcode-select --switch "$xcode_app/Contents/Developer"
           xcodebuild -version
-      - name: Run iOS unit tests
-        run: |
-          simulator_id=$(xcrun simctl list devices available --json | jq -r '[.devices[][] | select(.name | startswith("iPhone "))][0].udid // empty')
-          if [[ -z "$simulator_id" ]]; then
-            echo "error: no available iPhone simulator is installed" >&2
+          sdks=$(xcodebuild -showsdks)
+          if ! grep -Fq 'iOS 27.1' <<<"$sdks"; then
+            echo "error: the selected Xcode does not include the iOS 27.1 SDK" >&2
             exit 1
           fi
+      - name: Find Apple simulator destinations
+        id: simulators
+        run: |
+          devices=$(xcrun simctl list devices available --json)
+          simulator_id() {
+            jq -r --arg name "$1" '[.devices[][] | select(.name == $name)][0].udid // empty' <<<"$devices"
+          }
+          iphone_id=$(simulator_id 'iPhone 18 Pro')
+          ipad_id=$(simulator_id 'iPad Pro 13-inch (M5)')
+          duo_id=$(simulator_id 'iPhone Duo')
+          for entry in "iPhone 18 Pro:$iphone_id" "iPad Pro 13-inch (M5):$ipad_id" "iPhone Duo:$duo_id"; do
+            if [[ "${entry#*:}" == "" ]]; then
+              echo "error: required simulator is unavailable: ${entry%%:*}" >&2
+              exit 1
+            fi
+          done
+          echo "iphone=$iphone_id" >>"$GITHUB_OUTPUT"
+          echo "ipad=$ipad_id" >>"$GITHUB_OUTPUT"
+          echo "duo=$duo_id" >>"$GITHUB_OUTPUT"
+      - name: Run iOS unit tests
+        run: |
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
             -scheme BruTV \
-            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulators.outputs.iphone }}" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/BruTV.xcresult" \
+            -resultBundlePath "$RUNNER_TEMP/BruTV-unit.xcresult" \
             -only-testing BruTVTests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run adaptive iPhone UI tests
+        run: |
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV \
+            -destination "platform=iOS Simulator,id=${{ steps.simulators.outputs.iphone }}" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/BruTV-iphone-ui.xcresult" \
+            -only-testing BruTVUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run adaptive iPad UI tests
+        run: |
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV \
+            -destination "platform=iOS Simulator,id=${{ steps.simulators.outputs.ipad }}" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/BruTV-ipad-ui.xcresult" \
+            -only-testing BruTVUITests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Run iPhone Duo UI tests
+        run: |
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV \
+            -destination "platform=iOS Simulator,id=${{ steps.simulators.outputs.duo }}" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/BruTV-duo-ui.xcresult" \
+            -only-testing BruTVUITests \
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO
       - name: Build tvOS simulator app
@@ -74,12 +140,12 @@ jobs:
             -destination 'generic/platform=macOS,variant=Mac Catalyst' \
             -derivedDataPath "$RUNNER_TEMP/catalyst-derived-data" \
             CODE_SIGNING_ALLOWED=NO
-      - name: Upload iOS test results
+      - name: Upload Apple test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ios-unit-test-results
-          path: ${{ runner.temp }}/BruTV.xcresult
+          name: apple-test-results
+          path: ${{ runner.temp }}/BruTV-*.xcresult
           retention-days: 7
           if-no-files-found: ignore
 

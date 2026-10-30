@@ -153,6 +153,7 @@ public struct LiveTVView: View {
                             items: menuItems,
                             selectedID: $selectedCategoryID,
                             onSelect: { catID in
+                                hasPickedCategoryOnPhone = true
                                 if isCompact {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         showSideMenu = false
@@ -173,6 +174,12 @@ public struct LiveTVView: View {
                         channelContentArea
                     }
                     .frame(maxWidth: .infinity)
+                }
+                .task {
+                    if !isCompact && streams.isEmpty {
+                        hasPickedCategoryOnPhone = true
+                        loadChannels(categoryID: selectedCategoryID)
+                    }
                 }
             }
         }

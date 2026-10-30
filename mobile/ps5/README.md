@@ -14,7 +14,8 @@ The implementation supports:
 - Vector navigation icons and PlayStation button symbols throughout the interface.
 - HTTP(S), HLS, and local-file playback through FFmpeg software decoding.
 - OpenGL video presentation and native PS5 stereo audio output at 48 kHz.
-- Pause/resume, VOD seeking, volume, bounded playback queues, and live reconnects.
+- Pause/resume, live rewind, VOD seeking, volume, bounded playback queues, and live reconnects.
+- Selectable audio tracks and timed text subtitles, including SRT, WebVTT, and ASS text.
 
 Sources, favorites, and recents stay in `/download0/brutv/settings.json` on the console.
 This file contains source credentials. It is written atomically with mode `0600`;
@@ -36,9 +37,10 @@ sudo apt-get install build-essential cmake ninja-build pkg-config \
 ./mobile/ps5/build/desktop/brutv
 ```
 
-Tests generate their own short video/audio media, decode and resample it, exercise
-pause/seek/stop, and serve MP4 byte ranges and HLS segments over a loopback HTTP
-server. Catalog tests cover provider responses, login links, and source-scoped
+Tests generate short video/audio media and multi-track captions, decode and resample
+them, switch audio and subtitles, and exercise pause/seek/stop. A paced loopback
+HTTP stream verifies continued recording during pause, rewind, and Go Live. MP4
+byte ranges and HLS segments also use a loopback server. Catalog tests cover provider responses, login links, and source-scoped
 settings. They require no private provider account.
 Artwork checks cover image decoding, input and memory limits, background requests,
 failed-image caching, and eviction when browsing between pages.
@@ -116,10 +118,10 @@ an existing title. It does not use port 9021.
 | Cross | Select; pause/resume in the player |
 | Circle | Back; close playback |
 | Square | Toggle a favorite |
-| Triangle | Search |
-| L1 / R1 | Previous / next sidebar tab |
-| L2 / R2 | Seek backward / forward in VOD |
-| Options | Settings |
+| Triangle | Search; Go Live in the live player |
+| L1 / R1 | Previous / next sidebar tab; cycle audio / subtitle tracks in the player |
+| L2 / R2 | Seek backward / forward in VOD or the retained live window |
+| Options | Settings; toggle playback controls in the player |
 
 The desktop equivalents are arrows, Enter, Escape, F2, F3, Shift+Tab / Tab,
 Page Up / Page Down, and F4. A desktop keyboard can type directly into an active
@@ -133,11 +135,27 @@ source dimensions are validated up to 4K. That is not a promise of real-time 4K
 decode. Codec, bitrate, stream, and firmware performance need console measurements.
 There is no proprietary hardware-decoder integration, DRM playback, or PSN support.
 
-Live pause keeps only the bounded decoder queue. This port does not yet implement
-the Apple/Android/Vega rolling ten-minute timeshift recorder. Seek controls are
-enabled for VOD; they do not claim to rewind a live provider window. Subtitles and
-alternate audio selection are not yet rendered by this interface. IPTV availability
-depends on the user's authorized source.
+Live playback retains demuxed, encoded media in private temporary files independently
+of paused decoding. The rolling window retains at most ten minutes or 256 MiB of
+serialized packets, whichever limit is reached first. The player shows the saved
+window, storage use, and distance behind live. Rewind and forward stay inside that
+window; Go Live resumes near the latest captured point. Expired pauses move to the
+earliest retained video keyframe with an explanation. All captured audio and subtitle
+packets retain their decoder metadata. Files contain no provider addresses, are
+unlinked immediately after creation, and are released on stop, source change, or
+process exit. Console storage uses the title's `/download0/brutv` sandbox.
+
+Recording needs usable video keyframes and writable temporary storage. Storage
+failure or a source that supplies no recordable keyframes falls back to direct
+playback with an explanation. This packet recorder supports the clear formats that
+the FFmpeg reader can demux; it does not add DRM support or background recording.
+Decoder, network, disk performance, pause expiry, and stream discontinuities still
+need physical-console measurements.
+
+L1 cycles supported audio tracks. R1 cycles text subtitles and Off. Captions are
+rendered as readable plain text, with up to three wrapped lines; ASS styling and
+positioning are not preserved. Bitmap subtitles are not offered as selectable
+tracks. IPTV availability depends on the user's authorized source.
 
 Artwork uses the image URLs supplied by the provider. Only visible items are
 requested, with two background workers, bounded queues, and cached failures. PNG,

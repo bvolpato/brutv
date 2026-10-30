@@ -211,15 +211,14 @@ public struct LoginView: View {
                         #endif
 
                         #if DEBUG
-                        if mode == .xtream && !ProcessInfo.processInfo.arguments.contains("--store-screenshots") {
-                            // Quick Demo Login Button (Debug builds only)
+                        if mode == .xtream && ProcessInfo.processInfo.arguments.contains("--ui-fixtures") {
                             Button {
                                 useDemoCredentials()
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "sparkles")
                                         .foregroundColor(.cyan)
-                                    Text("Fill Demo Credentials (example.invalid)".localized)
+                                    Text("Fill Test Credentials".localized)
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(.cyan)
                                 }
