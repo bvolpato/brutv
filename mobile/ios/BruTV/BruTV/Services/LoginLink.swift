@@ -13,12 +13,11 @@ public enum LoginLink: Equatable, Sendable {
     public static let scheme = "brutv"
     public static let defaultWebJoinBaseURL = "https://brunovolpato.com/brutv/join.html"
 
-    /// Parses a `brutv://login` link or universal HTTPS `https://.../join...` link.
+    /// Parses a `brutv://login` link or a supported HTTPS join link.
     public init?(url: URL) {
         let scheme = url.scheme?.lowercased()
         let isSchemeMatch = scheme == Self.scheme && url.host?.lowercased() == "login"
-        let isWebJoinMatch = (scheme == "http" || scheme == "https") &&
-            (url.path.lowercased().contains("join") || url.host?.lowercased() == "join.brutv.app")
+        let isWebJoinMatch = Self.isWebJoinURL(url)
 
         guard isSchemeMatch || isWebJoinMatch,
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
@@ -31,6 +30,7 @@ public enum LoginLink: Equatable, Sendable {
         }
 
         if let playlist = value("m3u") {
+            guard Self.isHTTPURL(playlist) else { return nil }
             self = .m3u(url: playlist)
         } else if let server = value("server"), let user = value("username"), let pass = value("password") {
             self = .xtream(server: server, username: user, password: pass)
@@ -45,7 +45,8 @@ public enum LoginLink: Equatable, Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed) else { return nil }
 
-        if let link = LoginLink(url: url) {
+        if url.scheme?.lowercased() == Self.scheme || Self.isWebJoinURL(url) {
+            guard let link = LoginLink(url: url) else { return nil }
             self = link
             return
         }
@@ -57,7 +58,7 @@ public enum LoginLink: Equatable, Sendable {
     /// host is faster and richer than downloading a large playlist, so prefer it.
     public static func fromPlaylistURL(_ playlist: String) -> LoginLink {
         guard let components = URLComponents(string: playlist),
-              components.path.lowercased().hasSuffix("get.php"),
+              components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).last?.lowercased() == "get.php",
               let items = components.queryItems,
               let user = items.first(where: { $0.name == "username" })?.value?.nilIfEmpty,
               let pass = items.first(where: { $0.name == "password" })?.value?.nilIfEmpty,
@@ -73,6 +74,22 @@ public enum LoginLink: Equatable, Sendable {
             panelPath.removeLast()
         }
         return .xtream(server: "\(scheme)://\(host)\(port)\(panelPath)", username: user, password: pass)
+    }
+
+    private static func isWebJoinURL(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return components.scheme?.lowercased() == "https" &&
+            ["brunovolpato.com", "bvolpato.github.io"].contains(components.host?.lowercased() ?? "") &&
+            components.port == nil && components.user == nil && components.fragment == nil &&
+            components.percentEncodedPath == "/brutv/join.html"
+    }
+
+    private static func isHTTPURL(_ text: String) -> Bool {
+        guard let components = URLComponents(string: text),
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty
+        else { return false }
+        return components.url != nil && (components.port.map { (0...65535).contains($0) } ?? true)
     }
 
     public var url: URL {
