@@ -28,7 +28,7 @@ export function playlistSource(value: string): LoginSource {
   const values = queryValues(url);
   const username = values.get('username');
   const password = values.get('password');
-  if (url.pathname.toLowerCase().endsWith('get.php') && username && password) {
+  if (url.pathname.toLowerCase().endsWith('/get.php') && username && password) {
     return {kind: 'xtream', server: url.origin + url.pathname.slice(0, url.pathname.lastIndexOf('/')), username, password};
   }
   return {kind: 'm3u', url: value.trim()};
