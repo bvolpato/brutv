@@ -136,6 +136,15 @@ public final class PlaybackManager: ObservableObject {
     public init() {
         self.player = AVPlayer()
         self.player.automaticallyWaitsToMinimizeStalling = true
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--ui-fixtures") && arguments.contains("--ui-disable-live-rewind") {
+            var fixtureSettings = settings
+            fixtureSettings.liveRewind = false
+            // Keep the fixture override out of persisted player preferences.
+            _settings = Published(wrappedValue: fixtureSettings)
+        }
+        #endif
         if !Self.hasCleanedLiveBuffers {
             LiveTimeshiftRecorder.removeStaleSessions()
             Self.hasCleanedLiveBuffers = true
@@ -1311,7 +1320,8 @@ public final class PlaybackManager: ObservableObject {
                 size=\(item.presentationSize.width, privacy: .public)x\(item.presentationSize.height, privacy: .public)
                 """)
         }
-        guard currentStream != nil, isPlaybackRequested, retryWorkItem == nil, pendingResumePosition == nil,
+        guard currentStream != nil, liveRecorder != nil || !(currentPlaybackURL?.isFileURL ?? false),
+              isPlaybackRequested, retryWorkItem == nil, pendingResumePosition == nil,
               !resumeSeekInProgress, !liveJumpInProgress, !explicitlyRewound, item.status == .readyToPlay else { return }
         let range = liveSeekableRange(for: item)
         let current = CMTimeGetSeconds(item.currentTime())
