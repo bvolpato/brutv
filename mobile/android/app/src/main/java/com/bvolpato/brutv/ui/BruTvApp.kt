@@ -200,6 +200,7 @@ fun BruTvApp(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var pasteLinkOpen by remember { mutableStateOf(false) }
+    var playlistPickerUnavailable by remember { mutableStateOf(false) }
     var splashDismissed by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -209,6 +210,15 @@ fun BruTvApp(
 
     val playlistPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importLocalPlaylist(uri)
+    }
+    val contentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.importLocalPlaylist(uri)
+    }
+    val choosePlaylist: () -> Unit = {
+        playlistPickerUnavailable = !launchPlaylistPicker(
+            openDocument = { playlistPicker.launch(arrayOf("*/*")) },
+            getContent = { contentPicker.launch("*/*") },
+        )
     }
     val imageLoader = remember(context) {
         ImageLoader.Builder(context)
@@ -289,7 +299,7 @@ fun BruTvApp(
                     state = state,
                     viewModel = viewModel,
                     isTv = isTv,
-                    onChoosePlaylist = { playlistPicker.launch(arrayOf("*/*")) },
+                    onChoosePlaylist = choosePlaylist,
                     onScan = viewModel::openScanner,
                     onClose = viewModel::closePage,
                     onPair = viewModel::openTvPairing,
@@ -300,7 +310,7 @@ fun BruTvApp(
                     isTv = isTv,
                     onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
                     onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
-                    onChoosePlaylist = { playlistPicker.launch(arrayOf("*/*")) },
+                    onChoosePlaylist = choosePlaylist,
                     onScan = viewModel::openScanner,
                     onPasteLink = { pasteLinkOpen = true },
                     onPair = viewModel::openTvPairing,
@@ -322,7 +332,7 @@ fun BruTvApp(
                     imageLoader = imageLoader,
                     onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
                     onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
-                    onChoosePlaylist = { playlistPicker.launch(arrayOf("*/*")) },
+                    onChoosePlaylist = choosePlaylist,
                     onScan = viewModel::openScanner,
                     onPair = viewModel::openTvPairing,
                 )
@@ -338,6 +348,21 @@ fun BruTvApp(
                         pasteLinkOpen = false
                     }
                     accepted
+                },
+            )
+
+            if (playlistPickerUnavailable) AlertDialog(
+                onDismissRequest = { playlistPickerUnavailable = false },
+                title = { Text("File picker unavailable") },
+                text = { Text("This device could not open a file picker. Add an M3U playlist URL to connect your provider.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        playlistPickerUnavailable = false
+                        viewModel.openSignIn(SourceType.M3U)
+                    }) { Text("Add playlist URL") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { playlistPickerUnavailable = false }) { Text("Cancel") }
                 },
             )
 

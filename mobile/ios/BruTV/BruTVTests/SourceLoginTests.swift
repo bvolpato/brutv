@@ -107,6 +107,32 @@ final class SourceLoginTests: XCTestCase {
         XCTAssertEqual(LoginLink(pasted: "  \(url)\n"), .m3u(url: url))
     }
 
+    func testOnlyExactGetPhpPathComponentsBecomeXtreamLogins() {
+        for playlist in [
+            "https://provider.example/target.php?username=family&password=secret",
+            "https://provider.example/list.m3u?token=get.php&username=family&password=secret",
+        ] {
+            XCTAssertEqual(LoginLink.fromPlaylistURL(playlist), .m3u(url: playlist))
+        }
+        XCTAssertEqual(
+            LoginLink.fromPlaylistURL("https://provider.example/panel/GET.PHP?username=family&password=secret"),
+            .xtream(server: "https://provider.example/panel", username: "family", password: "secret")
+        )
+    }
+
+    func testOnlySupportedJoinRoutesAreDecodedAndMalformedJoinsAreRejected() {
+        let playlist = "https://provider.example/join/play.m3u?server=https://other.example&username=family&password=secret"
+        XCTAssertNil(LoginLink(url: URL(string: playlist)!))
+        XCTAssertEqual(LoginLink(pasted: playlist), .m3u(url: playlist))
+
+        for host in ["brunovolpato.com", "bvolpato.github.io"] {
+            let incomplete = "https://\(host)/brutv/join.html?server=https%3A%2F%2Fprovider.example&username=family"
+            XCTAssertNil(LoginLink(pasted: incomplete))
+            let invalidPlaylist = "https://\(host)/brutv/join.html?m3u=file%3A%2F%2F%2Fprivate%2Flist.m3u"
+            XCTAssertNil(LoginLink(pasted: invalidPlaylist))
+        }
+    }
+
     func testUniversalLinkRoundTripsXtreamAndM3U() {
         let xtreamLink = LoginLink.xtream(server: "http://tv.example:8080", username: "pedro", password: "secret-pass")
         XCTAssertTrue(xtreamLink.universalURL.absoluteString.contains("join.html"))

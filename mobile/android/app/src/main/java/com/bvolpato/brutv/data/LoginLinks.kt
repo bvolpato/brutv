@@ -71,15 +71,14 @@ object LoginLinks {
             return parseUniversalJoin(uri.rawQuery)
         }
 
-        val isGetPhp = original.contains("get.php", ignoreCase = true)
-        if (isGetPhp) {
-            val query = original.substringAfter('?', "").substringBefore('#')
-            val values = parseQuery(query)
+        if (uri != null && !uri.host.isNullOrBlank() &&
+            (uri.scheme.equals("http", ignoreCase = true) || uri.scheme.equals("https", ignoreCase = true)) &&
+            uri.rawPath.orEmpty().substringAfterLast('/').equals("get.php", ignoreCase = true)) {
+            val values = parseQuery(uri.rawQuery)
             val username = values.firstValue("username")
             val password = values.firstValue("password")
             if (!username.isNullOrBlank() && !password.isNullOrBlank()) {
-                val beforeQuery = original.substringBefore('?')
-                val parent = beforeQuery.substringBeforeLast("get.php", beforeQuery).trimEnd('/')
+                val parent = "${uri.scheme}://${uri.rawAuthority}${uri.rawPath.substringBeforeLast('/')}".trimEnd('/')
                 if (parent.startsWith("http://", ignoreCase = true) || parent.startsWith("https://", ignoreCase = true)) {
                     return runCatching {
                         SourceConfig(name = username, server = parent, username = username, password = password).normalized()

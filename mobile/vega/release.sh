@@ -11,6 +11,8 @@ if ! command -v vega >/dev/null; then
     exit 1
 fi
 sdk_version="$(vega --version)"
+sdk_version="${sdk_version%%$'\n'*}"
+sdk_version="${sdk_version#Active SDK Version: }"
 if [[ "$sdk_version" != 0.23.* ]]; then
     echo "BruTV requires the Vega SDK 0.23 track; active SDK: $sdk_version." >&2
     exit 1

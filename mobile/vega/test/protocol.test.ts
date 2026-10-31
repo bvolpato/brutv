@@ -20,12 +20,18 @@ test('nested M3U query values survive exactly one decoding pass', () => {
   assert.deepEqual(parseLogin(golden), source);
 });
 
-test('get.php uses Xtream and retains non-root panel paths like Android', () => {
+test('get.php recognizes only the exact case-insensitive final path component', () => {
   assert.deepEqual(parseLogin('https://provider.example/panel/get.php?username=one%2Btwo&password=secret%26value&type=m3u_plus'), {
     kind: 'xtream', server: 'https://provider.example/panel', username: 'one+two', password: 'secret&value',
   });
   assert.deepEqual(parseLogin('https://provider.example/get.php?username=qa&password=qa'), {
     kind: 'xtream', server: 'https://provider.example', username: 'qa', password: 'qa',
+  });
+  assert.deepEqual(parseLogin('https://provider.example/panel/GET.PHP?username=qa&password=qa'), {
+    kind: 'xtream', server: 'https://provider.example/panel', username: 'qa', password: 'qa',
+  });
+  assert.deepEqual(parseLogin('https://provider.example/target.php?username=family&password=secret'), {
+    kind: 'm3u', url: 'https://provider.example/target.php?username=family&password=secret',
   });
 });
 

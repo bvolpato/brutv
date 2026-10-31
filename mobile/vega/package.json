@@ -56,6 +56,7 @@
     "@react-native-community/cli": "$@react-native-community/cli",
     "fast-xml-parser": "5.7.0",
     "image-size": "2.0.3",
+    "joi": "17.13.9",
     "lodash": "4.18.1",
     "toml": "5.0.1"
   }
