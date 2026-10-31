@@ -7,11 +7,14 @@ final class BruTVUITests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func launchLoggedIn(keepPlayerControlsVisible: Bool = true) -> XCUIApplication {
+    private func launchLoggedIn(keepPlayerControlsVisible: Bool = true, disableLiveRewind: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--reset-session", "--ui-fixtures", "--demo-login", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         if keepPlayerControlsVisible {
             app.launchArguments.append("--ui-keep-player-controls-visible")
+        }
+        if disableLiveRewind {
+            app.launchArguments.append("--ui-disable-live-rewind")
         }
         app.launch()
         return app
@@ -380,7 +383,7 @@ final class BruTVUITests: XCTestCase {
     }
 
     func testPlayerControlsAutoHideAndRevealDuringPlayback() throws {
-        let app = launchLoggedIn(keepPlayerControlsVisible: false)
+        let app = launchLoggedIn(keepPlayerControlsVisible: false, disableLiveRewind: true)
         firstChannel(app).tap()
         let back = app.buttons["playerBackButton"]
         XCTAssertTrue(back.waitForExistence(timeout: 5), "Player controls did not appear")
@@ -389,7 +392,7 @@ final class BruTVUITests: XCTestCase {
             predicate: NSPredicate(format: "value BEGINSWITH %@", "playing"),
             object: video
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 10), .completed, "Fixture did not start playing")
+        XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 10), .completed, "Local fixture did not start playing with live rewind disabled")
         XCTAssertTrue(back.waitForNonExistence(timeout: 10), "Player controls did not auto-hide")
         XCTAssertTrue((video.value as? String)?.hasPrefix("playing") == true, "Auto-hide interrupted playback")
 
