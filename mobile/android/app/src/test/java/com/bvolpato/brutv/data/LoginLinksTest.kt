@@ -40,6 +40,23 @@ class LoginLinksTest {
     }
 
     @Test
+    fun onlyConvertsExactGetPhpPathComponentsAndHandlesUppercase() {
+        for (playlist in listOf(
+            "https://provider.example/list.m3u?token=get.php&username=family&password=secret",
+            "https://provider.example/target.php?username=family&password=secret",
+        )) {
+            val parsed = LoginLinks.parse(playlist)
+            assertEquals(SourceType.M3U, parsed?.type)
+            assertEquals(playlist, parsed?.playlistUrl)
+        }
+
+        val converted = LoginLinks.parse("https://provider.example/panel/GET.PHP?username=family&password=secret")
+        assertEquals(SourceType.XTREAM, converted?.type)
+        assertEquals("https://provider.example/panel", converted?.server)
+        assertNull(LoginLinks.parse("https:///get.php?username=family&password=secret"))
+    }
+
+    @Test
     fun parsesIosUniversalJoinLinksAndDecodesNestedValuesOnce() {
         val xtreamBruno = LoginLinks.parse(
             "https://brunovolpato.com/brutv/join.html?server=https%3A%2F%2Fprovider.example%2Fpanel&username=jo%C3%A3o%2Bone%26two&password=secret%20%2B%20%26%3D%3F%23%25",
