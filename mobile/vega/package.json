@@ -20,26 +20,26 @@
     "build:app": "npm run build:release && npm run build:debug"
   },
   "dependencies": {
-    "@amazon-devices/kepler-file-system": "0.0.4",
-    "@amazon-devices/react-native-kepler": "2.0.9000000000",
-    "@amazon-devices/react-native-w3cmedia": "2.2.21",
-    "@babel/runtime": "7.29.10",
+    "@amazon-devices/kepler-file-system": "0.0.7",
+    "@amazon-devices/react-native-kepler": "4.0.1",
+    "@amazon-devices/react-native-w3cmedia": "2.3.2",
+    "@babel/runtime": "8.0.8",
     "@xmldom/xmldom": "0.9.12",
     "base-64": "1.0.0",
     "fastestsmallesttextencoderdecoder": "1.0.22",
-    "react": "18.2.0",
-    "react-native": "0.72.0"
+    "react": "19.3.1",
+    "react-native": "0.88.0"
   },
   "devDependencies": {
     "@amazon-devices/kepler-cli-platform": "0.22.14",
-    "@babel/core": "7.29.7",
-    "@babel/plugin-transform-react-jsx": "7.29.7",
+    "@babel/core": "8.0.9",
+    "@babel/plugin-transform-react-jsx": "8.0.1",
     "@react-native-community/cli": "11.4.1",
-    "@react-native/metro-config": "0.72.6",
-    "@types/node": "18.19.130",
-    "@types/react": "18.2.75",
-    "metro-react-native-babel-preset": "0.76.9",
-    "typescript": "4.9.5"
+    "@react-native/metro-config": "0.88.0",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "metro-react-native-babel-preset": "0.77.0",
+    "typescript": "7.0.2"
   },
   "kepler": {
     "projectType": "application",
