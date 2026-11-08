@@ -120,6 +120,15 @@ Run the full unit and UI test suite on a Mac with Xcode 27.2 or later:
 ./mobile/ios/BruTV/test.sh
 ```
 
+For a focused CI check, dispatch the `regressions` Apple UI scope. It runs `testLiveRewindSettingPersistsAcrossLaunches` and `testLogoutReturnsToLoginScreen` in each iOS UI simulator job. This is an early regression check, not full acceptance. Pushes, pull requests, and manual runs with the default `all` scope still run the complete UI suite. After the focused run passes, start the full run with the default scope:
+
+```bash
+GH_CONFIG_DIR=/home/bruno/.config/gh-personal gh workflow run ci.yml --repo bvolpato/brutv --ref BRANCH -f apple_ui_scope=regressions
+GH_CONFIG_DIR=/home/bruno/.config/gh-personal gh workflow run ci.yml --repo bvolpato/brutv --ref BRANCH
+```
+
+The first command selects the focused regressions. The second omits the input to use the default full suite.
+
 Default UI tests use `--ui-fixtures`: a debug-only offline transport supplies synthetic authentication, catalogs, and playlists. Media controls use a generated local silent WAV file. This verifies navigation and player lifecycle without provider credentials or network access; it does not establish decoded-video quality.
 
 Debug `--demo-login` and `--play-demo` launches also use these fixtures unless all three provider credential variables are supplied. The test-credential fill button appears only in explicit fixture mode.

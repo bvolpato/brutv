@@ -1,10 +1,20 @@
 name: BruTV CI
+run-name: BruTV CI - Apple UI ${{ inputs.apple_ui_scope || 'all' }}
 
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      apple_ui_scope:
+        description: Apple UI test scope
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - regressions
 
 permissions:
   contents: read
@@ -160,8 +170,16 @@ jobs:
           APPLE_SCHEME: ${{ matrix.scheme }}
           APPLE_TARGET: ${{ matrix.target }}
           APPLE_TEST_TARGET: ${{ matrix.test-target }}
+          APPLE_UI_SCOPE: ${{ inputs.apple_ui_scope || 'all' }}
           APPLE_DESTINATION: ${{ steps.destination.outputs.destination }}
         run: |
+          case "$APPLE_UI_SCOPE" in
+            all|regressions) ;;
+            *)
+              echo "error: unsupported Apple UI scope: $APPLE_UI_SCOPE" >&2
+              exit 1
+              ;;
+          esac
           arguments=(
             -project mobile/ios/BruTV/BruTV.xcodeproj
             -scheme "$APPLE_SCHEME"
@@ -170,7 +188,15 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET.xcresult"
           )
           if [[ -n "$APPLE_TEST_TARGET" ]]; then
-            arguments+=(-only-testing "$APPLE_TEST_TARGET" -parallel-testing-enabled NO)
+            if [[ "$APPLE_TEST_TARGET" == BruTVUITests && "$APPLE_UI_SCOPE" == regressions ]]; then
+              arguments+=(
+                -only-testing:BruTVUITests/BruTVUITests/testLiveRewindSettingPersistsAcrossLaunches
+                -only-testing:BruTVUITests/BruTVUITests/testLogoutReturnsToLoginScreen
+              )
+            else
+              arguments+=(-only-testing "$APPLE_TEST_TARGET")
+            fi
+            arguments+=(-parallel-testing-enabled NO)
           fi
           xcodebuild "$APPLE_ACTION" "${arguments[@]}" CODE_SIGNING_ALLOWED=NO
       - name: Upload Apple test results
