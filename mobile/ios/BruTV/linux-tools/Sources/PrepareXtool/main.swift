@@ -42,17 +42,20 @@ func expand(_ value: Any, settings: [String: String]) throws -> Any {
     return value
 }
 
-func releaseSettings(project: URL) throws -> [String: String] {
+func releaseSettings(project: URL, infoPath: String = "BruTV/Info.plist") throws -> [String: String]
+{
     let source = try String(contentsOf: project, encoding: .utf8)
     let pattern =
-        #"buildSettings = \{([^}]*INFOPLIST_FILE = BruTV/Info\.plist;[^}]*)\};\s*name = Release;"#
+        "buildSettings = \\{([^}]*INFOPLIST_FILE = \"?"
+        + NSRegularExpression.escapedPattern(for: infoPath)
+        + "\"?;[^}]*)\\};\\s*name = Release;"
     let regex = try NSRegularExpression(pattern: pattern)
     guard
         let match = regex.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
         let range = Range(match.range(at: 1), in: source)
     else {
         throw PreparationError(
-            "Cannot locate BruTV's iOS Release build settings in \(project.path)")
+            "Cannot locate Release build settings for \(infoPath) in \(project.path)")
     }
     var settings: [String: String] = [:]
     for entry in source[range].split(separator: ";") {
@@ -65,15 +68,15 @@ func releaseSettings(project: URL) throws -> [String: String] {
     return settings
 }
 
-func validateSourceParity(project: URL, sources: URL) throws {
+func validateSourceParity(project: URL, sources: URL, phaseID: String = "APPSOURCES") throws {
     let source = try String(contentsOf: project, encoding: .utf8)
     let phase = try NSRegularExpression(
-        pattern: #"(?m)^\s*APPSOURCES /\* Sources \*/ = \{([^}]+)\};"#)
+        pattern: #"(?m)^\s*"# + phaseID + #" /\* Sources \*/ = \{([^}]+)\};"#)
     guard
         let match = phase.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
         let range = Range(match.range(at: 1), in: source)
     else {
-        throw PreparationError("Cannot locate BruTV's app source build phase")
+        throw PreparationError("Cannot locate source build phase \(phaseID)")
     }
     let names = try NSRegularExpression(pattern: #"/\* ([^/]+\.swift) in Sources \*/"#)
     let phaseText = String(source[range])
@@ -145,10 +148,10 @@ struct PrepareXtool {
     static func prepare() async throws {
         guard CommandLine.arguments.count == 4 else {
             throw PreparationError(
-                "Usage: prepare-xtool <BruTV project directory> <output directory> ios|macos")
+                "Usage: prepare-xtool <BruTV project directory> <output directory> ios|tvos|macos")
         }
         let platform = CommandLine.arguments[3]
-        guard ["ios", "macos"].contains(platform) else {
+        guard ["ios", "tvos", "macos"].contains(platform) else {
             throw PreparationError("No verified asset compiler is available for \(platform)")
         }
         let fm = FileManager.default
@@ -162,7 +165,9 @@ struct PrepareXtool {
         try fm.createDirectory(at: output, withIntermediateDirectories: true)
 
         // Replace only staged inputs. xtool and Swift retain their own build caches.
-        for name in ["Package.swift", "BruTV", "Assets.xcassets"] {
+        for name in [
+            "Package.swift", "BruTV", "BruTVTopShelf", "Assets.xcassets", "TopShelf-Info.plist",
+        ] {
             let destination = output.appendingPathComponent(name)
             if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
         }
@@ -173,65 +178,88 @@ struct PrepareXtool {
             at: source.appendingPathComponent("BruTV"), to: output.appendingPathComponent("BruTV"))
         try validateSourceParity(
             project: source.appendingPathComponent("BruTV.xcodeproj/project.pbxproj"),
-            sources: output.appendingPathComponent("BruTV"))
+            sources: output.appendingPathComponent("BruTV"),
+            phaseID: platform == "tvos" ? "TVAPPSOURCES" : "APPSOURCES")
+        if platform == "tvos" {
+            let topShelf = output.appendingPathComponent("BruTVTopShelf")
+            try fm.copyItem(at: source.appendingPathComponent("BruTVTopShelf"), to: topShelf)
+            try fm.copyItem(
+                at: source.appendingPathComponent("BruTV/Services/TopShelfStore.swift"),
+                to: topShelf.appendingPathComponent("TopShelfStore.swift"))
+            try validateSourceParity(
+                project: source.appendingPathComponent("BruTV.xcodeproj/project.pbxproj"),
+                sources: topShelf, phaseID: "TOPSHELFSOURCES")
+        }
 
         let originalAssets = source.appendingPathComponent("BruTV/Resources/Assets.xcassets")
         let catalog = output.appendingPathComponent("Assets.xcassets", isDirectory: true)
         try fm.createDirectory(at: catalog, withIntermediateDirectories: true)
         for asset in try fm.contentsOfDirectory(at: originalAssets, includingPropertiesForKeys: nil)
-        where asset.lastPathComponent != "TVAppIcon.brandassets" {
+        where asset.lastPathComponent
+            != (platform == "tvos" ? "AppIcon.appiconset" : "TVAppIcon.brandassets")
+        {
             try fm.copyItem(at: asset, to: catalog.appendingPathComponent(asset.lastPathComponent))
         }
-        let contentsURL = catalog.appendingPathComponent("AppIcon.appiconset/Contents.json")
-        guard
-            var iconContents = try JSONSerialization.jsonObject(with: Data(contentsOf: contentsURL))
-                as? [String: Any],
-            var images = iconContents["images"] as? [[String: Any]]
-        else {
-            throw PreparationError("AppIcon Contents.json must contain an images array")
-        }
-        // Xcode's single-size universal entry implies scale 1x; AssetKit requires it explicitly.
-        for index in images.indices where images[index]["scale"] == nil {
-            guard images[index]["idiom"] as? String == "universal",
-                images[index]["size"] as? String == "1024x1024"
+        if platform != "tvos" {
+            let contentsURL = catalog.appendingPathComponent("AppIcon.appiconset/Contents.json")
+            guard
+                var iconContents = try JSONSerialization.jsonObject(
+                    with: Data(contentsOf: contentsURL))
+                    as? [String: Any],
+                var images = iconContents["images"] as? [[String: Any]]
             else {
-                throw PreparationError("AppIcon entry has no explicit scale: \(images[index])")
+                throw PreparationError("AppIcon Contents.json must contain an images array")
             }
-            images[index]["scale"] = "1x"
-        }
-        for image in images {
-            guard let filename = image["filename"] as? String,
-                let size = image["size"] as? String,
-                let scale = image["scale"] as? String
-            else {
-                throw PreparationError("AppIcon entry has no filename, size, or scale: \(image)")
+            // Xcode's single-size universal entry implies scale 1x; AssetKit requires it explicitly.
+            for index in images.indices where images[index]["scale"] == nil {
+                guard images[index]["idiom"] as? String == "universal",
+                    images[index]["size"] as? String == "1024x1024"
+                else {
+                    throw PreparationError("AppIcon entry has no explicit scale: \(images[index])")
+                }
+                images[index]["scale"] = "1x"
             }
-            try validateIcon(
-                catalog.appendingPathComponent("AppIcon.appiconset/\(filename)"), pointSize: size,
-                scale: scale)
+            for image in images {
+                guard let filename = image["filename"] as? String,
+                    let size = image["size"] as? String,
+                    let scale = image["scale"] as? String
+                else {
+                    throw PreparationError(
+                        "AppIcon entry has no filename, size, or scale: \(image)")
+                }
+                try validateIcon(
+                    catalog.appendingPathComponent("AppIcon.appiconset/\(filename)"),
+                    pointSize: size,
+                    scale: scale)
+            }
+            iconContents["images"] = images
+            try JSONSerialization.data(
+                withJSONObject: iconContents, options: [.prettyPrinted, .sortedKeys]
+            ).write(to: contentsURL)
         }
-        iconContents["images"] = images
-        try JSONSerialization.data(
-            withJSONObject: iconContents, options: [.prettyPrinted, .sortedKeys]
-        ).write(to: contentsURL)
 
+        let infoPath = platform == "tvos" ? "BruTV/Info-tvOS.plist" : "BruTV/Info.plist"
         let defaults = try releaseSettings(
-            project: source.appendingPathComponent("BruTV.xcodeproj/project.pbxproj"))
+            project: source.appendingPathComponent("BruTV.xcodeproj/project.pbxproj"),
+            infoPath: infoPath)
         let environment = ProcessInfo.processInfo.environment
         guard let defaultBuild = defaults["CURRENT_PROJECT_VERSION"],
             let defaultVersion = defaults["MARKETING_VERSION"],
             let defaultBundleID = defaults["PRODUCT_BUNDLE_IDENTIFIER"],
-            let minimumOS = defaults["IPHONEOS_DEPLOYMENT_TARGET"]
+            let minimumOS = defaults[
+                platform == "tvos" ? "TVOS_DEPLOYMENT_TARGET" : "IPHONEOS_DEPLOYMENT_TARGET"]
         else {
             throw PreparationError(
                 "BruTV's Release build settings are missing version, bundle ID, or minimum OS")
         }
         guard minimumOS == "17.0" else {
             throw PreparationError(
-                "Update Package.swift's xtool deployment target for iOS \(minimumOS) before building"
+                "Update Package.swift's xtool deployment target for \(platform) \(minimumOS) before building"
             )
         }
-        let bundleID = environment["IOS_BUNDLE_ID"] ?? defaultBundleID
+        let bundleID =
+            (platform == "tvos" ? environment["TVOS_BUNDLE_ID"] : nil)
+            ?? environment["IOS_BUNDLE_ID"] ?? defaultBundleID
         let settings = [
             "DEVELOPMENT_LANGUAGE": "en", "EXECUTABLE_NAME": "BruTV", "PRODUCT_NAME": "BruTV",
             "PRODUCT_BUNDLE_IDENTIFIER": bundleID,
@@ -240,18 +268,22 @@ struct PrepareXtool {
         ]
         guard
             var info = try expand(
-                loadPlist(source.appendingPathComponent("BruTV/Info.plist")), settings: settings)
+                loadPlist(source.appendingPathComponent(infoPath)), settings: settings)
                 as? [String: Any]
         else {
             throw PreparationError("BruTV Info.plist must contain a dictionary")
         }
         info["MinimumOSVersion"] = minimumOS
-        info["UIDeviceFamily"] = [1, 2]
+        info["UIDeviceFamily"] = platform == "tvos" ? [3] : [1, 2]
 
-        let compiled = try await XCAssetCompiler(deploymentTarget: minimumOS).compile(
+        let compiled = try await XCAssetCompiler(
+            deploymentTarget: minimumOS, platform: platform == "tvos" ? .tvOS : .iOS
+        ).compile(
             catalog: catalog)
-        guard let icons = compiled.appIconBundle, icons.primaryIconName == "AppIcon" else {
-            throw PreparationError("AssetKit did not compile the AppIcon catalog")
+        guard let icons = compiled.appIconBundle,
+            platform == "tvos" || icons.primaryIconName == "AppIcon"
+        else {
+            throw PreparationError("AssetKit did not compile the \(platform) app icon catalog")
         }
         try compiled.carData.write(
             to: output.appendingPathComponent("Assets.car"), options: .atomic)
@@ -283,6 +315,36 @@ struct PrepareXtool {
             try icns.write(to: output.appendingPathComponent("AppIcon.icns"), options: .atomic)
         }
         try writePlist(info, to: output.appendingPathComponent("Info.plist"))
+        if platform == "tvos" {
+            let topShelfDefaults = try releaseSettings(
+                project: source.appendingPathComponent("BruTV.xcodeproj/project.pbxproj"),
+                infoPath: "BruTVTopShelf/Info.plist")
+            guard topShelfDefaults["CURRENT_PROJECT_VERSION"] == defaultBuild,
+                topShelfDefaults["MARKETING_VERSION"] == defaultVersion,
+                topShelfDefaults["TVOS_DEPLOYMENT_TARGET"] == minimumOS
+            else {
+                throw PreparationError(
+                    "TopShelf and tvOS Release version or deployment settings differ")
+            }
+            var extensionSettings = settings
+            extensionSettings["PRODUCT_BUNDLE_IDENTIFIER"] =
+                environment["TVOS_TOPSHELF_BUNDLE_ID"]
+                ?? (bundleID + ".TopShelf")
+            extensionSettings["EXECUTABLE_NAME"] = "BruTVTopShelf"
+            extensionSettings["PRODUCT_NAME"] = "BruTVTopShelf"
+            extensionSettings["PRODUCT_MODULE_NAME"] = "BruTVTopShelf"
+            guard
+                var extensionInfo = try expand(
+                    loadPlist(source.appendingPathComponent("BruTVTopShelf/Info.plist")),
+                    settings: extensionSettings
+                ) as? [String: Any]
+            else {
+                throw PreparationError("TopShelf Info.plist must contain a dictionary")
+            }
+            extensionInfo["MinimumOSVersion"] = minimumOS
+            extensionInfo["UIDeviceFamily"] = [3]
+            try writePlist(extensionInfo, to: output.appendingPathComponent("TopShelf-Info.plist"))
+        }
 
         let privacyName = "PrivacyInfo.xcprivacy"
         let privacy = output.appendingPathComponent(privacyName)
@@ -295,7 +357,7 @@ struct PrepareXtool {
         func yamlString(_ string: String) throws -> String {
             String(decoding: try JSONEncoder().encode(string), as: UTF8.self)
         }
-        let config = try """
+        var config = try """
         version: 1
         bundleID: \(yamlString(bundleID))
         product: BruTV
@@ -305,6 +367,17 @@ struct PrepareXtool {
         \(resources.map { "  - \(try yamlString($0))" }.joined(separator: "\n"))
 
         """
+        if platform == "tvos" {
+            config += try """
+            extensions:
+              - product: BruTVTopShelf
+                bundleID: \(yamlString(environment["TVOS_TOPSHELF_BUNDLE_ID"] ?? (bundleID + ".TopShelf")))
+                infoPath: TopShelf-Info.plist
+                resources:
+                  - \(yamlString(privacyName))
+
+            """
+        }
         try config.write(
             to: output.appendingPathComponent("xtool.yml"), atomically: true, encoding: .utf8)
         print(

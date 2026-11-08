@@ -1,12 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
+# requires-python = ">=3.12"
 # dependencies = [
 #   "pillow>=10.0.0",
 # ]
 # ///
 """
-Generates official Mac App Store screenshots (2880x1800, 16:10 aspect ratio)
-for BruTV Mac Catalyst, featuring native macOS window chrome and studio backdrop.
+Generate concept mockups by compositing iPad captures into drawn Mac chrome.
+These images are not native Catalyst captures or App Store screenshot evidence.
 """
 
 import os
@@ -15,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCREENSHOTS_DIR = os.path.join(SCRIPT_DIR, "screenshots")
 IPAD_DIR = os.path.join(SCREENSHOTS_DIR, "ipad-13-inch")
-MAC_DIR = os.path.join(SCREENSHOTS_DIR, "mac-2880x1800")
+MOCKUP_DIR = os.path.join(SCRIPT_DIR, "build", "mockups", "mac-2880x1800")
 
 CANVAS_WIDTH = 2880
 CANVAS_HEIGHT = 1800
@@ -25,7 +26,7 @@ WINDOW_HEIGHT = 1620
 CORNER_RADIUS = 28
 TITLEBAR_HEIGHT = 68
 
-def create_mac_screenshot(source_path: str, output_path: str, title: str = "BruTV"):
+def create_mac_mockup(source_path: str, output_path: str, title: str = "BruTV"):
     # 1. Create 2880x1800 backdrop with subtle dark studio gradient
     backdrop = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (10, 13, 20, 255))
     draw = ImageDraw.Draw(backdrop)
@@ -215,9 +216,10 @@ def create_mac_screenshot(source_path: str, output_path: str, title: str = "BruT
     # Convert to RGB and save
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     final_canvas.convert("RGB").save(output_path, "PNG", optimize=True)
-    print(f"Generated {output_path} ({CANVAS_WIDTH}x{CANVAS_HEIGHT})")
+    print(f"Generated concept mockup: {output_path} ({CANVAS_WIDTH}x{CANVAS_HEIGHT})")
 
 def main():
+    print("Concept mockups only. Capture the native Mac app for store screenshots.")
     screens = [
         ("01_login.png", "BruTV - Sign In"),
         ("02_channels.png", "BruTV - Live Channels"),
@@ -228,8 +230,8 @@ def main():
 
     for fname, title in screens:
         src = os.path.join(IPAD_DIR, fname)
-        dst = os.path.join(MAC_DIR, fname)
-        create_mac_screenshot(src, dst, title)
+        dst = os.path.join(MOCKUP_DIR, fname.replace(".png", ".mockup.png"))
+        create_mac_mockup(src, dst, title)
 
 if __name__ == "__main__":
     main()

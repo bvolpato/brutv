@@ -6,8 +6,8 @@ let package = Package(
     products: [.executable(name: "prepare-xtool", targets: ["PrepareXtool"])],
     dependencies: [
         .package(
-            url: "https://github.com/xtool-org/AssetKit",
-            revision: "e763558b55fcbb5a443b1d7b2c6f0972d8bd14f7"
+            url: "https://github.com/bvolpato/AssetKit",
+            revision: "cc948c71491a78183a08759dc07d4faef07ecad4"
         )
     ],
     targets: [

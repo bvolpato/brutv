@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/apple-sdk.sh"
 IPHONE_DEVICE="${IOS_SCREENSHOT_DEVICE:-iPhone 18 Pro Max}"
 IPAD_DEVICE="${IOS_IPAD_SCREENSHOT_DEVICE:-iPad Pro 13-inch (M5)}"
 DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/screenshots}"
@@ -30,6 +31,7 @@ capture_device() {
     echo "warning: simulator not found: $device, skipping"
     return 0
   fi
+  brutv_require_xcode_sdk iphonesimulator
 
   echo "Capturing on $device ($dev_id)..."
   xcrun simctl boot "$dev_id" >/dev/null 2>&1 || true
@@ -38,7 +40,7 @@ capture_device() {
     --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 \
     --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100 || true
 
-  rm -rf "$SCREENSHOT_DIR/$subdir"
+  rm -rf "${SCREENSHOT_DIR:?}/$subdir"
   mkdir -p "$SCREENSHOT_DIR/$subdir"
 
   local log="$SCREENSHOT_DIR/$subdir.xcodebuild.log"
@@ -49,6 +51,7 @@ capture_device() {
   xcodebuild test \
     -project BruTV.xcodeproj \
     -scheme BruTV \
+    -sdk iphonesimulator \
     -destination "platform=iOS Simulator,id=$dev_id" \
     -derivedDataPath "$DERIVED_DATA_PATH" \
     -only-testing:BruTVUITests/BruTVUITests/testCaptureStoreScreenshots \
@@ -91,6 +94,7 @@ capture_tvos() {
     echo "warning: tvOS simulator not found: $tv_device, skipping"
     return 0
   fi
+  brutv_require_xcode_sdk appletvsimulator
 
   echo "Capturing on $tv_device ($dev_id)..."
   xcrun simctl boot "$dev_id" >/dev/null 2>&1 || true
@@ -101,15 +105,14 @@ capture_tvos() {
   mkdir -p "$out"
 
   local app_bundle="$SCRIPT_DIR/build/tvos-sim/Build/Products/Debug-appletvsimulator/BruTV-tvOS.app"
-  if [[ ! -d "$app_bundle" ]]; then
-    echo "Building BruTV-tvOS for simulator..."
-    xcodebuild build \
-      -project BruTV.xcodeproj \
-      -scheme BruTV-tvOS \
-      -destination "platform=tvOS Simulator,id=$dev_id" \
-      -derivedDataPath "$SCRIPT_DIR/build/tvos-sim" \
-      CODE_SIGNING_ALLOWED=NO -quiet
-  fi
+  echo "Building BruTV-tvOS for simulator..."
+  xcodebuild build \
+    -project BruTV.xcodeproj \
+    -scheme BruTV-tvOS \
+    -sdk appletvsimulator \
+    -destination "platform=tvOS Simulator,id=$dev_id" \
+    -derivedDataPath "$SCRIPT_DIR/build/tvos-sim" \
+    CODE_SIGNING_ALLOWED=NO -quiet
   xcrun simctl install "$dev_id" "$app_bundle"
 
   echo "  Capturing Apple TV 01_login..."
@@ -152,9 +155,5 @@ capture_device "$IPHONE_DEVICE" "iphone-6.9-inch"
 capture_device "$IPAD_DEVICE" "ipad-13-inch"
 capture_tvos
 
-if command -v uv >/dev/null 2>&1; then
-  echo "Generating Mac Catalyst screenshots..."
-  uv run "$SCRIPT_DIR/generate_mac_screenshots.py"
-fi
-
 echo "Screenshots generated in: $SCREENSHOT_DIR"
+echo "Capture Mac Catalyst screenshots separately from the native app on macOS."
