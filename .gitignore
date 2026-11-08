@@ -15,6 +15,7 @@ xcuserdata/
 *.xcarchive
 
 # BruTV build outputs
+.build/
 mobile/ios/**/build/
 mobile/ios/**/artifact/
 mobile/ios/BruTV/build/
