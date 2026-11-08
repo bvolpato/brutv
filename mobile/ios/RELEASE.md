@@ -126,14 +126,14 @@ Debug `--demo-login` and `--play-demo` launches also use these fixtures unless a
 
 The optional `testLiveChannelShowsVideoInPlayerAndMiniPlayer` test requires `TEST_RUNNER_BRUTV_PLAYBACK_SERVER`, `TEST_RUNNER_BRUTV_PLAYBACK_USERNAME`, `TEST_RUNNER_BRUTV_PLAYBACK_PASSWORD`, and `TEST_RUNNER_BRUTV_PLAYBACK_CHANNEL` in the environment passed to `xcodebuild`. It skips when any value is missing. Supply credentials through the environment and keep them out of scripts and logs.
 
-`testNavigationAndPlaybackSurviveResizing` checks navigation, filters, and mini-player continuity during rotation. `testPlayerControlsFitAfterRotation` checks that transport controls and the channel-guide close button stay inside the window and remain tappable. CI selects the iOS 27.2 runtime for the iPhone, iPad, and iPhone Duo suites.
+`testNavigationAndPlaybackSurviveResizing` checks navigation, filters, and mini-player continuity during rotation. `testPlayerControlsFitAfterRotation` checks that transport controls and the channel-guide close button stay inside the window and remain tappable. CI builds every Apple target with Xcode 27.2. The iPhone and iPad suites select the iOS 27.2 runtime; Duo selects its working iOS 27.1 runtime. On the current runner, creating Duo with iOS 27.2 fails with CoreSimulator error 403, `Incompatible device`. CI creates a named simulator when the selected runtime has no existing instance, using the exact registered device type.
 
 CI verifies Xcode's stable build number, `27B52`, because an older runner image mapped `Xcode_27.2.app` to the release candidate. GitHub's [November 4 Xcode 27 runner image](https://github.com/actions/runner-images/releases/tag/xcode-27-arm64/20261104.0337) includes the stable build and iOS 27.2 runtime. A fresh CI run must confirm the runner actually has them.
 
 To select Duo locally:
 
 ```bash
-IOS_SIM_DESTINATION="platform=iOS Simulator,name=iPhone Duo,OS=27.2" ./test.sh
+IOS_SIM_DESTINATION="platform=iOS Simulator,name=iPhone Duo,OS=27.1" ./test.sh
 ```
 
 A default Duo launch and rotation do not exercise every pose. In Xcode 27.2 Device Hub, open, close, and partially fold the device, then use Split View while browsing and playing media. Check asymmetric safe areas, large text, VoiceOver, narrow guide drawers, and navigation between sections. Native tabs and toolbars choose their edge and overflow behavior; do not force them into a custom right-side bar. Confirm that the video keeps playing, paused intent and search remain intact, and controls avoid the camera and fold. Physical-device video, audio, PiP, accessibility, and fold transitions remain separate release checks. See [Apple's Duo guidance](https://developer.apple.com/iphone-duo/prepare/).

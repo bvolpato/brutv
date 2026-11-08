@@ -87,6 +87,7 @@ jobs:
             action: test
             scheme: BruTV
             simulator: iPhone Duo
+            runtime: com.apple.CoreSimulator.SimRuntime.iOS-27-1
             test-target: BruTVUITests
           - name: tvOS simulator build
             target: tvos
@@ -133,7 +134,7 @@ jobs:
         env:
           APPLE_SIMULATOR: ${{ matrix.simulator }}
           APPLE_DESTINATION: ${{ matrix.destination }}
-          APPLE_SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-27-2
+          APPLE_SIMULATOR_RUNTIME: ${{ matrix.runtime || 'com.apple.CoreSimulator.SimRuntime.iOS-27-2' }}
         run: |
           if [[ -n "$APPLE_SIMULATOR" ]]; then
             devices=$(xcrun simctl list devices available --json)
