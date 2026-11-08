@@ -1261,7 +1261,7 @@ public struct PlayerView: View {
                     }
                 }
             }
-            .frame(width: 340)
+            .frame(maxWidth: 340)
             .background(Color(white: 0.1).opacity(0.96))
             .transition(.move(edge: .trailing))
         }

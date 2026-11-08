@@ -27,7 +27,7 @@ final class BruTVUITests: XCTestCase {
         case "Movies": return ["Movies", "Filmes"]
         case "Series": return ["Series", "Séries"]
         case "Favorites": return ["Favorites", "Favoritos"]
-        case "Home": return ["Home", "Início"]
+        case "Home": return ["BruTV", "Home", "Início"]
         default: return [text]
         }
     }
@@ -74,6 +74,23 @@ final class BruTVUITests: XCTestCase {
         XCTAssertTrue(back.waitForExistence(timeout: 2) && back.isHittable, "Player controls not visible", file: file, line: line)
     }
 
+    private func assertButtonsFitWindow(_ app: XCUIApplication, identifiers: [String], file: StaticString = #filePath, line: UInt = #line) throws {
+        let snapshot = try app.windows.firstMatch.snapshot()
+        func descendants(_ element: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
+            element.children.flatMap { [$0] + descendants($0) }
+        }
+        let buttons = descendants(snapshot).filter { $0.elementType == .button }
+        for identifier in identifiers {
+            let button = app.buttons[identifier]
+            XCTAssertTrue(button.exists && button.isHittable, "\(identifier) is not reachable", file: file, line: line)
+            let frame = try XCTUnwrap(buttons.first { $0.identifier == identifier }, "\(identifier) is missing from the window snapshot", file: file, line: line).frame
+            XCTAssertGreaterThanOrEqual(frame.minX, snapshot.frame.minX, file: file, line: line)
+            XCTAssertLessThanOrEqual(frame.maxX, snapshot.frame.maxX, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.minY, snapshot.frame.minY, file: file, line: line)
+            XCTAssertLessThanOrEqual(frame.maxY, snapshot.frame.maxY, file: file, line: line)
+        }
+    }
+
     private func assertOnChannelList(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(
             app.buttons["playerBackButton"].waitForNonExistence(timeout: 5),
@@ -85,7 +102,7 @@ final class BruTVUITests: XCTestCase {
         XCTAssertTrue(card.isHittable, "Channel list is not interactive", file: file, line: line)
     }
 
-    /// iPhone uses a tab bar. iPad and Mac use a sidebar, which can be collapsed in portrait.
+    /// Resolve native tabs and adaptive sidebar items across window sizes.
     private func navigate(_ app: XCUIApplication, to section: String, file: StaticString = #filePath, line: UInt = #line) {
         let candidates = localizedCandidates(section)
 
@@ -120,12 +137,12 @@ final class BruTVUITests: XCTestCase {
             for name in candidates {
                 let navBtn = app.buttons["\(name)NavButton"]
                 if navBtn.exists { return navBtn }
+                let generalBtn = app.buttons[name].firstMatch
+                if generalBtn.exists { return generalBtn }
                 let cell = app.collectionViews.cells.containing(.staticText, identifier: name).firstMatch
                 if cell.exists { return cell }
                 let btn = app.collectionViews.buttons[name].firstMatch
                 if btn.exists { return btn }
-                let generalBtn = app.buttons[name].firstMatch
-                if generalBtn.exists { return generalBtn }
             }
             return nil
         }
@@ -315,7 +332,8 @@ final class BruTVUITests: XCTestCase {
         search.tap()
         search.typeText("Fixture One")
 
-        let fixture = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] 'Fixture One'")).firstMatch
+        let fixture = app.buttons.matching(identifier: "channelCard")
+            .matching(NSPredicate(format: "label CONTAINS[c] 'Fixture One'")).firstMatch
         XCTAssertTrue(fixture.waitForExistence(timeout: 10), "No matching channel after search")
         XCTAssertFalse(app.buttons.matching(identifier: "channelCard")
             .matching(NSPredicate(format: "label CONTAINS[c] 'Fixture Two'")).firstMatch.exists)
@@ -326,7 +344,7 @@ final class BruTVUITests: XCTestCase {
         let app = launchLoggedIn()
         firstChannel(app)
 
-        for name in ["Movies", "Series", "Favorites", "Settings", "Live TV"] {
+        for name in ["Home", "Movies", "Series", "Favorites", "Settings", "Live TV"] {
             navigate(app, to: name)
         }
         firstChannel(app)
@@ -353,8 +371,14 @@ final class BruTVUITests: XCTestCase {
                 object: mini
             )
             XCTAssertEqual(XCTWaiter.wait(for: [reachable], timeout: 5), .completed, "Mini player is not reachable after rotation")
+            navigate(app, to: "Movies")
+            XCTAssertTrue(app.textFields["movieSearchField"].waitForExistence(timeout: 5), "Movies did not open after rotation")
+            navigate(app, to: "Series")
+            XCTAssertTrue(app.textFields["seriesSearchField"].waitForExistence(timeout: 5), "Series did not open after rotation")
+            navigate(app, to: "Live TV")
             XCTAssertEqual(search.value as? String, "Fixture One", "Resizing discarded the channel filter")
             XCTAssertEqual(app.buttons.matching(identifier: "channelCard").count, 1)
+            XCTAssertTrue(mini.exists && mini.isHittable, "Section navigation interrupted the mini player")
         }
 
         app.buttons["miniPlayer"].tap()
@@ -370,15 +394,24 @@ final class BruTVUITests: XCTestCase {
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
             XCUIDevice.shared.orientation = orientation
             revealControls(app)
-            let window = app.windows.firstMatch.frame
-            for identifier in ["playerBackButton", "playerCloseButton", "playerGuideButton", "playerPrevButton", "playerPlayPauseButton", "playerNextButton", "playerMuteButton", "playerMoreOptionsButton"] {
-                let button = app.buttons[identifier]
-                XCTAssertTrue(button.exists && button.isHittable, "\(identifier) is not reachable")
-                XCTAssertGreaterThanOrEqual(button.frame.minX, window.minX)
-                XCTAssertLessThanOrEqual(button.frame.maxX, window.maxX)
-                XCTAssertGreaterThanOrEqual(button.frame.minY, window.minY)
-                XCTAssertLessThanOrEqual(button.frame.maxY, window.maxY)
-            }
+            var previousFrame: CGRect?
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    let frame = app.windows.firstMatch.frame
+                    defer { previousFrame = frame }
+                    // A Split View window can remain tall when the device is in landscape.
+                    return frame.width > 0 && frame.height > 0 && frame == previousFrame
+                },
+                object: nil
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed, "Window did not finish rotating")
+            try assertButtonsFitWindow(app, identifiers: ["playerBackButton", "playerCloseButton", "playerGuideButton", "playerPrevButton", "playerPlayPauseButton", "playerNextButton", "playerMuteButton", "playerMoreOptionsButton"])
+            app.buttons["playerGuideButton"].tap()
+            let guideClose = app.buttons["guideCloseButton"]
+            XCTAssertTrue(guideClose.waitForExistence(timeout: 5), "Channel guide did not open after rotation")
+            try assertButtonsFitWindow(app, identifiers: ["guideCloseButton"])
+            guideClose.tap()
+            XCTAssertTrue(guideClose.waitForNonExistence(timeout: 5), "Channel guide did not close after rotation")
         }
     }
 
@@ -541,7 +574,7 @@ final class BruTVUITests: XCTestCase {
 
     // MARK: - Settings
 
-    func testLiveRewindSettingIsOffByDefaultAndPersists() throws {
+    func testLiveRewindSettingPersistsAcrossLaunches() throws {
         let app = launchLoggedIn()
         firstChannel(app)
         navigate(app, to: "Settings")

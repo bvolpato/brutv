@@ -149,6 +149,99 @@ final class BufferEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedToPlayToEndNotificationRetriesItsUnderlyingNetworkFailure() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        guard try await startAudioFixture(manager, url: url, streamID: 99993) else { return }
+        let item = try XCTUnwrap(manager.player.currentItem)
+
+        NotificationCenter.default.post(
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            userInfo: [AVPlayerItemFailedToPlayToEndTimeErrorKey: URLError(.timedOut)]
+        )
+        let recovering = try await waitUntil(timeout: 1) { manager.playbackState == .buffering }
+        XCTAssertTrue(recovering, "A playback failure did not enter recovery")
+        XCTAssertTrue(manager.isPlaybackRequested)
+
+        manager.togglePlayPause()
+        NotificationCenter.default.post(
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            userInfo: [AVPlayerItemFailedToPlayToEndTimeErrorKey: URLError(.timedOut)]
+        )
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(manager.isPlaybackRequested, "A late failure must not override the person's pause")
+        XCTAssertEqual(manager.playbackState, .paused)
+    }
+
+    @MainActor
+    func testRemoteLiveEndRetainsPlaybackIntentAndRetries() async throws {
+        let manager = PlaybackManager()
+        let originalSettings = manager.settings
+        var directSettings = originalSettings
+        directSettings.liveRewind = false
+        manager.settings = directSettings
+        defer {
+            manager.stop()
+            manager.settings = originalSettings
+        }
+        manager.play(stream: LiveStream(id: 99992, name: "Interrupted live channel",
+                                        directURLString: "http://127.0.0.1:9/test.m3u8"))
+        XCTAssertEqual(manager.player.actionAtItemEnd, .none,
+                       "Native end-of-item must not emit an automatic pause before live recovery")
+        let item = try XCTUnwrap(manager.player.currentItem)
+        NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: item)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(manager.isPlaybackRequested, "Ending a remote live item must not turn into a user pause")
+        XCTAssertEqual(manager.playbackState, .buffering)
+
+        manager.togglePlayPause()
+        NotificationCenter.default.post(name: .AVPlayerItemDidPlayToEndTime, object: item)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(manager.isPlaybackRequested, "An end notification must not override an explicit pause")
+        XCTAssertEqual(manager.playbackState, .paused)
+    }
+
+    @MainActor
+    func testFiniteLocalPlaybackStillPausesAtItsActualEnd() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        guard try await startAudioFixture(manager, url: url, streamID: 99989) else { return }
+        XCTAssertEqual(manager.player.actionAtItemEnd, .pause)
+        let item = try XCTUnwrap(manager.player.currentItem)
+        item.forwardPlaybackEndTime = CMTimeAdd(item.currentTime(), CMTime(seconds: 0.25, preferredTimescale: 600))
+        let ended = try await waitUntil { !manager.isPlaybackRequested && manager.playbackState == .paused }
+        XCTAssertTrue(ended, "A finite local item must end normally instead of restarting")
+        XCTAssertEqual(manager.player.rate, 0)
+    }
+
+    @MainActor
+    func testFailureNotificationFromReplacedItemCannotFailTheNewChannel() async throws {
+        let url = try makeAudioFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let manager = PlaybackManager()
+        defer { manager.stop() }
+        manager.play(stream: LiveStream(id: 99991, name: "Old local channel", directURLString: url.absoluteString))
+        let oldItem = try XCTUnwrap(manager.player.currentItem)
+        NotificationCenter.default.post(
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: oldItem,
+            userInfo: [AVPlayerItemFailedToPlayToEndTimeErrorKey: URLError(.unsupportedURL)]
+        )
+        manager.play(stream: LiveStream(id: 99990, name: "New local channel", directURLString: url.absoluteString))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(manager.currentStream?.id, 99990)
+        if case .failed = manager.playbackState {
+            XCTFail("An old item's queued failure affected the new channel")
+        }
+    }
+
+    @MainActor
     private func assertPendingSeekResumes(usingNativeControls: Bool) async throws {
         let url = try makeAudioFixture()
         defer { try? FileManager.default.removeItem(at: url) }

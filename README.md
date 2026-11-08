@@ -39,7 +39,7 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
   - Buffer-ahead preferences: **Ultra Low Latency (1.5s)**, **Balanced (4.0s)**, and **High Stability (10.0s)**. AVPlayer controls actual buffering and live timing; these preferences do not guarantee a fixed delay or uninterrupted playback.
   - **MPEG-TS Relay Engine:** Xtream live channels play through a local relay by default. The relay streams the provider continuous `.ts` feed, cuts segments at video keyframes, corrects parameter set ordering, and serves local low-latency HLS. If the relay cannot connect, playback falls back to the provider HLS stream.
   - **Live Edge Priority:** Live playback preserves its time offset from the live broadcast. After a stall, playback steps down variant quality and resumes buffered data immediately instead of freezing.
-  - **Live Pause and Rewind:** Opt-in local recorder in Settings > Playback. Captures live video to a temporary circular disk buffer (up to 10 minutes or 256 MiB) for instant pause, seek, and rewind.
+  - **Live Pause and Rewind:** Enabled by default for compatible live channels and configurable in Settings > Playback. Captures live video to a temporary circular disk buffer (up to 10 minutes or 256 MiB) for instant pause, seek, and rewind.
   - Automatic recovery for transient failures, with a watchdog timer and automatic retries.
   - In-player **Stream Telemetry HUD** displaying real-time buffer seconds ahead of playhead, observed network bitrate (Mbps), native resolution, frame rate, dropped frames, and stall counters.
 - **Two Ways to Sign In:**
@@ -65,6 +65,7 @@ Add `http://127.0.0.1:8765/playlist.m3u` on the same computer, or `http://10.0.2
   - Native tvOS Top Shelf extension showcasing favorites and continue-watching queues with instant deep linking.
   - Adaptive tab and sidebar navigation on iPhone, iPad, and Mac.
   - Native Picture-in-Picture (PiP) and background audio playback.
+  - Local playback diagnostics in Settings, with startup, buffering, and recovery summaries that you can clear or share. No automatic diagnostics upload or analytics SDK.
   - On Mac Catalyst, double-click toggles full screen, and the Esc key exits full screen.
   - Dark glassmorphism Apple TV aesthetic across all screens.
 
@@ -107,6 +108,8 @@ brutv/
 
 ### 1. Build for Simulator
 
+Apple builds require Xcode 27.2 and the iOS 27.2 SDK or later. The minimum supported iOS version remains 17. Native tabs and sidebars adapt to available space and safe areas. iPhone Duo posture and resize behavior still require the Apple UI validation described below.
+
 To build for iOS Simulator:
 
 ```bash
@@ -146,7 +149,7 @@ The core suite compiles the shared Swift logic. AVPlayer, SwiftUI, account integ
 Put the `.p12` certificate and the App Store `.mobileprovision` in `mobile/ios/BruTV/signing/`. Git ignores both files.
 
 ```bash
-IOS_P12_PASSWORD='<password>' ./release.sh --skip-simulator-build
+IOS_P12_PASSWORD='<password>' ./release.sh --platform ios --skip-simulator-build
 ```
 
 See [RELEASE.md](mobile/ios/RELEASE.md) for details.

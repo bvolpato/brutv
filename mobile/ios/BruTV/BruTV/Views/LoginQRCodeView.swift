@@ -63,7 +63,7 @@ public struct LoginQRCodeView: View {
                     #if !os(tvOS)
                     VStack(spacing: 8) {
                         HStack(spacing: 12) {
-                            if let qrImage {
+                            if qrImage != nil {
                                 ShareLink(
                                     item: link.universalURL,
                                     subject: Text("Join BruTV".localized),

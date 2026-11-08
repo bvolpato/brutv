@@ -109,6 +109,26 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(PlaybackPolicy.vodResumePosition(42, duration: 20) ?? 0, 19.9, accuracy: 0.001)
     }
 
+    func testVODSeeksRejectNonfiniteInputAndAllowSeekingToTheBeginning() {
+        XCTAssertNil(PlaybackPolicy.vodSeekPosition(.nan, duration: 120))
+        XCTAssertNil(PlaybackPolicy.vodSeekPosition(.infinity, duration: 0))
+        XCTAssertNil(PlaybackPolicy.vodSeekPosition(-.infinity, duration: 120))
+        XCTAssertEqual(PlaybackPolicy.vodSeekPosition(-10, duration: 120), 0)
+        XCTAssertEqual(PlaybackPolicy.vodSeekPosition(0, duration: 120), 0)
+        XCTAssertEqual(PlaybackPolicy.vodSeekPosition(150, duration: 120), 120)
+        XCTAssertEqual(PlaybackPolicy.vodSeekPosition(42, duration: .nan), 42)
+        XCTAssertEqual(PlaybackPolicy.vodSeekPosition(42, duration: .infinity), 42)
+    }
+
+    func testRemoteLiveEndRecoversButFiniteFilesAndVODRemainEnded() {
+        let remote = URL(string: "https://fixture.example.test/live.m3u8")!
+        let file = URL(fileURLWithPath: "/tmp/finite-fixture.wav")
+        XCTAssertTrue(PlaybackPolicy.retriesAtEnd(isLive: true, url: remote))
+        XCTAssertFalse(PlaybackPolicy.retriesAtEnd(isLive: true, url: file))
+        XCTAssertFalse(PlaybackPolicy.retriesAtEnd(isLive: false, url: remote))
+        XCTAssertFalse(PlaybackPolicy.retriesAtEnd(isLive: true, url: nil))
+    }
+
     // MARK: - Quality step-down
 
     func testOneStallKeepsQualityAndTwoStallsCapBelowThePlayingVariant() {

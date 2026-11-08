@@ -96,10 +96,9 @@ public struct SettingsView: View {
                 }
             }
 
-            // State-of-the-Art Buffering Engine
             Section(
                 header: Text("PLAYBACK & BUFFERING ENGINE".localized),
-                footer: Text("Ultra Low Latency (1.5s) delivers near-live sports broadcast timing. Balanced (4.0s) ensures zero stuttering on regular broadband. High Stability (10.0s) protects against cellular jitter.".localized)
+                footer: Text("Buffer profiles request more or less video ahead of playback. The actual delay and stability depend on the stream, connection, and device.".localized)
             ) {
                 Picker("Buffer Profile".localized, selection: $playback.settings.bufferProfile) {
                     ForEach(BufferProfile.allCases) { profile in
@@ -117,11 +116,20 @@ public struct SettingsView: View {
                 Toggle("Hardware Acceleration".localized, isOn: $playback.settings.hardwareAcceleration)
             }
 
-            Section(header: Text("LIVE REWIND".localized), footer: Text("When on, BruTV records live channels on this device so you can pause and rewind. Channels take longer to start, because BruTV records about 30 seconds first, and some providers are too slow for it. When off, channels start right away, and you can pause briefly within the provider's own live window. Up to 10 minutes is kept within a 256 MiB temporary-file limit. Closing playback or changing channels deletes the recording.".localized)) {
+            Section(header: Text("LIVE REWIND".localized), footer: Text("Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 256 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.".localized)) {
                 Toggle(isOn: $playback.settings.liveRewind) {
                     Label("Pause & Rewind Live TV".localized, systemImage: "clock.arrow.circlepath")
                 }
                 .accessibilityIdentifier("liveRewindToggle")
+            }
+
+            Section(header: Text("PLAYBACK HEALTH".localized)) {
+                NavigationLink {
+                    PlaybackDiagnosticsView()
+                } label: {
+                    Label("Playback diagnostics".localized, systemImage: "waveform.path.ecg")
+                }
+                .accessibilityIdentifier("playbackDiagnosticsButton")
             }
 
             // Cache & Maintenance
