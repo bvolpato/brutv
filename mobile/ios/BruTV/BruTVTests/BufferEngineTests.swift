@@ -274,7 +274,7 @@ final class BufferEngineTests: XCTestCase {
         XCTAssertTrue(ready, "Initial WAV player did not become ready: \(playbackDiagnostics(manager))")
         guard ready else { return false }
 
-        manager.player.pause()
+        if manager.isPlaybackRequested { manager.togglePlayPause() }
         let paused = try await waitUntil { manager.player.rate == 0 && !manager.isPlaybackRequested }
         XCTAssertTrue(paused, "Initial WAV player did not pause for preroll: \(playbackDiagnostics(manager))")
         XCTAssertEqual(manager.player.status, .readyToPlay)
