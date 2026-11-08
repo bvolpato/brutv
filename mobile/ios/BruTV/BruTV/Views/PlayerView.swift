@@ -739,6 +739,15 @@ public struct PlayerView: View {
                 liveTimeshiftControls
             }
 
+            if let notice = playback.liveBuffer.notice, !notice.isEmpty {
+                Text(notice.localized)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("playerLiveBufferNotice")
+            }
+
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
                     guideButton
