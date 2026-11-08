@@ -74,12 +74,38 @@ final class BruTVUITests: XCTestCase {
         XCTAssertTrue(back.waitForExistence(timeout: 2) && back.isHittable, "Player controls not visible", file: file, line: line)
     }
 
+    private func snapshotDescendants(_ element: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
+        element.children.flatMap { [$0] + snapshotDescendants($0) }
+    }
+
+    private func tapSwitchControl(_ app: XCUIApplication, identifier: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let window = app.windows.firstMatch
+        let snapshot = try window.snapshot()
+        let elements = snapshotDescendants(snapshot)
+        let rows = elements.filter { $0.elementType == .switch && $0.identifier == identifier }
+        let row = try XCTUnwrap(rows.count == 1 ? rows.first : nil,
+                               "Expected one switch row for \(identifier)", file: file, line: line)
+        // SwiftUI exposes the labelled row separately from the native switch. Its reported
+        // AX parent can be inconsistent, so use one snapshot and the control's actual frame.
+        let controls = elements.filter {
+            $0.elementType == .switch && $0.identifier != identifier && row.frame.contains($0.frame)
+        }
+        let control = try XCTUnwrap(controls.count == 1 ? controls.first : nil,
+                                   "Expected one native switch inside \(identifier)", file: file, line: line)
+        let frame = control.frame
+        guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite),
+              frame.width > 0, frame.height > 0, snapshot.frame.contains(frame) else {
+            XCTFail("Native switch \(identifier) has invalid or off-window geometry: \(frame)", file: file, line: line)
+            return
+        }
+        window.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.midX - snapshot.frame.minX, dy: frame.midY - snapshot.frame.minY))
+            .tap()
+    }
+
     private func assertButtonsFitWindow(_ app: XCUIApplication, identifiers: [String], file: StaticString = #filePath, line: UInt = #line) throws {
         let snapshot = try app.windows.firstMatch.snapshot()
-        func descendants(_ element: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
-            element.children.flatMap { [$0] + descendants($0) }
-        }
-        let buttons = descendants(snapshot).filter { $0.elementType == .button }
+        let buttons = snapshotDescendants(snapshot).filter { $0.elementType == .button }
         for identifier in identifiers {
             let button = app.buttons[identifier]
             XCTAssertTrue(button.exists && button.isHittable, "\(identifier) is not reachable", file: file, line: line)
@@ -435,7 +461,6 @@ final class BruTVUITests: XCTestCase {
 
     func testLogoutReturnsToLoginScreen() throws {
         let app = launchLoggedIn()
-        firstChannel(app)
 
         navigate(app, to: "Settings")
 
@@ -587,7 +612,7 @@ final class BruTVUITests: XCTestCase {
         }
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         let initial = toggle.value as? String
-        toggle.tap()
+        try tapSwitchControl(app, identifier: "liveRewindToggle")
         let changed = initial == "1" ? "0" : "1"
         XCTAssertTrue(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "value == %@", changed), evaluatedWith: toggle)],
                                        timeout: 5) == .completed, "Toggle did not change")
@@ -606,7 +631,7 @@ final class BruTVUITests: XCTestCase {
             swipes += 1
         }
         XCTAssertEqual(saved.value as? String, changed, "Live rewind setting was not saved")
-        saved.tap()
+        try tapSwitchControl(relaunched, identifier: "liveRewindToggle")
     }
 
     // MARK: - In-app QR scanning
