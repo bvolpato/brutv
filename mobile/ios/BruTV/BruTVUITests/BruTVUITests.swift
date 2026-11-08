@@ -137,12 +137,12 @@ final class BruTVUITests: XCTestCase {
             for name in candidates {
                 let navBtn = app.buttons["\(name)NavButton"]
                 if navBtn.exists { return navBtn }
-                let generalBtn = app.buttons[name].firstMatch
-                if generalBtn.exists { return generalBtn }
                 let cell = app.collectionViews.cells.containing(.staticText, identifier: name).firstMatch
                 if cell.exists { return cell }
                 let btn = app.collectionViews.buttons[name].firstMatch
                 if btn.exists { return btn }
+                let generalBtn = app.buttons[name].firstMatch
+                if generalBtn.exists { return generalBtn }
             }
             return nil
         }
