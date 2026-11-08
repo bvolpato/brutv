@@ -140,8 +140,14 @@ jobs:
             simulator_id=$(jq -r --arg name "$APPLE_SIMULATOR" --arg runtime "$APPLE_SIMULATOR_RUNTIME" \
               '[.devices[$runtime][]? | select(.name == $name)][0].udid // empty' <<<"$devices")
             if [[ -z "$simulator_id" ]]; then
-              echo "error: required simulator is unavailable: $APPLE_SIMULATOR on $APPLE_SIMULATOR_RUNTIME" >&2
-              exit 1
+              device_types=$(xcrun simctl list devicetypes --json)
+              device_type=$(jq -r --arg name "$APPLE_SIMULATOR" \
+                '[.devicetypes[] | select(.name == $name)][0].identifier // empty' <<<"$device_types")
+              if [[ -z "$device_type" ]]; then
+                echo "error: required simulator type is unavailable: $APPLE_SIMULATOR" >&2
+                exit 1
+              fi
+              simulator_id=$(xcrun simctl create "$APPLE_SIMULATOR" "$device_type" "$APPLE_SIMULATOR_RUNTIME")
             fi
             xcrun simctl bootstatus "$simulator_id" -b
             APPLE_DESTINATION="platform=iOS Simulator,id=$simulator_id"
