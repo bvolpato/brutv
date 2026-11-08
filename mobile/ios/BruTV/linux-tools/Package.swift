@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BruTVLinuxTools",
+    platforms: [.macOS(.v13)],
     products: [.executable(name: "prepare-xtool", targets: ["PrepareXtool"])],
     dependencies: [
         .package(
