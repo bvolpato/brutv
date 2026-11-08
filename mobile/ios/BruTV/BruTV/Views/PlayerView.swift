@@ -430,10 +430,39 @@ public struct PlayerView: View {
     }
 
     private var topControlsBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                backToChannelsButton
+                channelTitle
+                Spacer(minLength: 8)
+                topControlsActions
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    backToChannelsButton
+                    Spacer(minLength: 8)
+                    topControlsActions
+                }
+                channelTitle
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.85), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private var topControlsActions: some View {
         HStack(spacing: 10) {
-            backToChannelsButton
-            channelTitle
-            Spacer(minLength: 8)
             if let stream = playback.currentStream {
                 let isFav = favorites.isFavorite(channelID: stream.id)
                 Button {
@@ -459,16 +488,6 @@ public struct PlayerView: View {
             #endif
             closeButton
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 20)
-        .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.85), Color.clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
     }
 
     private var backToChannelsButton: some View {
