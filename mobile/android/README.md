@@ -66,15 +66,18 @@ directories. Google Play may require the configured upload certificate to
 match the app's existing Play Console setup.
 
 The hosted direct APK and standard App Bundle keep API 23 support for Android
-6+. Google Play automatic protection requires API 24, so build a separate
-Play-only App Bundle with:
+6+. Google Play automatic protection requires API 24. Build a separate,
+versioned Play App Bundle and verify its signing with:
 
 ```bash
-./gradlew :app:bundleRelease -PbrutvMinSdk=24
+./release.sh --play-bundle
 ```
 
-This override applies to that Gradle build only. Keep the resulting API 24
-bundle for Google Play and continue hosting the API 23 APK for direct installs.
+The script keeps the API 23 APK and standard App Bundle for direct downloads
+and writes the API 24 bundle as
+`build/distributions/BruTV-android-play-<version>-<code>.aab`. It restores the
+standard API 23 App Bundle in Gradle's output directory after the Play bundle
+passes manifest and signature checks.
 
 For family testing on Android/Fire OS, Downloader can download an APK from a
 direct HTTPS URL and open the system installer. The APK must first be hosted
