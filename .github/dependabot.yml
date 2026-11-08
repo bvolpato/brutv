@@ -13,6 +13,27 @@ updates:
     groups:
       dependency-updates:
         patterns: ["*"]
+    # The SDK 0.23 template requires a coordinated React Native/toolchain migration.
+    # These rules keep version updates on the tested track; security updates remain enabled.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@amazon-devices/*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "@react-native-community/*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "metro*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-minor"]
     open-pull-requests-limit: 2
   - package-ecosystem: gradle
     directories:

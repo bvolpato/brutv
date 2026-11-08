@@ -1,12 +1,14 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {AppState, BackHandler, StyleSheet, Text, View} from 'react-native';
-import {useTVEventHandler} from '@amazon-devices/react-native-kepler';
+import {useKeplerAppStateManager, useTVEventHandler} from '@amazon-devices/react-native-kepler';
+import {MediaControlServerComponentAsync} from '@amazon-devices/kepler-media-controls';
 import {KeplerVideoSurfaceView, VideoPlayer} from '@amazon-devices/react-native-w3cmedia';
 import {ContentItem} from '../domain/catalog';
 import {PlaybackPosition, PlaybackSession, PlaybackStatus} from './PlaybackSession';
 import {vegaAdapter} from './vegaAdapter';
 import {TVButton} from '../TVButton';
 import {localizePlayerMessage, PlayerLanguage, playerText} from './playerCopy';
+import {SystemMediaSession} from './SystemMediaSession';
 
 export function PlayerScreen({item, language, onClose}: {item: ContentItem; language: PlayerLanguage; onClose: () => void}) {
   const [status, setStatus] = useState<PlaybackStatus>('loading');
@@ -16,6 +18,7 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
   const session = useRef<PlaybackSession>();
   const surface = useRef<string>();
   const released = useRef<Promise<void>>(Promise.resolve());
+  const appStateManager = useKeplerAppStateManager();
   useTVEventHandler(({eventType, eventKeyAction}) => {
     if (eventType === 'playpause' && eventKeyAction === 1) {
       void session.current?.toggle().catch(() => setStatus('error'));
@@ -24,8 +27,22 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
   useEffect(() => {
     const video = new VideoPlayer();
     setPosition(undefined); setRecordingMessage(undefined);
-    const current = new PlaybackSession(video, onError => vegaAdapter(video, onError, item.kind === 'live'), setStatus,
-      (update, message) => {setPosition(update); setRecordingMessage(message);});
+    let system: SystemMediaSession | undefined;
+    let playbackStatus: PlaybackStatus = 'loading';
+    let playbackPosition: PlaybackPosition | undefined;
+    const current = new PlaybackSession(video, onError => vegaAdapter(video, onError, item.kind === 'live'), value => {
+      playbackStatus = value; setStatus(value); system?.update(value, playbackPosition);
+    }, (update, message) => {
+      playbackPosition = update; setPosition(update); setRecordingMessage(message); system?.update(playbackStatus, update);
+    });
+    try {
+      const server = MediaControlServerComponentAsync.getOrMakeServer();
+      system = new SystemMediaSession(current, item, onClose, server);
+      server.setHandlerForComponent(system.handler, appStateManager.getComponentInstance());
+    } catch {
+      system?.close(); system = undefined;
+      console.warn('System media controls are unavailable; use the on-screen playback controls.');
+    }
     session.current = current;
     if (surface.current) current.surfaceCreated(surface.current);
     void released.current.then(() => current.start(item.url!));
@@ -33,9 +50,10 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
     const appState = AppState.addEventListener('change', state => { if (state !== 'active') onClose(); });
     return () => {
       back.remove(); appState.remove(); session.current = undefined;
+      system?.close();
       released.current = current.close().catch(() => { /* The screen has exited; no stale UI updates. */ });
     };
-  }, [item.url, item.kind, attempt, onClose]);
+  }, [item.url, item.kind, attempt, onClose, appStateManager]);
   const behind = position?.live ? Math.max(0, (position.liveTarget ?? position.end) - position.position) : 0;
   const canRewind = !!position && position.end - position.start > 1;
   const text = playerText(language);
