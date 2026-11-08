@@ -266,7 +266,8 @@ public final class PlaybackManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak item] _ in
                 guard let self, let item, self.isCurrent(item, session: session, generation: generation) else { return }
-                self.synchronizeTransport(for: item, session: session, generation: generation)
+                self.synchronizeTransport(for: item, session: session, generation: generation,
+                                          recognizesPauseRequest: self.resumeSeekInProgress)
             }
             .store(in: &itemObservers)
 
@@ -295,8 +296,8 @@ public final class PlaybackManager: ObservableObject {
                                       item: item, session: session, generation: generation)
                 return
             }
-            // End/failure can change the rate before its notification. Keep recovery intent
-            // until a rate-change reason identifies an intentional pause.
+            // End/failure can change the rate before its notification. Outside a restore seek,
+            // preserve recovery intent until a rate-change reason identifies a pause.
             guard recognizesPauseRequest else {
                 if isPlaybackRequested {
                     recovery.recordInterruption()
