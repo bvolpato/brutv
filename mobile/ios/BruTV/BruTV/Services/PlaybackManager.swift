@@ -1107,7 +1107,9 @@ public final class PlaybackManager: ObservableObject {
     private func classifyPlaybackFailure(_ error: Error?, item: AVPlayerItem) -> PlaybackFailure {
         if let networkFailure = PlaybackPolicy.networkFailure(
             for: error,
-            httpStatus: item.errorLog()?.events.last?.errorStatusCode
+            httpStatus: item.errorLog()?.events.last?.errorStatusCode,
+            localLiveRecording: liveRecorder != nil && currentStream != nil
+                && currentPlaybackURL.map(Self.isLocalPlaylist) == true
         ) {
             return networkFailure
         }

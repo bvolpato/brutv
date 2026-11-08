@@ -70,10 +70,11 @@ enum PlaybackPolicy {
         isLive && url.map { !$0.isFileURL } == true
     }
 
-    static func networkFailure(for error: Error?, httpStatus: Int? = nil) -> PlaybackFailure? {
+    static func networkFailure(for error: Error?, httpStatus: Int? = nil, localLiveRecording: Bool = false) -> PlaybackFailure? {
         if let status = httpStatus {
             switch status {
             case 401, 403: return .unauthorized
+            case 410 where localLiveRecording: return .transient
             case 404, 410: return .notFound
             case 408, 429, 500...599: return .transient
             case 400...499: return .unknown

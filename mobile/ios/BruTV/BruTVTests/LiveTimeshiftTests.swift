@@ -126,6 +126,28 @@ final class LiveTimeshiftTests: XCTestCase {
         XCTAssertNil(LiveTimeshiftSeekPolicy.clamp(.nan, start: 30, end: 100))
         XCTAssertNil(LiveTimeshiftSeekPolicy.livePosition(start: 100, end: 100, targetDuration: 2))
     }
+
+    func testExpiredLocalSegmentCanRetryWithoutTreatingProviderExpiryAsTransient() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let ring = try LiveTimeshiftRing(directory: directory,
+                                         limits: LiveTimeshiftLimits(seconds: 4, bytes: 1024))
+        defer { ring.stop() }
+        try ring.append(segment(0), data: Data([1]), target: 2, now: 0)
+        try ring.append(segment(1), data: Data([2]), target: 2, now: 2)
+        _ = try ring.playlist(now: 4)
+        try ring.append(segment(2), data: Data([3]), target: 2, now: 6)
+        try ring.append(segment(3), data: Data([4]), target: 2, now: 12)
+        XCTAssertNil(ring.file(named: "segment-0.ts"))
+
+        // The local HTTP server returns 410 for an expired recorded segment.
+        let localFailure = try XCTUnwrap(PlaybackPolicy.networkFailure(for: nil, httpStatus: 410,
+                                                                      localLiveRecording: true))
+        XCTAssertEqual(localFailure, .transient)
+        var recovery = PlaybackRecoveryPolicy()
+        XCTAssertEqual(recovery.nextRetryDelay(for: localFailure), 1.5)
+        XCTAssertEqual(PlaybackPolicy.networkFailure(for: nil, httpStatus: 410), .notFound)
+        XCTAssertEqual(PlaybackPolicy.networkFailure(for: nil, httpStatus: 404), .notFound)
+    }
 }
 
 private actor MovingHLSFixture {
