@@ -587,7 +587,7 @@ final class BruTVUITests: XCTestCase {
         }
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         let initial = toggle.value as? String
-        toggle.switches.firstMatch.exists ? toggle.switches.firstMatch.tap() : toggle.tap()
+        toggle.tap()
         let changed = initial == "1" ? "0" : "1"
         XCTAssertTrue(XCTWaiter().wait(for: [expectation(for: NSPredicate(format: "value == %@", changed), evaluatedWith: toggle)],
                                        timeout: 5) == .completed, "Toggle did not change")
@@ -606,7 +606,7 @@ final class BruTVUITests: XCTestCase {
             swipes += 1
         }
         XCTAssertEqual(saved.value as? String, changed, "Live rewind setting was not saved")
-        saved.switches.firstMatch.exists ? saved.switches.firstMatch.tap() : saved.tap()
+        saved.tap()
     }
 
     // MARK: - In-app QR scanning
