@@ -1095,7 +1095,10 @@ public final class PlaybackManager: ObservableObject {
                 self.pendingLiveDate = nil
                 self.pendingLiveRecordedPosition = nil
                 guard self.isPlaybackRequested, self.retryWorkItem == nil else { return }
-                self.synchronizeTransport(for: item, session: session, generation: generation)
+                // A native pause can race its rate-change notification during the seek.
+                // Honor the completed transport state instead of the earlier resume intent.
+                self.synchronizeTransport(for: item, session: session, generation: generation,
+                                          recognizesPauseRequest: true)
             }
         }
     }
