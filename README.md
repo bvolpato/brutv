@@ -59,6 +59,10 @@ A `brutv://login` link or sign-in QR code can include source credentials in the 
 - Apple simulator tests require macOS and Xcode: `./test.sh`.
 - See each platform guide for its build environment and additional checks.
 
+CI selects checks from the changed files. Documentation changes skip app builds, while site changes run the join-page checks. Apple changes run unit tests, a short iPhone UI smoke suite, and tvOS/Catalyst builds. Test diagnostics are retained only on failure.
+
+Before releasing, run the full platform and Apple device suites with `gh workflow run ci.yml --ref main -f scope=full`. Pushing a `v*` tag also selects full validation. Manual runs can select an individual platform instead.
+
 ## License
 
 BruTV's original code is licensed under the [MIT License](LICENSE), except for the standalone [PS5 port](mobile/ps5/LICENSE), which remains GPL-3.0-or-later. Third-party code and assets keep their original licenses and notices.

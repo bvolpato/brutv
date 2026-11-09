@@ -4,18 +4,62 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Checks to run (full includes all Apple UI devices)
+        type: choice
+        required: true
+        default: changed
+        options:
+          - changed
+          - apple
+          - android
+          - vega
+          - ps5
+          - web
+          - full
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scope || 'auto' }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      core: ${{ steps.plan.outputs.core }}
+      apple: ${{ steps.plan.outputs.apple }}
+      android: ${{ steps.plan.outputs.android }}
+      vega: ${{ steps.plan.outputs.vega }}
+      ps5: ${{ steps.plan.outputs.ps5 }}
+      web: ${{ steps.plan.outputs.web }}
+      release_tools: ${{ steps.plan.outputs.release_tools }}
+      apple_matrix: ${{ steps.plan.outputs.apple_matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Test CI routing
+        run: node --test tools/ci-plan.test.mjs
+      - name: Select platform checks
+        id: plan
+        run: node tools/ci-plan.mjs
+
   swift-core:
     name: Swift core tests
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -27,6 +71,8 @@ jobs:
 
   join-page:
     name: Join page behavior
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -39,48 +85,34 @@ jobs:
       - name: Test sign-in link initialization and QR privacy
         run: node --test tools/join-page.test.mjs
 
+  release-tooling:
+    name: Apple release tooling tests
+    needs: changes
+    if: needs.changes.outputs.release_tools == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.13.4'
+      - name: Test build, signing, and upload guards
+        run: |
+          for test in mobile/ios/BruTV/tests/test_*.py; do
+            uv run --python 3.12 "$test"
+          done
+
   apple:
     name: Apple - ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.apple == 'true'
     runs-on: xcode-27
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: iOS unit tests
-            target: ios-unit
-            action: test
-            scheme: BruTV
-            simulator: iPhone 18 Pro
-            test-target: BruTVTests
-          - name: iPhone UI tests
-            target: iphone-ui
-            action: test
-            scheme: BruTV
-            simulator: iPhone 18 Pro
-            test-target: BruTVUITests
-          - name: iPad UI tests
-            target: ipad-ui
-            action: test
-            scheme: BruTV
-            simulator: iPad Pro 13-inch (M5)
-            test-target: BruTVUITests
-          - name: iPhone Duo UI tests
-            target: duo-ui
-            action: test
-            scheme: BruTV
-            simulator: iPhone Duo
-            test-target: BruTVUITests
-          - name: tvOS simulator build
-            target: tvos
-            action: build
-            scheme: BruTV-tvOS
-            destination: generic/platform=tvOS Simulator
-          - name: Mac Catalyst build
-            target: catalyst
-            action: build
-            scheme: BruTV
-            destination: generic/platform=macOS,variant=Mac Catalyst
+      matrix: ${{ fromJSON(needs.changes.outputs.apple_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,7 +154,7 @@ jobs:
           APPLE_ACTION: ${{ matrix.action }}
           APPLE_SCHEME: ${{ matrix.scheme }}
           APPLE_TARGET: ${{ matrix.target }}
-          APPLE_TEST_TARGET: ${{ matrix.test-target }}
+          APPLE_TEST_TARGETS: ${{ matrix.tests }}
           APPLE_DESTINATION: ${{ steps.destination.outputs.destination }}
         run: |
           arguments=(
@@ -132,21 +164,27 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/apple-derived-data"
             -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET.xcresult"
           )
-          if [[ -n "$APPLE_TEST_TARGET" ]]; then
-            arguments+=(-only-testing "$APPLE_TEST_TARGET" -parallel-testing-enabled NO)
+          if [[ -n "$APPLE_TEST_TARGETS" ]]; then
+            read -r -a test_targets <<<"$APPLE_TEST_TARGETS"
+            for test_target in "${test_targets[@]}"; do
+              arguments+=("-only-testing:$test_target")
+            done
+            arguments+=(-parallel-testing-enabled NO)
           fi
           xcodebuild "$APPLE_ACTION" "${arguments[@]}" CODE_SIGNING_ALLOWED=NO
       - name: Upload Apple test results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: apple-${{ matrix.target }}-results
           path: ${{ runner.temp }}/BruTV-*.xcresult
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: ignore
 
   android:
     name: Android tests, lint, and APK builds
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -171,21 +209,31 @@ jobs:
         run: ./mobile/android/test.sh --no-daemon --max-workers=2 --console=plain
       - name: Build debug and preview APKs
         run: ./mobile/android/gradlew --no-daemon --max-workers=2 --console=plain -p mobile/android :app:assembleDebug :app:assemblePreview
-      - name: Upload APKs and Gradle reports
-        if: always()
+      - name: Upload Android failure diagnostics
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: android-apks-and-reports
+          name: android-failure-reports
+          path: |
+            mobile/android/app/build/reports/**
+            mobile/android/app/build/test-results/**
+          retention-days: 3
+          if-no-files-found: ignore
+      - name: Keep APKs for manual and version-tag validation
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apks
           path: |
             mobile/android/app/build/outputs/apk/debug/*.apk
             mobile/android/app/build/outputs/apk/preview/*.apk
-            mobile/android/app/build/reports/**
-            mobile/android/app/build/test-results/**
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   vega:
     name: Vega source tests and production bundle
+    needs: changes
+    if: needs.changes.outputs.vega == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     defaults:
@@ -219,6 +267,8 @@ jobs:
 
   ps5-desktop:
     name: PS5 desktop build and media tests
+    needs: changes
+    if: needs.changes.outputs.ps5 == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
