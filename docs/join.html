@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="canonical" href="https://brunovolpato.com/brutv/join.html">
-  <title>Join BruTV · Next-Generation IPTV Player</title>
-  <meta name="description" content="Open your subscription in BruTV or download the app for Apple TV, iOS, iPadOS, macOS, and Android.">
+  <link rel="canonical" href="https://bvolpato.github.io/brutv/join.html">
+  <title>Sign in with BruTV · Media Player</title>
+  <meta name="description" content="Open a BruTV sign-in link or set up another device. Add a source you are authorized to use.">
   <meta name="author" content="Bruno Volpato">
   <meta name="robots" content="noindex,follow">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://brunovolpato.com/brutv/join.html">
-  <meta property="og:title" content="Join BruTV · Next-Generation IPTV Player">
-  <meta property="og:description" content="Fast, buffer-free IPTV with native Siri Remote, Apple TV Top Shelf, and instant channel switching.">
-  <meta property="og:image" content="https://brunovolpato.com/images/brutv/app-icon-social.png">
+  <meta property="og:url" content="https://bvolpato.github.io/brutv/join.html">
+  <meta property="og:title" content="Sign in with BruTV · Media Player">
+  <meta property="og:description" content="Open a BruTV sign-in link or set up another device. Add a source you are authorized to use.">
+  <meta property="og:image" content="https://bvolpato.github.io/brutv/assets/brutv-app-icon.png">
   <meta property="og:image:alt" content="BruTV app icon">
   <meta name="theme-color" content="#070D12">
-  <link rel="icon" type="image/png" href="/images/brutv/app-icon.png" sizes="180x180">
-  <link rel="apple-touch-icon" href="/images/brutv/app-icon.png" sizes="180x180">
+  <link rel="icon" type="image/png" href="./assets/brutv-app-icon.png" sizes="180x180">
+  <link rel="apple-touch-icon" href="./assets/brutv-app-icon.png" sizes="180x180">
   <style>
     :root {
       --bg-start: #070D12;
@@ -150,6 +150,18 @@
       font-size: 14px;
       line-height: 1.5;
       margin-bottom: 24px;
+    }
+
+    .content-note {
+      margin: 0 0 22px;
+      padding: 12px 14px;
+      border: 1px solid rgba(85, 226, 209, 0.24);
+      border-radius: 13px;
+      background: rgba(85, 226, 209, 0.08);
+      color: var(--text-main);
+      font-size: 12px;
+      line-height: 1.55;
+      text-align: left;
     }
 
     .action-group {
@@ -340,7 +352,7 @@
 </head>
 <body>
   <div class="top-bar">
-    <a href="/brutv/" class="back-link">
+    <a href="./" class="back-link">
       <span>←</span>
       <span id="txt-back">Back to BruTV</span>
     </a>
@@ -352,11 +364,12 @@
 
   <div class="container">
     <div class="logo-container">
-      <img src="/images/brutv/app-icon.png" alt="BruTV logo" width="180" height="180">
+      <img src="./assets/brutv-app-icon.png" alt="BruTV app icon" width="180" height="180">
     </div>
 
     <h1 id="title">Join BruTV</h1>
-    <p class="subtitle" id="subtitle">The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.</p>
+    <p class="subtitle" id="subtitle">Open a BruTV sign-in link or set up another device.</p>
+    <p class="content-note" id="txt-content-note">BruTV is a player only. It does not provide, host, share, or sell channels, movies, playlists, or subscriptions. Bring a source you are authorized to use.</p>
 
     <div class="action-group">
       <!-- 1. Open App Directly -->
@@ -373,9 +386,9 @@
       <!-- 3. Direct Android APK Download Button -->
       <a id="btn-apk" href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-6.apk" class="btn btn-secondary" download="BruTV-android-1.0.1-6.apk">
         <span>🤖</span>
-        <span id="txt-download-apk">Download Android APK (Direct)</span>
+        <span id="txt-download-apk">Download Android APK</span>
       </a>
-      <p class="apk-hint" id="txt-apk-hint">For Android phones, tablets, Android TV & Fire TV</p>
+      <p class="apk-hint" id="txt-apk-hint">For phones, tablets, Android TV, Google TV, and Android-based Fire TV</p>
     </div>
 
     <!-- Secondary: Copy link or QR code -->
@@ -403,49 +416,52 @@
 
     <div class="platforms">
       <div class="platform-pill"><span></span> Apple TV, iOS & Mac</div>
-      <a href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-6.apk" class="platform-pill" style="text-decoration: none; color: inherit;" download>
+      <a href="https://brunovolpato.com/brutv/downloads/BruTV-android-1.0.1-6.apk" class="platform-pill" style="text-decoration: none; color: inherit;" download="BruTV-android-1.0.1-6.apk">
         <span>🤖</span> Android APK (v1.0.1) ↓
       </a>
     </div>
+    <p style="margin: 18px 0 0; font-size: 11px; color: var(--text-muted);"><a href="./privacy.html" style="color: inherit;">Privacy policy</a></p>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- Lightweight Vanilla QR Code Generator -->
-  <script data-cfasync="false" src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+  <script src="./assets/vendor/qrcode-generator-1.4.4.js"></script>
   <script data-cfasync="false">
     const translations = {
       en: {
         back: "Back to BruTV",
         title: "Join BruTV",
-        subtitle: "The state of the art IPTV player for Apple TV, iOS, iPadOS, macOS, and Android.",
+        subtitle: "Open a BruTV sign-in link or set up another device.",
+        contentNote: "BruTV is a player only. It does not provide, host, share, or sell channels, movies, playlists, or subscriptions. Bring a source you are authorized to use.",
         openApp: "Open in BruTV App",
         downloadApple: "Join Apple Beta (TestFlight)",
-        downloadApk: "Download Android APK (Direct)",
-        apkDetails: "For Android phones, tablets, Android TV & Fire TV",
+        downloadApk: "Download Android APK",
+        apkDetails: "For phones, tablets, Android TV, Google TV, and Android-based Fire TV",
         or: "Or connect another screen",
         qrHint: "Scan with the camera on your iPhone, iPad, or Android device.",
         qrUnavailable: "QR code unavailable. Open the app or copy the sign-in link below.",
         copy: "Copy Sign-In Link",
         copied: "Link copied to clipboard!",
         manualCopy: "Select and copy the sign-in link below.",
-        security: "This sign-in link includes your subscription access. Only share it with people and devices you trust."
+        security: "Sign-in links contain source credentials. Only scan or share them with people and devices you trust."
       },
       pt: {
         back: "Voltar ao BruTV",
         title: "Entrar no BruTV",
-        subtitle: "O melhor reprodutor IPTV para Apple TV, iPhone, iPad, Mac e Android.",
+        subtitle: "Abra um link de acesso do BruTV ou configure outro aparelho.",
+        contentNote: "O BruTV é apenas um reprodutor. Ele não fornece, hospeda, compartilha ou vende canais, filmes, listas ou assinaturas. Use uma fonte que você tenha autorização para acessar.",
         openApp: "Abrir no App BruTV",
         downloadApple: "Participar do Beta Apple (TestFlight)",
-        downloadApk: "Baixar APK para Android (Direto)",
-        apkDetails: "Para celulares Android, tablets, Android TV e Fire TV",
+        downloadApk: "Baixar APK para Android",
+        apkDetails: "Para celulares, tablets, Android TV, Google TV e Fire TV baseado em Android",
         or: "Ou conecte em outra tela",
         qrHint: "Use a câmera do seu iPhone, iPad ou aparelho Android.",
         qrUnavailable: "QR code indisponível. Abra o app ou copie o link de acesso abaixo.",
         copy: "Copiar Link de Acesso",
         copied: "Link copiado para a área de transferência!",
         manualCopy: "Selecione e copie o link de acesso abaixo.",
-        security: "Este link contém o acesso da sua assinatura. Compartilhe apenas com pessoas e aparelhos de sua confiança."
+        security: "Links de acesso contêm credenciais da fonte. Escaneie ou compartilhe apenas com pessoas e aparelhos de sua confiança."
       }
     };
 
@@ -467,6 +483,7 @@
       document.getElementById("txt-back").innerText = t.back;
       document.getElementById("title").innerText = t.title;
       document.getElementById("subtitle").innerText = t.subtitle;
+      document.getElementById("txt-content-note").innerText = t.contentNote;
       document.getElementById("txt-open-app").innerText = t.openApp;
       document.getElementById("txt-download-apple").innerText = t.downloadApple;
       document.getElementById("txt-download-apk").innerText = t.downloadApk;
@@ -508,13 +525,12 @@
     }
 
     function parseDeepLink() {
-      const searchParams = new URLSearchParams(window.location.search);
       const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
 
-      const server = searchParams.get("server") || hashParams.get("server");
-      const username = searchParams.get("username") || hashParams.get("username");
-      const password = searchParams.get("password") || hashParams.get("password");
-      const m3u = searchParams.get("m3u") || hashParams.get("m3u");
+      const server = hashParams.get("server");
+      const username = hashParams.get("username");
+      const password = hashParams.get("password");
+      const m3u = hashParams.get("m3u");
 
       if (m3u) {
         return `brutv://login?m3u=${encodeURIComponent(m3u)}`;

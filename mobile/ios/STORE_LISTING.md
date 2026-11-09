@@ -100,14 +100,14 @@ Data Not Collected. BruTV has no backend, analytics, or ads. Credentials stay on
 
 ## Screenshots
 
-Upload these files in this order. They are at native resolution, so App Store Connect accepts them as they are. To make them again, run `mobile/ios/BruTV/capture-screenshots.sh`.
+Generate fresh screenshots with `mobile/ios/BruTV/capture-screenshots.sh`, then verify them before uploading in this order. Generated screenshots are not kept in the repository. Use authorized public or synthetic sources and check every image for account details.
 
 | App Store Connect slot | Folder | Size |
 | --- | --- | --- |
 | iPhone 6.9" Display | `mobile/ios/BruTV/screenshots/iphone-6.9-inch/` | 1320 x 2868 |
 | iPad 13" Display | `mobile/ios/BruTV/screenshots/ipad-13-inch/` | 2064 x 2752 |
 
-Order: `02_channels`, `03_player`, `04_guide`, `05_settings`, `01_login`. The images use the public iptv-org playlist and the Education category, so they show no private account and no commercial channel brands.
+Order: `02_channels`, `03_player`, `04_guide`, `05_settings`, `01_login`. The capture flow uses the public iptv-org playlist and the Education category. Inspect the output instead of assuming it contains no private details or third-party branding.
 
 ---
 

@@ -1,6 +1,6 @@
 # Privacy Policy for BruTV
 
-**Last Updated:** October 12, 2026
+**Last Updated:** November 8, 2026
 
 BruTV ("we", "our", or "the app") respects your privacy. This policy outlines our commitment to protecting your data.
 
@@ -16,4 +16,4 @@ BruTV ("we", "our", or "the app") respects your privacy. This policy outlines ou
 - A timeshift playback server, where used, listens only on your own device and serves the temporary buffer to the local player.
 
 ### 3. Contact
-The published policy is at https://brunovolpato.com/brutv/privacy/. For questions, email me@brunovolpato.com.
+The published policy is at https://bvolpato.github.io/brutv/privacy.html. For questions, email me@brunovolpato.com.

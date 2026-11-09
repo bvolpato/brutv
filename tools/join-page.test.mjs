@@ -31,7 +31,7 @@ function loadPage({readyState = 'complete', qr = true, language = 'en', clipboar
   const events = new Map();
   const document = {readyState, documentElement: {lang: 'en'}, getElementById: get,
     querySelector: () => get('action-group')};
-  const location = new URL('https://brunovolpato.com/brutv/join.html#server=https%3A%2F%2Fexample.invalid&username=fixture&password=synthetic');
+  const location = new URL('https://bvolpato.github.io/brutv/join.html#server=https%3A%2F%2Fexample.invalid&username=fixture&password=synthetic');
   const encoded = [];
   const sandbox = {document, URLSearchParams, navigator: {language, userAgent: 'Desktop', clipboard},
     location, setTimeout() {}, addEventListener: (name, callback) => events.set(name, callback)};
@@ -49,6 +49,17 @@ test('initializes after DOMContentLoaded has already fired', () => {
   assert.equal(link.searchParams.get('password'), 'synthetic');
   assert.deepEqual(page.encoded, [link.href]);
   assert.equal(page.get('lang-en').classList.contains('active'), true);
+});
+
+test('ignores query credentials and reads sign-in details from the fragment', () => {
+  const page = loadPage();
+  page.context.location = new URL('https://bvolpato.github.io/brutv/join.html?server=https%3A%2F%2Fexample.invalid&username=fixture&password=synthetic');
+  assert.equal(page.context.parseDeepLink(), 'brutv://login');
+
+  page.context.location.hash = 'm3u=https%3A%2F%2Fexample.invalid%2Fplaylist.m3u';
+  const link = new URL(page.context.parseDeepLink());
+  assert.equal(link.searchParams.get('m3u'), 'https://example.invalid/playlist.m3u');
+  assert.equal(link.searchParams.has('password'), false);
 });
 
 test('waits for DOM readiness when the script loads during parsing', () => {

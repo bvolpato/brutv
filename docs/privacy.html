@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f7fb">
+  <meta name="description" content="How BruTV handles source details, requests, and temporary playback data.">
+  <link rel="canonical" href="https://bvolpato.github.io/brutv/privacy.html">
+  <link rel="icon" href="./assets/brutv-app-icon.png" type="image/png">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Privacy · BruTV</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="BruTV home">
+      <img src="./assets/brutv-app-icon.png" alt="" width="40" height="40">
+      <span>BruTV</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="./#features">Features</a>
+      <a href="./#platforms">Platforms</a>
+      <a href="./#get-started">Get started</a>
+      <a href="./privacy.html" aria-current="page">Privacy</a>
+      <a class="nav-code" href="https://github.com/bvolpato/brutv">View source <span aria-hidden="true">↗</span></a>
+    </nav>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch color theme">
+      <span aria-hidden="true">◐</span>
+    </button>
+  </header>
+
+  <main class="privacy-page wrap" id="main">
+    <a class="privacy-back" href="./">← Back to BruTV</a>
+    <p class="eyebrow">Privacy</p>
+    <h1>BruTV keeps playback on your device.</h1>
+    <p class="privacy-updated">Last updated November 8, 2026</p>
+    <div class="privacy-callout"><strong>BruTV is a player only.</strong> The app does not host media or run a cloud playback service. Your device connects directly to the source you configure.</div>
+
+    <h2>Information and storage</h2>
+    <ul>
+      <li>BruTV does not collect or send personal information to BruTV-operated servers or third-party tracking services.</li>
+      <li>Source credentials and app preferences are stored in the app's local storage or memory. The storage method depends on the platform.</li>
+      <li>Some supported live streams use a bounded temporary video buffer on your device for pause and rewind. It is removed when playback closes or changes channels; stale session files are cleaned on a later start. The buffer is not a recording library and is not uploaded to BruTV.</li>
+      <li>BruTV does not include third-party advertising or analytics SDKs.</li>
+    </ul>
+
+    <h2>Network requests</h2>
+    <p>Your device sends catalog and playback requests to the source you configure. That source may receive account credentials and connection details under its own privacy practices. BruTV does not operate remote proxy servers, intermediate gateways, or logging servers.</p>
+    <p>Where a platform uses a local playback server for temporary buffering, it listens on your device and serves that temporary buffer to the local player.</p>
+
+    <h2>Sign-in links and device pairing</h2>
+    <p>A BruTV sign-in link or QR code can contain source credentials. Android TV pairing can transfer credentials between devices when you start a pairing session. Use these features only with devices and people you trust. They transfer sign-in details, not media content.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy? Email <a href="mailto:me@brunovolpato.com">me@brunovolpato.com</a>.</p>
+  </main>
+
+  <footer class="site-footer wrap">
+    <a class="footer-brand" href="./"><img src="./assets/brutv-app-icon.png" alt="" width="28" height="28"> BruTV</a>
+    <p>Open source player · Your source, your screen.</p>
+    <div><a href="https://github.com/bvolpato/brutv">GitHub</a><a href="./privacy.html">Privacy</a><a href="https://github.com/bvolpato/brutv/blob/main/LICENSE">MIT License</a></div>
+  </footer>
+  <script>
+    const themeButton = document.getElementById("theme-toggle");
+    const getTheme = () => document.documentElement.dataset.theme ||
+      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    themeButton.setAttribute("aria-label", `Switch to ${getTheme() === "dark" ? "light" : "dark"} theme`);
+    themeButton.addEventListener("click", () => {
+      const current = getTheme();
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      themeButton.setAttribute("aria-label", `Switch to ${current} theme`);
+    });
+  </script>
+</body>
+</html>
