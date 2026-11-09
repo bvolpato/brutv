@@ -172,3 +172,7 @@ If BruTV is not installed, the `brutv://` link does nothing. The person must ins
 ## Test data
 
 Debug and UI test flows use synthetic local fixtures. They do not include a provider account or contact a subscription service. To test an authorized provider, supply its credentials locally through the opt-in integration-test environment described in the Apple release guide. Never commit account credentials or include them in screenshots.
+
+## License
+
+Unless otherwise noted, BruTV's original code is licensed under the [MIT License](LICENSE). The [standalone PS5 port](mobile/ps5/LICENSE) remains GPL-3.0-or-later. Third-party code and assets retain their existing licenses and notices.
