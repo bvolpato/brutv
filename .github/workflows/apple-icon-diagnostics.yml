@@ -53,6 +53,13 @@ jobs:
             xcrun assetutil --info "$output/$variant/Assets.car" > "$output/$variant-assets.json"
           done
           git rev-parse HEAD > "$output/source-sha.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bvolpato/AssetKit
+          ref: a2a62669809758995a7e0ebc9bf7a51f19a7d6c7
+          path: assetkit-icon-fix
+      - name: Validate the icon fix with Apple's assetutil
+        run: swift test --package-path assetkit-icon-fix --jobs 4
       - name: Upload compiled icons and metadata
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
