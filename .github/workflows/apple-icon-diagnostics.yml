@@ -1,0 +1,52 @@
+name: Apple icon diagnostics
+
+on:
+  push:
+    branches:
+      - codex/ios-icon-validation-20261110
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select Xcode 27.2
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
+      - name: Compile the same catalog with Apple and AssetKit
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/brutv-icon-diagnostics"
+          mkdir -p "$output/native" "$output/portable"
+          cp -R mobile/ios/BruTV/BruTV/Resources/Assets.xcassets "$output/Catalog.xcassets"
+          rm -rf "$output/Catalog.xcassets/TVAppIcon.brandassets"
+          xcrun actool --compile "$output/native" \
+            --platform iphoneos --minimum-deployment-target 17.0 \
+            --app-icon AppIcon --target-device iphone --target-device ipad \
+            --output-partial-info-plist "$output/native/Info.plist" \
+            "$output/Catalog.xcassets"
+          swift run --package-path mobile/ios/BruTV/linux-tools \
+            --configuration release --jobs 3 prepare-xtool \
+            "$PWD/mobile/ios/BruTV" "$output/portable" ios
+          xcrun assetutil --info "$output/native/Assets.car" > "$output/native-assets.json"
+          xcrun assetutil --info "$output/portable/Assets.car" > "$output/portable-assets.json"
+          git rev-parse HEAD > "$output/source-sha.txt"
+      - name: Upload compiled icons and metadata
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apple-icon-diagnostics
+          path: |
+            ${{ runner.temp }}/brutv-icon-diagnostics/native/
+            ${{ runner.temp }}/brutv-icon-diagnostics/portable/Assets.car
+            ${{ runner.temp }}/brutv-icon-diagnostics/portable/Info.plist
+            ${{ runner.temp }}/brutv-icon-diagnostics/portable/*.png
+            ${{ runner.temp }}/brutv-icon-diagnostics/*-assets.json
+            ${{ runner.temp }}/brutv-icon-diagnostics/source-sha.txt
+          if-no-files-found: error
+          retention-days: 7
