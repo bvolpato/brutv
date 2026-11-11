@@ -239,11 +239,50 @@ Each upload needs a new build number. Raise `CURRENT_PROJECT_VERSION` in the pro
 
 ## 5. Upload to TestFlight / App Store
 
-Use one of these options:
-- Transporter app: drag `BruTV.ipa` into the window, then click Deliver.
-- Command line with an App Store Connect API key:
+An uploaded build must finish processing and be assigned to testers. On Linux,
+the release command can complete both steps using the local `.env`:
 
 ```bash
-IOS_IPA_PATH="/absolute/path/printed/by/release.sh/ios/export/BruTV.ipa"
-xcrun altool --upload-app -f "$IOS_IPA_PATH" -t ios --apiKey <KEY_ID> --apiIssuer <ISSUER_ID>
+IOS_BUILD_NUMBER=21 uv run --no-project --env-file .env -- \
+  ./mobile/ios/BruTV/release.sh --platform ios --upload \
+  --testflight-group 'BruTV Internal' \
+  --whats-new 'Check sign-in, playback, navigation, and background resume.'
 ```
+
+Use the platform-independent uploader for an already signed package, including
+one exported by Xcode on macOS:
+
+```bash
+uv run --env-file .env mobile/ios/BruTV/upload-build.py /path/to/BruTV.ipa \
+  --testflight-group 'BruTV Internal'
+```
+
+If the build has already processed, resume distribution with its App Store
+Connect build UUID. This does not upload another package:
+
+```bash
+uv run --env-file .env mobile/ios/BruTV/upload-build.py \
+  --build-id BUILD_UUID --testflight-group 'BruTV Internal' \
+  --tester tester@example.com
+```
+
+Repeat `--tester` only for people who should receive invitations. Existing group
+members retain access without this option. Explicit tester options resend pending
+invitations; Apple reports an already accepted invitation without resending it.
+Internal testers must be eligible App Store Connect users. The helper selects an
+existing internal group by its exact name, verifies app ownership, assigns the
+build and requested testers, and waits for `IN_BETA_TESTING`. An external group
+with the same name is not selected. External beta review and App Store submission
+remain separate actions.
+
+The Linux release helper also accepts `--app /path/to/Archive.xcarchive/Products/Applications/BruTV.app`
+to sign a native unsigned archive without rebuilding it through xtool. Select
+exactly one platform. Keep its matching dSYM with the archive. Signing credentials
+remain local. This supports native Apple resource compilation while portable
+asset compiler parity is still being validated.
+
+Apple accepted iOS build 19 with native `actool` resources. The fully portable
+build 20 is still under processing investigation. Do not infer acceptance from
+the existence of an upload or retry it with the same build number. A processing
+timeout prints the upload UUID for reconciliation in App Store Connect. Store
+processing and group assignment do not prove installation or playback on a device.
