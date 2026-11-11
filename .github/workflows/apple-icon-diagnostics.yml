@@ -33,6 +33,25 @@ jobs:
             --output-partial-info-plist "$output/native/Info.plist" \
             "$output/Catalog.xcassets"
           xcrun assetutil --info "$output/native/Assets.car" > "$output/native-assets.json"
+          for variant in sparse legacy; do
+            cp -R "$output/Catalog.xcassets" "$output/$variant.xcassets"
+            node - "$output/$variant.xcassets/AppIcon.appiconset/Contents.json" "$variant" <<'JS'
+          const fs = require('node:fs');
+          const [filename, variant] = process.argv.slice(2);
+          const contents = JSON.parse(fs.readFileSync(filename, 'utf8'));
+          contents.images = contents.images.filter(image => variant === 'sparse'
+            ? ['20x20', '60x60'].includes(image.size)
+            : image.idiom !== 'universal');
+          fs.writeFileSync(filename, JSON.stringify(contents));
+          JS
+            mkdir -p "$output/$variant"
+            xcrun actool --compile "$output/$variant" \
+              --platform iphoneos --minimum-deployment-target 17.0 \
+              --app-icon AppIcon --target-device iphone --target-device ipad \
+              --output-partial-info-plist "$output/$variant/Info.plist" \
+              "$output/$variant.xcassets"
+            xcrun assetutil --info "$output/$variant/Assets.car" > "$output/$variant-assets.json"
+          done
           git rev-parse HEAD > "$output/source-sha.txt"
       - name: Upload compiled icons and metadata
         if: always()
@@ -41,6 +60,8 @@ jobs:
           name: apple-icon-diagnostics
           path: |
             ${{ runner.temp }}/brutv-icon-diagnostics/native/
+            ${{ runner.temp }}/brutv-icon-diagnostics/sparse/
+            ${{ runner.temp }}/brutv-icon-diagnostics/legacy/
             ${{ runner.temp }}/brutv-icon-diagnostics/*-assets.json
             ${{ runner.temp }}/brutv-icon-diagnostics/source-sha.txt
           if-no-files-found: error
