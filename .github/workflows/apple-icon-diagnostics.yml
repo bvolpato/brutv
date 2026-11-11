@@ -15,14 +15,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Select Xcode 27.2
-        run: sudo xcode-select -s /Applications/Xcode_27.2.app/Contents/Developer
-      - name: Compile the same catalog with Apple and AssetKit
+      - name: Record the runner's Apple toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Compile the catalog with Apple
         shell: bash
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/brutv-icon-diagnostics"
-          mkdir -p "$output/native" "$output/portable"
+          mkdir -p "$output/native"
           cp -R mobile/ios/BruTV/BruTV/Resources/Assets.xcassets "$output/Catalog.xcassets"
           rm -rf "$output/Catalog.xcassets/TVAppIcon.brandassets"
           xcrun actool --compile "$output/native" \
@@ -30,11 +32,7 @@ jobs:
             --app-icon AppIcon --target-device iphone --target-device ipad \
             --output-partial-info-plist "$output/native/Info.plist" \
             "$output/Catalog.xcassets"
-          swift run --package-path mobile/ios/BruTV/linux-tools \
-            --configuration release --jobs 3 prepare-xtool \
-            "$PWD/mobile/ios/BruTV" "$output/portable" ios
           xcrun assetutil --info "$output/native/Assets.car" > "$output/native-assets.json"
-          xcrun assetutil --info "$output/portable/Assets.car" > "$output/portable-assets.json"
           git rev-parse HEAD > "$output/source-sha.txt"
       - name: Upload compiled icons and metadata
         if: always()
@@ -43,9 +41,6 @@ jobs:
           name: apple-icon-diagnostics
           path: |
             ${{ runner.temp }}/brutv-icon-diagnostics/native/
-            ${{ runner.temp }}/brutv-icon-diagnostics/portable/Assets.car
-            ${{ runner.temp }}/brutv-icon-diagnostics/portable/Info.plist
-            ${{ runner.temp }}/brutv-icon-diagnostics/portable/*.png
             ${{ runner.temp }}/brutv-icon-diagnostics/*-assets.json
             ${{ runner.temp }}/brutv-icon-diagnostics/source-sha.txt
           if-no-files-found: error
