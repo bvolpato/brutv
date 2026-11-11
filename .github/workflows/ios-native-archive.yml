@@ -137,7 +137,7 @@ jobs:
             cp "$entitlements" "$release_dir/signing-entitlements.plist"
             printf '%s\n' "${entitlements#"$GITHUB_WORKSPACE/"}" > "$RUNNER_TEMP/ios-entitlements-source.txt"
           else
-            plutil -create xml "$release_dir/signing-entitlements.plist"
+            plutil -create xml1 "$release_dir/signing-entitlements.plist"
             printf '%s\n' '' > "$RUNNER_TEMP/ios-entitlements-source.txt"
           fi
           plutil -lint "$release_dir/signing-entitlements.plist"
