@@ -8,7 +8,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/bvolpato/AssetKit",
-            revision: "cc948c71491a78183a08759dc07d4faef07ecad4"
+            revision: "eb6331f1a3f3ad40670d8e430f605bd884cc0203"
         )
     ],
     targets: [

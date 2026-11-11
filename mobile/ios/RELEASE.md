@@ -42,7 +42,7 @@ The Linux path uses the BruTV xtool fork's platform support. It builds the full 
 
 The tested fork is [bvolpato/xtool at `e3c6153`](https://github.com/bvolpato/xtool/commit/e3c615391817cde2512a38118a064f834ff64a32), on `codex/linux-apple-platforms`. [Upstream PR #362](https://github.com/xtool-org/xtool/pull/362) contains the platform changes. Until they are merged, point `XTOOL_SOURCE_DIR` at that checkout rather than upstream `main`. The current SDK metadata format is epoch 5; rebuild an older SDK with this fork before releasing.
 
-The resource compiler pins [bvolpato/AssetKit at `cc948c7`](https://github.com/bvolpato/AssetKit/commit/cc948c71491a78183a08759dc07d4faef07ecad4). Its [macOS validation](https://github.com/bvolpato/AssetKit/actions/runs/40171617399) passed Apple's `assetutil` parser check for the tvOS layer-stack catalog. BruTV preserves the primary icon layers, marketing icon, and standard/wide Top Shelf roles. The generated TopShelf product uses the same sources, app group, version, and deployment target as the Xcode extension. Its principal class is retained when the extension library is linked.
+The resource compiler pins [bvolpato/AssetKit at `eb6331f`](https://github.com/bvolpato/AssetKit/commit/eb6331f1a3f3ad40670d8e430f605bd884cc0203). This combines the tvOS layer-stack support with the [iOS icon-index correction proposed upstream](https://github.com/xtool-org/AssetKit/pull/7). Each logical iOS icon size receives a distinct CoreUI lookup key. Its [macOS validation](https://github.com/bvolpato/AssetKit/actions/runs/40171617399) passed Apple's `assetutil` parser check for the tvOS layer-stack catalog. BruTV preserves the primary icon layers, marketing icon, and standard/wide Top Shelf roles. The generated TopShelf product uses the same sources, app group, version, and deployment target as the Xcode extension. Its principal class is retained when the extension library is linked.
 
 **Release parity is not yet established.** Compilation, CAR parsing, and signing checks do not prove native tvOS icon loading/focus effects, Apple TV PiP/audio, Mac package acceptance, or App Store Connect processing. All requested targets and credentials must pass preflight; the release command never silently omits a platform or uploads an incomplete requested set. Physical-device validation remains required before submission.
 
@@ -72,7 +72,7 @@ The Catalyst linker installer extracts only `lld` and its `ld64.lld` alias from 
 ./mobile/ios/BruTV/release.sh --platform ios --preflight --upload
 
 # Build, distribution-sign, and upload one explicitly selected platform.
-IOS_BUILD_NUMBER=16 ./mobile/ios/BruTV/release.sh --platform ios --upload
+IOS_BUILD_NUMBER=21 ./mobile/ios/BruTV/release.sh --platform ios --upload
 ```
 
 `release.sh` defaults to `--platform all` (iOS, Catalyst, tvOS). Select one platform explicitly for a subset. Linux never invokes a simulator; `--skip-simulator-build` is accepted for compatibility. Every requested package is built, signed, and checked before the first upload. If Apple rejects a later upload, previous uploads cannot be rolled back automatically. On Linux, a successful upload requires the Build Upload API to complete and the linked build to become `VALID`. Native Xcode delivery must also be followed by App Store Connect processing verification. Uploading does not submit the app for review or publish it.
@@ -85,6 +85,15 @@ Distribution credentials are required independently of xtool's on-device develop
 | tvOS | Shared distribution certificate plus `TVOS_PROVISIONING_PROFILE_PATH` and `TVOS_TOPSHELF_PROVISIONING_PROFILE_PATH`; both profiles must authorize `group.com.bvolpato.brutv` |
 | Mac Catalyst | `MACOS_APPLICATION_CERTIFICATE_PATH`, `MACOS_APPLICATION_P12_PASSWORD`, `MACOS_INSTALLER_CERTIFICATE_PATH`, `MACOS_INSTALLER_P12_PASSWORD`, `MACOS_PROVISIONING_PROFILE_PATH` |
 | App Store Connect upload | `IOS_ASC_KEY_ID`, `IOS_ASC_ISSUER_ID`, `IOS_ASC_PRIVATE_KEY_PATH` (unencrypted P-256 `.p8` key); `ASC_*` aliases are accepted |
+
+For local releases, keep passwords, API identifiers, and existing signing-file paths in the repository-root `.env`, which Git ignores. Store the App Store Connect private key outside the repository and reference it with `IOS_ASC_PRIVATE_KEY_PATH`. Use `uv` to load the local configuration explicitly.
+
+```bash
+uv run --no-project --env-file .env -- ./mobile/ios/BruTV/release.sh --platform ios --preflight --upload
+IOS_BUILD_NUMBER=21 uv run --no-project --env-file .env -- ./mobile/ios/BruTV/release.sh --platform ios --upload
+```
+
+Choose an unused build number in App Store Connect before each upload. A team API key with the Developer role can upload builds across the team's apps; provisioning profiles remain specific to each app.
 
 Certificate and provisioning profile variables also accept `_BASE64` in place of `_PATH`. Do not put passwords or key contents in command arguments. iOS/tvOS use the private zsign installation; Mac Catalyst uses rcodesign and genuine BOM/CPIO/XAR installer tools. The helpers verify distribution profiles, certificate trust, entitlements, executable signatures, sealed resources, and installer checksums. They preserve an existing output if signing fails. `upload-build.py --validate-only` validates package structure offline; cryptographic verification belongs to the signing helper.
 
