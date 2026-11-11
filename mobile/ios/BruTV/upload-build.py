@@ -859,8 +859,7 @@ class BuildUploader:
             if (
                 build_id not in assigned
                 and not attached
-                and state in ready_states
-                and review_state not in ("WAITING_FOR_REVIEW", "IN_REVIEW")
+                and state in ready_states + pending_states
             ):
                 self.request(
                     "POST",

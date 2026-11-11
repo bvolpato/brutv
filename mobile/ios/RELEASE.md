@@ -310,9 +310,13 @@ submitted again. A rejection requires a person to review Apple's feedback in
 App Store Connect.
 
 The command succeeds only after `externalBuildState=IN_BETA_TESTING` and group
-membership are confirmed. A pending review can exceed `--timeout`; resume the
-same command with `--build-id` instead of uploading another package. If an
-approved build is `READY_FOR_BETA_TESTING` with automatic tester notifications
+membership are confirmed. The helper also assigns the group while beta review
+is pending. A pending review can exceed `--timeout` and leave that assignment
+in place while the build remains unavailable. With automatic tester
+notifications enabled, the assignment prepares delivery after Apple approves
+the build. Resume the same command with `--build-id` instead of uploading
+another package or submitting review again. If an approved build is
+`READY_FOR_BETA_TESTING` with automatic tester notifications
 disabled, the helper stops promptly. Choose **Start Testing** for that build in
 App Store Connect, then resume. The helper preserves that notification hold.
 Beta review and external testing do not submit the app for production App Store

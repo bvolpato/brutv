@@ -183,7 +183,11 @@ class ExternalTestFlightTests(unittest.TestCase):
                 elif self.path == "/v1/betaGroups/external-1/relationships/builds":
                     if outer.reflect_membership:
                         outer.builds.update(item["id"] for item in body["data"])
-                    if outer.activate:
+                    if outer.activate and outer.external_state in (
+                        "BETA_APPROVED",
+                        "READY_FOR_BETA_TESTING",
+                        "IN_BETA_TESTING",
+                    ):
                         outer.external_state = "IN_BETA_TESTING"
                     self.reply(status=204)
                 elif self.path == "/v1/betaBuildLocalizations":
@@ -332,23 +336,46 @@ class ExternalTestFlightTests(unittest.TestCase):
             ["/v1/betaGroups/external-1/relationships/builds"],
         )
 
-    def test_pending_review_is_not_resubmitted_or_reported_available(self):
-        for state in ("WAITING_FOR_REVIEW", "IN_REVIEW"):
-            with self.subTest(review=state):
-                self.set_review(state)
-                self.external_state = "WAITING_FOR_BETA_REVIEW"
+    def test_pending_review_timeout_keeps_assignment_and_approval_resume_is_read_only(
+        self,
+    ):
+        for review_state, external_state in (
+            ("WAITING_FOR_REVIEW", "WAITING_FOR_BETA_REVIEW"),
+            ("IN_REVIEW", "IN_BETA_REVIEW"),
+        ):
+            with self.subTest(review=review_state):
+                self.requests.clear()
+                self.builds = {"old-build"}
+                self.set_review(review_state)
+                self.external_state = external_state
                 with self.assertRaisesRegex(
                     upload.UploadError, "still pending.*Resume with --build-id"
                 ):
                     self.perform()
+                self.assertEqual(self.builds, {"old-build", "build-1"})
+                self.assertEqual(self.external_state, external_state)
+                self.assertEqual(
+                    [item[:2] for item in self.writes()],
+                    [("POST", "/v1/betaGroups/external-1/relationships/builds")],
+                )
+                self.requests.clear()
+                self.set_review("APPROVED")
+                self.external_state = "IN_BETA_TESTING"
+                self.assertIn("available in external TestFlight group", self.perform())
                 self.assertEqual(self.writes(), [])
 
     def test_newly_submitted_pending_review_is_not_resubmitted_on_resume(self):
         self.submitted_state = "WAITING_FOR_REVIEW"
         with self.assertRaisesRegex(upload.UploadError, "still pending"):
             self.perform()
-        self.assertEqual(len(self.writes()), 1)
-        self.assertEqual(self.writes()[0][1], "/v1/betaAppReviewSubmissions")
+        self.assertEqual(
+            [item[1] for item in self.writes()],
+            [
+                "/v1/betaAppReviewSubmissions",
+                "/v1/betaGroups/external-1/relationships/builds",
+            ],
+        )
+        self.assertIn("build-1", self.builds)
         self.requests.clear()
         with self.assertRaisesRegex(upload.UploadError, "still pending"):
             self.perform()
