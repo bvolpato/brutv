@@ -162,11 +162,12 @@ final class BruTVUITests: XCTestCase {
         func sidebarItem() -> XCUIElement? {
             for name in candidates {
                 let navBtn = app.buttons["\(name)NavButton"]
-                if navBtn.exists { return navBtn }
-                let cell = app.collectionViews.cells.containing(.staticText, identifier: name).firstMatch
-                if cell.exists { return cell }
+                if navBtn.exists && navBtn.isHittable { return navBtn }
                 let generalBtn = app.buttons[name].firstMatch
-                if generalBtn.exists { return generalBtn }
+                if generalBtn.exists && generalBtn.isHittable { return generalBtn }
+                // Direct sidebar labels avoid collection descendant queries that can time out on Duo.
+                let label = app.staticTexts[name].firstMatch
+                if label.exists && label.isHittable { return label }
             }
             return nil
         }
