@@ -272,8 +272,51 @@ invitations; Apple reports an already accepted invitation without resending it.
 Internal testers must be eligible App Store Connect users. The helper selects an
 existing internal group by its exact name, verifies app ownership, assigns the
 build and requested testers, and waits for `IN_BETA_TESTING`. An external group
-with the same name is not selected. External beta review and App Store submission
-remain separate actions.
+with the same name is not selected. Internal access does not make the build
+available through an external group's public link. That group can still show an
+older build until the newer build completes beta review, starts external testing,
+and belongs to the external group.
+
+### External TestFlight groups
+
+Use an App Store Connect API key with the App Manager role for external group
+assignment and beta review submission. A Developer key can upload builds but
+cannot perform these external distribution writes. Keep the key and signing
+credentials local.
+
+To promote an already processed build, use its App Store Connect build UUID and
+the exact name of an existing external group:
+
+```bash
+uv run --env-file .env mobile/ios/BruTV/upload-build.py \
+  --app-id 6821989154 --build-id BUILD_UUID \
+  --external-testflight-group 'BruTV Public Beta' \
+  --whats-new 'Check sign-in, playback, navigation, and background resume.'
+```
+
+The helper requires a `VALID`, nonexpired build with
+`buildAudienceType=APP_STORE_ELIGIBLE`. An `INTERNAL_ONLY` build needs a new upload
+eligible for external testing. It verifies app ownership and selects exactly one
+existing external group. It does not create groups, enable public links, remove
+existing testers, or send individual external invitations. Internal and external
+group options are mutually exclusive; `--tester` is supported only for internal
+groups. Omit `--whats-new` to preserve the existing What to Test notes.
+
+If beta review is required and no submission exists, the helper checks the
+existing review contact, demo account settings, and What to Test notes, then
+submits the build for **TestFlight beta review**. Missing prerequisites are
+reported by field name. Pending, approved, and rejected submissions are not
+submitted again. A rejection requires a person to review Apple's feedback in
+App Store Connect.
+
+The command succeeds only after `externalBuildState=IN_BETA_TESTING` and group
+membership are confirmed. A pending review can exceed `--timeout`; resume the
+same command with `--build-id` instead of uploading another package. If an
+approved build is `READY_FOR_BETA_TESTING` with automatic tester notifications
+disabled, the helper stops promptly. Choose **Start Testing** for that build in
+App Store Connect, then resume. The helper preserves that notification hold.
+Beta review and external testing do not submit the app for production App Store
+review or publish it to the App Store.
 
 The Linux release helper also accepts `--app /path/to/Archive.xcarchive/Products/Applications/BruTV.app`
 to sign a native unsigned archive without rebuilding it through xtool. Select

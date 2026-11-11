@@ -50,10 +50,13 @@ def release(args: argparse.Namespace) -> None:
     platforms = PLATFORMS if args.platform == "all" else (args.platform,)
     if args.app is not None and len(platforms) != 1:
         raise ValueError("--app requires one selected platform")
-    if args.testflight_group and not args.upload:
-        raise ValueError("--testflight-group requires --upload")
-    if (args.tester or args.whats_new is not None) and not args.testflight_group:
-        raise ValueError("--tester and --whats-new require --testflight-group")
+    selected_group = args.testflight_group or args.external_testflight_group
+    if selected_group and not args.upload:
+        raise ValueError("TestFlight distribution requires --upload")
+    if args.external_testflight_group and args.tester:
+        raise ValueError("--tester is only supported with --testflight-group")
+    if (args.tester or args.whats_new is not None) and not selected_group:
+        raise ValueError("--tester and --whats-new require a TestFlight group")
     native_app = args.app.expanduser().resolve() if args.app is not None else None
     if native_app is not None and (
         native_app.suffix != ".app" or not native_app.is_dir()
@@ -126,8 +129,13 @@ def release(args: argparse.Namespace) -> None:
 
     if args.upload:
         testflight_arguments = []
-        if args.testflight_group:
-            testflight_arguments = ["--testflight-group", args.testflight_group]
+        if selected_group:
+            group_option = (
+                "--external-testflight-group"
+                if args.external_testflight_group
+                else "--testflight-group"
+            )
+            testflight_arguments = [group_option, selected_group]
             if args.whats_new is not None:
                 testflight_arguments.extend(["--whats-new", args.whats_new])
             for email in args.tester:
@@ -146,9 +154,9 @@ def release(args: argparse.Namespace) -> None:
                 ],
                 env,
             )
-        if args.testflight_group:
+        if selected_group:
             print(
-                f"All requested builds are available to {args.testflight_group} in TestFlight."
+                f"All requested builds are available to {selected_group} in TestFlight."
             )
         else:
             print(
@@ -170,8 +178,13 @@ def main() -> int:
         type=Path,
         help="sign an existing native .app instead of compiling with xtool",
     )
-    parser.add_argument(
+    distribution = parser.add_mutually_exclusive_group()
+    distribution.add_argument(
         "--testflight-group", help="release to an existing internal TestFlight group"
+    )
+    distribution.add_argument(
+        "--external-testflight-group",
+        help="submit beta review and release to an existing external TestFlight group",
     )
     parser.add_argument("--whats-new", help="TestFlight What to Test notes")
     parser.add_argument(

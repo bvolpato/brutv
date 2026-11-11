@@ -62,6 +62,7 @@ class ReleaseTests(unittest.TestCase):
             skip_simulator_build=False,
             app=overrides.get("app"),
             testflight_group=overrides.get("testflight_group"),
+            external_testflight_group=overrides.get("external_testflight_group"),
             whats_new=overrides.get("whats_new"),
             tester=overrides.get("tester", []),
         )
@@ -174,6 +175,44 @@ class ReleaseTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "one selected platform"),
         ):
             release_linux.release(self.options(app=self.directory / "Native.app"))
+        self.assertFalse(self.calls)
+
+    def test_external_delivery_forwards_review_options_without_inviting_testers(self):
+        with patch.object(release_linux, "run", side_effect=self.command):
+            release_linux.release(
+                self.options(
+                    platform="ios",
+                    external_testflight_group="Public Beta",
+                    whats_new="Check adaptive navigation.",
+                )
+            )
+        delivery = self.uploads()[0]
+        self.assertEqual(
+            delivery[delivery.index("--external-testflight-group") + 1], "Public Beta"
+        )
+        self.assertNotIn("--testflight-group", delivery)
+        self.assertEqual(
+            delivery[delivery.index("--whats-new") + 1], "Check adaptive navigation."
+        )
+        self.assertFalse(
+            any(
+                "--external-testflight-group" in call
+                for call in self.calls
+                if call is not delivery
+            )
+        )
+
+    def test_external_tester_options_fail_before_building_or_uploading(self):
+        with (
+            patch.object(release_linux, "run", side_effect=self.command),
+            self.assertRaisesRegex(ValueError, "only supported"),
+        ):
+            release_linux.release(
+                self.options(
+                    external_testflight_group="Public Beta",
+                    tester=["tester@example.com"],
+                )
+            )
         self.assertFalse(self.calls)
 
 
