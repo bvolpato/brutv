@@ -528,6 +528,14 @@ class BuildUploader:
                 "The selected TestFlight group must be an internal group."
             )
         group_path = "/betaGroups/" + quote(group_id, safe="") + "/relationships/"
+        detail = self.request("GET", build_path + "/buildBetaDetail")["data"]
+        state = detail.get("attributes", {}).get("internalBuildState")
+        if state == "MISSING_EXPORT_COMPLIANCE":
+            raise UploadError(
+                "Internal TestFlight is blocked by MISSING_EXPORT_COMPLIANCE. "
+                "Complete the build's export-compliance questions in App Store Connect, "
+                "then resume distribution with --build-id instead of uploading again."
+            )
         build_ids = {
             self.resource_id(item, "builds")
             for item in self.collection(group_path + "builds")

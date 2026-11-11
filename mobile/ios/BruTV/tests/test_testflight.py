@@ -224,7 +224,11 @@ class TestFlightTests(unittest.TestCase):
         self,
     ):
         self.invite_errors["tester-1"] = "STATE_ERROR.TESTER_INVITE.ALREADY_ACCEPTED"
-        self.states = ["READY_FOR_BETA_TESTING", "IN_BETA_TESTING"]
+        self.states = [
+            "READY_FOR_BETA_TESTING",
+            "READY_FOR_BETA_TESTING",
+            "IN_BETA_TESTING",
+        ]
         self.distribute(
             whats_new="Playback fixes",
             testers=["existing@example.com", "new@example.com"],
@@ -259,7 +263,7 @@ class TestFlightTests(unittest.TestCase):
             len(
                 [item for item in self.requests if item[1].endswith("buildBetaDetail")]
             ),
-            2,
+            3,
         )
 
     def test_retry_skips_existing_relations_and_unchanged_notes_but_resends_explicit_invitation(
@@ -278,6 +282,22 @@ class TestFlightTests(unittest.TestCase):
         self.assertEqual(
             [(item[0], item[1]) for item in self.writes()],
             [("POST", "/v1/betaTesterInvitations")],
+        )
+
+    def test_missing_export_compliance_blocks_notes_group_and_invitations_before_writes(
+        self,
+    ):
+        self.states = ["MISSING_EXPORT_COMPLIANCE"]
+        with (
+            mock.patch.object(upload.time, "sleep") as sleep,
+            self.assertRaises(upload.UploadError) as raised,
+        ):
+            self.distribute(whats_new="No write", testers=["existing@example.com"])
+        self.assertEqual(self.writes(), [])
+        sleep.assert_not_called()
+        self.assertRegex(
+            str(raised.exception),
+            "MISSING_EXPORT_COMPLIANCE.*App Store Connect.*--build-id",
         )
 
     def test_omitted_notes_do_not_read_or_modify_notes_and_explicit_notes_patch_existing_localization(
@@ -365,9 +385,9 @@ class TestFlightTests(unittest.TestCase):
         ):
             self.distribute(testers=["existing@example.com"])
         self.persist_members = True
-        self.states = ["MISSING_EXPORT_COMPLIANCE"]
+        self.states = ["READY_FOR_BETA_TESTING"]
         with self.assertRaisesRegex(
-            upload.UploadError, "Timed out verifying.*MISSING_EXPORT_COMPLIANCE"
+            upload.UploadError, "Timed out verifying.*READY_FOR_BETA_TESTING"
         ):
             self.distribute()
 
