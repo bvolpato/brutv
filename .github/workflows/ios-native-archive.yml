@@ -1,0 +1,251 @@
+name: Native iOS archive
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Repository-relative Xcode project path
+        required: true
+        type: string
+      scheme:
+        description: Shared iOS application scheme
+        required: true
+        type: string
+      application-target:
+        description: Application target, or the scheme name when omitted
+        default: ''
+        type: string
+      build-number:
+        description: Positive numeric CFBundleVersion
+        required: true
+        type: string
+      unit-test-target:
+        description: Optional unit test target; no test selectors means the whole scheme
+        default: ''
+        type: string
+      ui-test-selectors:
+        description: Additional UI test selectors, one Target/Class/Method per line
+        default: ''
+        type: string
+      simulator:
+        description: iOS 27.2 simulator device name
+        default: iPhone 18 Pro
+        type: string
+      prepare-command:
+        description: Optional preparation command from the trusted calling workflow
+        default: ''
+        type: string
+      prepared-resources-artifact:
+        description: Optional same-run artifact containing generated repository-relative resources
+        default: ''
+        type: string
+    outputs:
+      artifact-name:
+        description: Artifact containing the unsigned archive and signing inputs
+        value: ${{ jobs.archive.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    name: Test and archive iOS
+    runs-on: xcode-27
+    timeout-minutes: 60
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact_name }}
+    env:
+      IOS_PROJECT: ${{ inputs.project }}
+      IOS_SCHEME: ${{ inputs.scheme }}
+      IOS_APPLICATION_TARGET: ${{ inputs.application-target || inputs.scheme }}
+      IOS_BUILD_NUMBER: ${{ inputs.build-number }}
+      IOS_UNIT_TEST_TARGET: ${{ inputs.unit-test-target }}
+      IOS_UI_TEST_SELECTORS: ${{ inputs.ui-test-selectors }}
+      IOS_SIMULATOR: ${{ inputs.simulator }}
+    steps:
+      - name: Validate release event and build number
+        shell: bash
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            push|workflow_dispatch) ;;
+            *) echo 'error: native release archives require a trusted push or manual run' >&2; exit 1 ;;
+          esac
+          [[ "$IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo 'error: build-number must be a positive integer' >&2
+            exit 1
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download prepared application resources
+        if: inputs.prepared-resources-artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.prepared-resources-artifact }}
+          path: ${{ github.workspace }}
+      - name: Select Xcode 27.2
+        shell: bash
+        run: |
+          xcode_app=/Applications/Xcode_27.2.app
+          [[ -d "$xcode_app" ]] || { echo 'error: Xcode 27.2 is required' >&2; exit 1; }
+          sudo xcode-select --switch "$xcode_app/Contents/Developer"
+          xcode_version=$(xcodebuild -version)
+          echo "$xcode_version"
+          [[ "$xcode_version" == $'Xcode 27.2\nBuild version 27B52' ]] || {
+            echo 'error: stable Xcode 27.2 (27B52) is required' >&2
+            exit 1
+          }
+          [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == 27.2 ]] || {
+            echo 'error: the selected Xcode must provide the iOS 27.2 SDK' >&2
+            exit 1
+          }
+      - name: Prepare application sources
+        if: inputs.prepare-command != ''
+        shell: bash
+        env:
+          PREPARE_COMMAND: ${{ inputs.prepare-command }}
+        run: bash -euo pipefail -c "$PREPARE_COMMAND"
+      - name: Resolve application signing entitlements
+        shell: bash
+        run: |
+          [[ -d "$IOS_PROJECT" && "$IOS_PROJECT" == *.xcodeproj ]] || {
+            echo 'error: project must select an existing .xcodeproj directory' >&2
+            exit 1
+          }
+          release_dir="$RUNNER_TEMP/native-ios-release"
+          mkdir -p "$release_dir"
+          xcodebuild -showBuildSettings -json \
+            -project "$IOS_PROJECT" -scheme "$IOS_SCHEME" -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" CODE_SIGNING_ALLOWED=NO \
+            > "$RUNNER_TEMP/ios-release-build-settings.json"
+          jq -e --arg target "$IOS_APPLICATION_TARGET" '
+            [.[] | select(.target == $target and
+              .buildSettings.PRODUCT_TYPE == "com.apple.product-type.application")]
+            | if length == 1 then .[0].buildSettings
+              else error("Select exactly one iOS application target") end
+          ' "$RUNNER_TEMP/ios-release-build-settings.json" > "$RUNNER_TEMP/ios-app-settings.json"
+          entitlements=$(jq -r '.CODE_SIGN_ENTITLEMENTS // ""' "$RUNNER_TEMP/ios-app-settings.json")
+          if [[ -n "$entitlements" ]]; then
+            source_root=$(jq -er '.SRCROOT' "$RUNNER_TEMP/ios-app-settings.json")
+            [[ "$entitlements" == /* ]] || entitlements="$source_root/$entitlements"
+            entitlements=$(realpath "$entitlements")
+            [[ "$entitlements" == "$GITHUB_WORKSPACE/"* && -f "$entitlements" ]] || {
+              echo 'error: CODE_SIGN_ENTITLEMENTS must resolve to a file in the checkout' >&2
+              exit 1
+            }
+            cp "$entitlements" "$release_dir/signing-entitlements.plist"
+            printf '%s\n' "${entitlements#"$GITHUB_WORKSPACE/"}" > "$RUNNER_TEMP/ios-entitlements-source.txt"
+          else
+            plutil -create xml "$release_dir/signing-entitlements.plist"
+            printf '%s\n' '' > "$RUNNER_TEMP/ios-entitlements-source.txt"
+          fi
+          plutil -lint "$release_dir/signing-entitlements.plist"
+      - name: Prepare simulator
+        id: simulator
+        shell: bash
+        run: |
+          runtime=com.apple.CoreSimulator.SimRuntime.iOS-27-2
+          devices=$(xcrun simctl list devices available --json)
+          simulator_id=$(jq -r --arg name "$IOS_SIMULATOR" --arg runtime "$runtime" \
+            '[.devices[$runtime][]? | select(.name == $name)][0].udid // empty' <<<"$devices")
+          if [[ -z "$simulator_id" ]]; then
+            device_types=$(xcrun simctl list devicetypes --json)
+            device_type=$(jq -r --arg name "$IOS_SIMULATOR" \
+              '[.devicetypes[] | select(.name == $name)][0].identifier // empty' <<<"$device_types")
+            [[ -n "$device_type" ]] || { echo 'error: requested simulator type is unavailable' >&2; exit 1; }
+            simulator_id=$(xcrun simctl create "$IOS_SIMULATOR" "$device_type" "$runtime")
+          fi
+          xcrun simctl bootstatus "$simulator_id" -b
+          echo "destination=platform=iOS Simulator,id=$simulator_id" >> "$GITHUB_OUTPUT"
+      - name: Run native application tests
+        shell: bash
+        env:
+          IOS_DESTINATION: ${{ steps.simulator.outputs.destination }}
+        run: |
+          arguments=(
+            -project "$IOS_PROJECT" -scheme "$IOS_SCHEME"
+            -destination "$IOS_DESTINATION"
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data"
+            -resultBundlePath "$RUNNER_TEMP/ios-native-tests.xcresult"
+            -parallel-testing-enabled NO
+          )
+          if [[ -n "$IOS_UNIT_TEST_TARGET" ]]; then
+            arguments+=("-only-testing:$IOS_UNIT_TEST_TARGET")
+          fi
+          while IFS= read -r selector; do
+            [[ -z "$selector" ]] || arguments+=("-only-testing:$selector")
+          done <<< "$IOS_UI_TEST_SELECTORS"
+          xcodebuild test "${arguments[@]}" CODE_SIGNING_ALLOWED=NO
+      - name: Archive unsigned device application
+        shell: bash
+        run: |
+          xcodebuild archive \
+            -project "$IOS_PROJECT" -scheme "$IOS_SCHEME" -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -archivePath "$RUNNER_TEMP/native-ios-release/Application.xcarchive" \
+            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym CODE_SIGNING_ALLOWED=NO
+      - name: Package archive and source provenance
+        id: package
+        shell: bash
+        run: |
+          release_dir="$RUNNER_TEMP/native-ios-release"
+          archive="$release_dir/Application.xcarchive"
+          shopt -s nullglob
+          apps=("$archive/Products/Applications/"*.app)
+          dsyms=("$archive/dSYMs/"*.dSYM)
+          [[ ${#apps[@]} == 1 && ${#dsyms[@]} -gt 0 ]] || {
+            echo 'error: archive must contain one application and its debug symbols' >&2
+            exit 1
+          }
+          app="${apps[0]}"
+          plist="$app/Info.plist"
+          plist_buddy=/usr/libexec/PlistBuddy
+          bundle_id=$("$plist_buddy" -c 'Print :CFBundleIdentifier' "$plist")
+          short_version=$("$plist_buddy" -c 'Print :CFBundleShortVersionString' "$plist")
+          build_number=$("$plist_buddy" -c 'Print :CFBundleVersion' "$plist")
+          minimum_os=$("$plist_buddy" -c 'Print :MinimumOSVersion' "$plist")
+          platform=$("$plist_buddy" -c 'Print :CFBundleSupportedPlatforms:0' "$plist")
+          expected_bundle=$(jq -er '.PRODUCT_BUNDLE_IDENTIFIER' "$RUNNER_TEMP/ios-app-settings.json")
+          [[ "$build_number" == "$IOS_BUILD_NUMBER" && "$bundle_id" == "$expected_bundle" && "$platform" == iPhoneOS ]] || {
+            echo 'error: archived application identity, build number, or device platform is incorrect' >&2
+            exit 1
+          }
+          source_commit=$(git rev-parse HEAD)
+          expected_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          [[ "$source_commit" == "$expected_commit" ]] || { echo 'error: checkout does not match the workflow source SHA' >&2; exit 1; }
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" --arg sourceCommit "$source_commit" \
+            --arg sourceRef "$GITHUB_REF" --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg bundleId "$bundle_id" --arg shortVersion "$short_version" --arg buildNumber "$build_number" \
+            --arg minimumOSVersion "$minimum_os" --arg sdkVersion "$(xcrun --sdk iphoneos --show-sdk-version)" \
+            --arg sdkBuild "$(xcrun --sdk iphoneos --show-sdk-build-version)" \
+            --arg entitlementsSource "$(cat "$RUNNER_TEMP/ios-entitlements-source.txt")" \
+            --arg application "${app#"$release_dir/"}" \
+            --arg unitTestTarget "$IOS_UNIT_TEST_TARGET" --arg uiTestSelectors "$IOS_UI_TEST_SELECTORS" \
+            '{repository: $repository, sourceCommit: $sourceCommit, sourceRef: $sourceRef,
+              runId: $runId, runAttempt: $runAttempt, bundleId: $bundleId,
+              shortVersion: $shortVersion, buildNumber: $buildNumber, minimumOSVersion: $minimumOSVersion,
+              xcodeVersion: "27.2", xcodeBuild: "27B52", sdkVersion: $sdkVersion, sdkBuild: $sdkBuild,
+              application: $application, entitlementsSource: $entitlementsSource,
+              unitTestTarget: $unitTestTarget, uiTestSelectors: ($uiTestSelectors | split("\n") | map(select(length > 0))),
+              signing: "unsigned"}' > "$release_dir/provenance.json"
+          ditto -c -k --keepParent "$release_dir" "$RUNNER_TEMP/ios-native-archive.zip"
+          echo "artifact_name=ios-native-archive-$IOS_BUILD_NUMBER" >> "$GITHUB_OUTPUT"
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-native-test-results
+          path: ${{ runner.temp }}/ios-native-tests.xcresult
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload unsigned release archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ runner.temp }}/ios-native-archive.zip
+          retention-days: 7
+          if-no-files-found: error

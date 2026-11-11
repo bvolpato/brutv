@@ -281,6 +281,51 @@ exactly one platform. Keep its matching dSYM with the archive. Signing credentia
 remain local. This supports native Apple resource compilation while portable
 asset compiler parity is still being validated.
 
+### Native CI archive with local signing
+
+The `iOS TestFlight archive` workflow builds with Xcode 27.2, runs native unit
+tests and the established UI regression checks, then exports an unsigned device
+archive, dSYMs, the target's entitlements, and source/toolchain provenance. It
+requires no signing secrets in GitHub. The reusable workflow also supports other
+iOS applications with their own projects and resource preparation.
+
+Start from a reviewed commit that is already pushed. Choose an unused App Store
+Connect build number and publish its signed tag:
+
+```bash
+git tag -s testflight-ios-21 REVIEWED_SOURCE_SHA -m 'iOS TestFlight build 21'
+git push origin refs/tags/testflight-ios-21
+GH_CONFIG_DIR="$HOME/.config/gh-personal" gh run list --workflow ios-testflight.yml
+```
+
+Wait for that tag's run to succeed, then download its archive artifact. Use the
+exact run ID from the previous command:
+
+```bash
+GH_CONFIG_DIR="$HOME/.config/gh-personal" gh run download RUN_ID \
+  --name ios-native-archive-21 --dir mobile/ios/BruTV/build/native-21
+unzip mobile/ios/BruTV/build/native-21/ios-native-archive.zip \
+  -d mobile/ios/BruTV/build/native-21
+```
+
+Check `native-ios-release/provenance.json` against the reviewed source SHA, bundle
+identifier, build number, and successful run. The archive contains one `.app`
+under `Application.xcarchive/Products/Applications/`. Sign and deliver it locally:
+
+```bash
+IOS_RELEASE_DIR="$PWD/mobile/ios/BruTV/build/native-21/signed" \
+IOS_ENTITLEMENTS_PATH="$PWD/mobile/ios/BruTV/build/native-21/native-ios-release/signing-entitlements.plist" \
+uv run --no-project --env-file .env -- ./mobile/ios/BruTV/release.sh \
+  --platform ios \
+  --app "$PWD/mobile/ios/BruTV/build/native-21/native-ios-release/Application.xcarchive/Products/Applications/BruTV.app" \
+  --upload --testflight-group 'BruTV Internal'
+```
+
+Keep the archive and matching dSYMs for crash symbolication. The optional manual
+workflow input takes the same build number once the workflow is registered on
+the default branch. A tag works from the release branch without changing the
+default branch or publishing the app to the App Store.
+
 Apple accepted iOS build 19 with native `actool` resources. The fully portable
 build 20 is still under processing investigation. Do not infer acceptance from
 the existence of an upload or retry it with the same build number. A processing

@@ -105,6 +105,9 @@ class TestFlightTests(unittest.TestCase):
                 elif path == "/v1/betaTesters":
                     email = query["filter[email]"][0]
                     identity = outer.testers.get(email)
+                    if query.get("filter[apps]") != ["1234"]:
+                        self.reply({"errors": [{"code": "WRONG_APP_SCOPE"}]}, 400)
+                        return
                     self.reply(
                         {
                             "data": [

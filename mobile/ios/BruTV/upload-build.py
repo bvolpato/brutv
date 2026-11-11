@@ -542,7 +542,8 @@ class BuildUploader:
             matches = [
                 item
                 for item in self.collection(
-                    "/betaTesters?" + urlencode({"filter[email]": email})
+                    "/betaTesters?"
+                    + urlencode({"filter[email]": email, "filter[apps]": app_id})
                 )
                 if item.get("attributes", {}).get("email", "").casefold() == email
             ]
