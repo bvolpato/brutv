@@ -1,6 +1,5 @@
 import TVServices
 
-@objc(ContentProvider)
 final class ContentProvider: TVTopShelfContentProvider {
     override func loadTopShelfContent() async -> TVTopShelfContent? {
         let store = TopShelfStore.shared

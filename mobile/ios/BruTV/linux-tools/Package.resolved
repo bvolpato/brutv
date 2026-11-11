@@ -1,12 +1,12 @@
 {
-  "originHash" : "35dbfc44c613763576c66e98e0e91dc7e1b907aea5ddd4d63598201d54e316fe",
+  "originHash" : "cea8ae4875b5bac8513d15efa2d440b805dc6250fc47e748f74ad6bee416cb7b",
   "pins" : [
     {
       "identity" : "assetkit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/xtool-org/AssetKit",
+      "location" : "https://github.com/bvolpato/AssetKit",
       "state" : {
-        "revision" : "e763558b55fcbb5a443b1d7b2c6f0972d8bd14f7"
+        "revision" : "eb6331f1a3f3ad40670d8e430f605bd884cc0203"
       }
     },
     {

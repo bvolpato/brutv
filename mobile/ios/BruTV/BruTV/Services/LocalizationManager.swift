@@ -66,6 +66,30 @@ public final class LocalizationManager: ObservableObject {
 
     // Comprehensive Portuguese (Brazil) translations dictionary
     private let translationsPT: [String: String] = [
+        "PLAYBACK HEALTH": "DIAGNÓSTICO DE REPRODUÇÃO",
+        "Playback diagnostics": "Diagnóstico de reprodução",
+        "BruTV playback diagnostics": "Diagnóstico de reprodução do BruTV",
+        "Share playback summary": "Compartilhar resumo de reprodução",
+        "Clear playback summaries": "Limpar resumos de reprodução",
+        "No playback summaries yet.": "Nenhum resumo de reprodução ainda.",
+        "Active time": "Tempo ativo",
+        "Startup": "Início",
+        "Buffering events": "Interrupções por buffer",
+        "Buffering time": "Tempo em buffer",
+        "Longest buffer": "Maior espera por buffer",
+        "Recovery retries": "Tentativas de recuperação",
+        "Current session": "Sessão atual",
+        "Stopped": "Encerrada",
+        "Ended": "Concluída",
+        "Failed": "Falhou",
+        "Switched": "Conteúdo alterado",
+        "Interrupted": "Interrompida",
+        "Video": "Vídeo",
+        "Playback health stays on this device. Reports exclude channels, provider URLs, account details, and device identifiers.": "Os diagnósticos ficam neste aparelho. Os relatórios não incluem canais, URLs de provedores, dados da conta ou identificadores do dispositivo.",
+        "These summaries measure player-reported buffering, not frozen video frames or general app hangs.": "Estes resumos medem a espera por buffer informada pelo player, não quadros de vídeo congelados nem travamentos gerais do aplicativo.",
+        "Up to 10 recent summaries and one current-session checkpoint are saved when playback activity changes. History resets after an app version, build, or OS major update. Clearing resets saved and current data; new playback activity starts a fresh summary.": "São salvos até 10 resumos recentes e um resumo parcial da sessão atual quando a atividade de reprodução muda. O histórico é limpo após uma atualização da versão ou compilação do aplicativo ou da versão principal do sistema. Limpar remove os dados salvos e atuais; uma nova atividade de reprodução inicia outro resumo.",
+        "Active time includes playing and waiting, excluding pauses. Startup ends when the player reports playing, not at the first decoded frame. Apple crash and app-hang reports depend on your analytics sharing settings.": "O tempo ativo inclui reprodução e espera, sem as pausas. O período de inicialização termina quando o player informa que está reproduzindo, não no primeiro quadro decodificado. Os relatórios de falhas e travamentos da Apple dependem dos seus ajustes de compartilhamento de análise.",
+        "Counters stop at the last saved playback event; the interruption's cause is unknown.": "Os contadores vão até o último evento de reprodução salvo; a causa da interrupção é desconhecida.",
         // MARK: - Navigation & General
         "BruTV": "BruTV",
         "Home": "Início",
@@ -363,8 +387,8 @@ public final class LocalizationManager: ObservableObject {
         "High Stability / Cellular (10.0s)": "Alta Estabilidade / Dados Móveis (10.0s)",
         "Apple HLS (.m3u8)": "Apple HLS (.m3u8)",
         "MPEG-TS (.ts, most compatible)": "MPEG-TS (.ts, mais compatível)",
-        "Ultra Low Latency (1.5s) delivers near-live sports broadcast timing. Balanced (4.0s) ensures zero stuttering on regular broadband. High Stability (10.0s) protects against cellular jitter.": "Latência Ultra Baixa (1.5s) oferece transmissão esportiva quase em tempo real. Equilibrado (4.0s) garante reprodução contínua em banda larga. Alta Estabilidade (10.0s) protege contra variações de rede móvel.",
-        "When on, BruTV records live channels on this device so you can pause and rewind. Channels take longer to start, because BruTV records about 30 seconds first, and some providers are too slow for it. When off, channels start right away, and you can pause briefly within the provider's own live window. Up to 10 minutes is kept within a 256 MiB temporary-file limit. Closing playback or changing channels deletes the recording.": "Quando ativado, o BruTV grava os canais ao vivo no aparelho para permitir pausar e voltar. Os canais demoram mais para iniciar porque cerca de 30 segundos são gravados antes, e alguns servidores são lentos. Desativado, iniciam imediatamente e a pausa segue a janela do provedor. Até 10 minutos (limite de 256 MiB) são mantidos. Fechar ou trocar de canal exclui a gravação.",
+        "Buffer profiles request more or less video ahead of playback. The actual delay and stability depend on the stream, connection, and device.": "Os perfis ajustam a quantidade de vídeo em buffer à frente da reprodução. O atraso e a estabilidade dependem da transmissão, da conexão e do dispositivo.",
+        "Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 256 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.": "Canais ao vivo compatíveis mantêm um buffer local temporário para pausar e voltar. A reprodução começa quando o primeiro segmento gravado está disponível; o tempo de início depende do provedor. O buffer mantém até 10 minutos dentro de 256 MiB e é excluído ao fechar ou trocar de canal. Transmissões incompatíveis usam a reprodução normal.",
 
         // Playback Errors & Messages
         "Invalid stream URL.": "URL de transmissão inválida.",

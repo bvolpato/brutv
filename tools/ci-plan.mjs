@@ -15,7 +15,7 @@ const appleFull = [
   appleRoutine[0],
   { name: 'iPhone UI tests', target: 'iphone-ui', action: 'test', scheme: 'BruTV', simulator: 'iPhone 18 Pro', tests: 'BruTVUITests' },
   { name: 'iPad UI tests', target: 'ipad-ui', action: 'test', scheme: 'BruTV', simulator: 'iPad Pro 13-inch (M5)', tests: 'BruTVUITests' },
-  { name: 'iPhone Duo UI tests', target: 'duo-ui', action: 'test', scheme: 'BruTV', simulator: 'iPhone Duo', tests: 'BruTVUITests' },
+  { name: 'iPhone Duo UI tests', target: 'duo-ui', action: 'test', scheme: 'BruTV', simulator: 'iPhone Duo', runtime: 'com.apple.CoreSimulator.SimRuntime.iOS-27-1', tests: 'BruTVUITests' },
   appleRoutine[2],
   appleRoutine[3],
 ];

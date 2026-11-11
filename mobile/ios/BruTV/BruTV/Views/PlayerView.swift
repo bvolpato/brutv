@@ -430,10 +430,39 @@ public struct PlayerView: View {
     }
 
     private var topControlsBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                backToChannelsButton
+                channelTitle
+                Spacer(minLength: 8)
+                topControlsActions
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    backToChannelsButton
+                    Spacer(minLength: 8)
+                    topControlsActions
+                }
+                channelTitle
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 20)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.85), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    private var topControlsActions: some View {
         HStack(spacing: 10) {
-            backToChannelsButton
-            channelTitle
-            Spacer(minLength: 8)
             if let stream = playback.currentStream {
                 let isFav = favorites.isFavorite(channelID: stream.id)
                 Button {
@@ -459,16 +488,6 @@ public struct PlayerView: View {
             #endif
             closeButton
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 20)
-        .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.85), Color.clear],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
     }
 
     private var backToChannelsButton: some View {
@@ -718,6 +737,15 @@ public struct PlayerView: View {
         VStack(spacing: 10) {
             if playback.settings.liveRewind {
                 liveTimeshiftControls
+            }
+
+            if let notice = playback.liveBuffer.notice, !notice.isEmpty {
+                Text(notice.localized)
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.8))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("playerLiveBufferNotice")
             }
 
             ViewThatFits(in: .horizontal) {
@@ -1261,7 +1289,7 @@ public struct PlayerView: View {
                     }
                 }
             }
-            .frame(width: 340)
+            .frame(maxWidth: 340)
             .background(Color(white: 0.1).opacity(0.96))
             .transition(.move(edge: .trailing))
         }

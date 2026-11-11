@@ -43,13 +43,34 @@ public struct MediaTrackOption: Identifiable, Hashable, Sendable {
 public final class PlaybackManager: ObservableObject {
     public static let shared = PlaybackManager()
     private static var hasCleanedLiveBuffers = false
+    private nonisolated static let audioSessionQueue = DispatchQueue(label: "com.bvolpato.brutv.audio-session")
 
     @Published public private(set) var player: AVPlayer
     @Published public private(set) var currentStream: LiveStream?
     @Published public private(set) var currentVOD: VODStream?
-    @Published public private(set) var playbackState: PlaybackState = .idle
+    @Published public private(set) var playbackState: PlaybackState = .idle {
+        didSet {
+            guard playbackState != oldValue else { return }
+            let diagnostics = PlaybackDiagnosticsStore.shared
+            switch playbackState {
+            case .loading, .buffering:
+                diagnostics.transition(to: isPlaybackRequested ? .waiting : .paused,
+                                       kind: isPlaybackRequested ? diagnosticKind : nil)
+            case .playing: diagnostics.transition(to: .playing, kind: diagnosticKind)
+            case .paused: diagnostics.transition(to: .paused)
+            case .idle: diagnostics.finish(outcome: .stopped)
+            case .failed: diagnostics.finish(outcome: .failed)
+            }
+        }
+    }
     @Published public private(set) var isPlaybackRequested = false
     @Published public private(set) var telemetry: StreamTelemetry = StreamTelemetry()
+
+    private var diagnosticKind: PlaybackHealthSummary.Kind? {
+        if currentStream != nil { return .live }
+        if currentVOD != nil { return .video }
+        return nil
+    }
     @Published public var aspectRatio: VideoAspectRatio = .fit
     @Published public var settings: PlayerSettings = PlayerSettings.load() {
         didSet {
@@ -108,6 +129,9 @@ public final class PlaybackManager: ObservableObject {
     @Published public private(set) var activeSeriesName: String = ""
 
     private var itemObservers: Set<AnyCancellable> = []
+    private var mediaTracksTask: Task<Void, Never>?
+    private var audioSelectionGroup: AVMediaSelectionGroup?
+    private var subtitleSelectionGroup: AVMediaSelectionGroup?
     private var accountObserver: AnyCancellable?
     private var nowPlayingObserver: AnyCancellable?
     #if os(tvOS)
@@ -126,6 +150,7 @@ public final class PlaybackManager: ObservableObject {
     private var currentPlaybackURL: URL?
     private var pendingResumePosition: Double?
     private var resumeSeekInProgress = false
+    private var vodSeekGeneration: UInt64 = 0
     private var lastVODPosition: Double = 0
     private var currentFormat: StreamFormatPreference = .hls
     private var watchdogWorkItem: DispatchWorkItem?
@@ -159,11 +184,14 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func setupAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to configure the playback audio session.")
+        Self.audioSessionQueue.async {
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .moviePlayback, options: [])
+                try session.setActive(true)
+            } catch {
+                print("Failed to configure the playback audio session.")
+            }
         }
     }
 
@@ -238,12 +266,27 @@ public final class PlaybackManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak item] _ in
                 guard let self, let item, self.isCurrent(item, session: session, generation: generation) else { return }
-                self.synchronizeTransport(for: item, session: session, generation: generation)
+                self.synchronizeTransport(for: item, session: session, generation: generation,
+                                          recognizesPauseRequest: self.resumeSeekInProgress)
+            }
+            .store(in: &itemObservers)
+
+        NotificationCenter.default.publisher(for: AVPlayer.rateDidChangeNotification, object: player)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] notification in
+                guard let self, let item, self.isCurrent(item, session: session, generation: generation) else { return }
+                let reason = notification.userInfo?[AVPlayer.rateDidChangeReasonKey] as? String
+                let requestedPause = reason == AVPlayer.RateDidChangeReason.setRateCalled.rawValue
+                    || reason == AVPlayer.RateDidChangeReason.audioSessionInterrupted.rawValue
+                    || reason == AVPlayer.RateDidChangeReason.appBackgrounded.rawValue
+                self.synchronizeTransport(for: item, session: session, generation: generation,
+                                          recognizesPauseRequest: requestedPause)
             }
             .store(in: &itemObservers)
     }
 
-    private func synchronizeTransport(for item: AVPlayerItem, session: UInt64, generation: UInt64) {
+    private func synchronizeTransport(for item: AVPlayerItem, session: UInt64, generation: UInt64,
+                                      recognizesPauseRequest: Bool = false) {
         let status = player.timeControlStatus
         let requestsPlayback = player.rate != 0 || status != .paused
         if !requestsPlayback {
@@ -251,6 +294,16 @@ public final class PlaybackManager: ObservableObject {
             if item.status == .failed, isPlaybackRequested {
                 handlePlaybackFailure(classifyPlaybackFailure(item.error, item: item),
                                       item: item, session: session, generation: generation)
+                return
+            }
+            // End/failure can change the rate before its notification. Outside a restore seek,
+            // preserve recovery intent until a rate-change reason identifies a pause.
+            guard recognizesPauseRequest else {
+                if isPlaybackRequested {
+                    recovery.recordInterruption()
+                    playbackState = item.status == .readyToPlay ? .buffering : .loading
+                    startWatchdog(for: item, session: session, generation: generation)
+                }
                 return
             }
             pausePlaybackIntent()
@@ -297,7 +350,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func play(stream: LiveStream, from playlist: [LiveStream]? = nil) {
-        beginPlaybackSession()
+        beginPlaybackSession(diagnosticKind: .live)
 
         if let playlist {
             setPlaylist(playlist, startingWith: stream)
@@ -474,7 +527,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func playVOD(vod: VODStream) {
-        beginPlaybackSession()
+        beginPlaybackSession(diagnosticKind: .video)
 
         self.currentVOD = vod
         self.activeEpisodeList = []
@@ -502,7 +555,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func playEpisode(episode: SeriesEpisode, seriesName: String, seasonEpisodes: [SeriesEpisode] = []) {
-        beginPlaybackSession()
+        beginPlaybackSession(diagnosticKind: .video)
 
         let titleFormatted: String
         if episode.title.hasPrefix("Episode") || episode.title.hasPrefix("E") {
@@ -573,7 +626,8 @@ public final class PlaybackManager: ObservableObject {
         playEpisode(episode: next, seriesName: activeSeriesName, seasonEpisodes: activeEpisodeList)
     }
 
-    private func beginPlaybackSession() {
+    private func beginPlaybackSession(diagnosticKind: PlaybackHealthSummary.Kind) {
+        PlaybackDiagnosticsStore.shared.begin(kind: diagnosticKind)
         cancelLiveBufferRecovery()
         stopLiveBuffer()
         liveRecoveryBlockedForSession = false
@@ -596,10 +650,7 @@ public final class PlaybackManager: ObservableObject {
         lastVODPosition = 0
         vodCurrentTime = 0
         vodDuration = 0
-        availableAudioTracks = []
-        selectedAudioTrackID = nil
-        availableSubtitles = []
-        selectedSubtitleID = nil
+        resetMediaTracks()
         telemetry = StreamTelemetry()
     }
 
@@ -824,6 +875,7 @@ public final class PlaybackManager: ObservableObject {
     func prepareAndPlay(url: URL, resumePosition: Double? = nil) {
         cancelWatchdog()
         cancelRetry()
+        resetMediaTracks()
         player.currentItem?.cancelPendingSeeks()
         itemObservers.removeAll()
         itemGeneration &+= 1
@@ -865,6 +917,7 @@ public final class PlaybackManager: ObservableObject {
         }
 
         player.pause()
+        player.actionAtItemEnd = PlaybackPolicy.retriesAtEnd(isLive: currentStream != nil, url: url) ? .none : .pause
         player.replaceCurrentItem(with: playerItem)
         observePlayerItem(playerItem, session: session, generation: generation)
         if isPlaybackRequested, resumePosition == nil {
@@ -964,11 +1017,38 @@ public final class PlaybackManager: ObservableObject {
             .sink { [weak self, weak playerItem] _ in
                 guard let self, let playerItem,
                       self.isCurrent(playerItem, session: session, generation: generation) else { return }
+                if self.isPlaybackRequested,
+                   PlaybackPolicy.retriesAtEnd(isLive: self.currentStream != nil, url: self.currentPlaybackURL) {
+                    self.handlePlaybackFailure(.transient, item: playerItem, session: session, generation: generation)
+                    return
+                }
+                PlaybackDiagnosticsStore.shared.finish(outcome: .ended)
                 self.isPlaybackRequested = false
                 self.cancelWatchdog()
                 self.cancelRetry()
                 self.recovery.recordInterruption()
                 self.playbackState = .paused
+            }
+            .store(in: &itemObservers)
+
+        NotificationCenter.default.publisher(for: .AVPlayerItemFailedToPlayToEndTime, object: playerItem)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak playerItem] notification in
+                guard let self, let playerItem,
+                      self.isCurrent(playerItem, session: session, generation: generation),
+                      self.isPlaybackRequested, self.retryWorkItem == nil else { return }
+                let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+                let failure = self.classifyPlaybackFailure(error ?? playerItem.error, item: playerItem)
+                self.handlePlaybackFailure(failure, item: playerItem, session: session, generation: generation)
+            }
+            .store(in: &itemObservers)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification, object: playerItem)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak playerItem] _ in
+                guard let self, let playerItem,
+                      self.isCurrent(playerItem, session: session, generation: generation) else { return }
+                self.applyMediaTracks(for: playerItem)
             }
             .store(in: &itemObservers)
     }
@@ -1016,7 +1096,10 @@ public final class PlaybackManager: ObservableObject {
                 self.pendingLiveDate = nil
                 self.pendingLiveRecordedPosition = nil
                 guard self.isPlaybackRequested, self.retryWorkItem == nil else { return }
-                self.synchronizeTransport(for: item, session: session, generation: generation)
+                // A native pause can race its rate-change notification during the seek.
+                // Honor the completed transport state instead of the earlier resume intent.
+                self.synchronizeTransport(for: item, session: session, generation: generation,
+                                          recognizesPauseRequest: true)
             }
         }
     }
@@ -1024,7 +1107,9 @@ public final class PlaybackManager: ObservableObject {
     private func classifyPlaybackFailure(_ error: Error?, item: AVPlayerItem) -> PlaybackFailure {
         if let networkFailure = PlaybackPolicy.networkFailure(
             for: error,
-            httpStatus: item.errorLog()?.events.last?.errorStatusCode
+            httpStatus: item.errorLog()?.events.last?.errorStatusCode,
+            localLiveRecording: liveRecorder != nil && currentStream != nil
+                && currentPlaybackURL.map(Self.isLocalPlaylist) == true
         ) {
             return networkFailure
         }
@@ -1075,6 +1160,7 @@ public final class PlaybackManager: ObservableObject {
                   self.isCurrent(item, session: session, generation: generation),
                   self.isPlaybackRequested, self.retryGeneration == ticket else { return }
             self.retryWorkItem = nil
+            PlaybackDiagnosticsStore.shared.recordRetry(kind: self.currentStream != nil ? .live : .video)
             self.prepareAndPlay(url: url, resumePosition: resumePosition)
         }
         retryWorkItem = workItem
@@ -1083,6 +1169,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func fallbackToOriginalLivePlayback(url: URL) {
+        PlaybackDiagnosticsStore.shared.recordRetry(kind: .live)
         let recorder = liveRecorder
         let session = sessionGeneration
         liveRecoveryBlockedForSession = true
@@ -1092,6 +1179,7 @@ public final class PlaybackManager: ObservableObject {
         itemGeneration &+= 1
         let generation = itemGeneration
         itemObservers.removeAll()
+        resetMediaTracks()
         player.pause()
         stopLiveBuffer()
         currentPlaybackURL = url
@@ -1108,6 +1196,7 @@ public final class PlaybackManager: ObservableObject {
 
     private func failPlayback(with message: String) {
         isPlaybackRequested = false
+        PlaybackDiagnosticsStore.shared.finish(outcome: .failed)
         cancelWatchdog()
         cancelRetry()
         recovery.recordInterruption()
@@ -1140,6 +1229,7 @@ public final class PlaybackManager: ObservableObject {
 
     public func retryCurrentPlayback() {
         guard currentStream != nil || currentVOD != nil else { return }
+        PlaybackDiagnosticsStore.shared.recordRetry(kind: currentStream != nil ? .live : .video)
         if liveRecorder != nil, currentPlaybackURL == nil {
             isPlaybackRequested = true
             playbackState = .loading
@@ -1247,6 +1337,7 @@ public final class PlaybackManager: ObservableObject {
         codecFallback = LiveTimeshiftCodecFallback()
         sessionGeneration &+= 1
         isPlaybackRequested = false
+        PlaybackDiagnosticsStore.shared.finish(outcome: .stopped)
         cancelWatchdog()
         cancelRetry()
         recovery.reset()
@@ -1256,6 +1347,7 @@ public final class PlaybackManager: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         itemObservers.removeAll()
+        resetMediaTracks()
         currentStream = nil
         currentVOD = nil
         currentPlaybackURL = nil
@@ -1378,7 +1470,7 @@ public final class PlaybackManager: ObservableObject {
         if liveBehindSeconds <= 1 { explicitlyRewound = false }
         if !isPlaybackRequested, let position = pausedLivePosition, position < range.start {
             pausedLivePosition = range.start
-            item.seek(to: CMTime(seconds: range.start, preferredTimescale: 600))
+            item.seek(to: CMTime(seconds: range.start, preferredTimescale: 600), completionHandler: nil)
             if liveRecorder != nil {
                 liveBuffer.notice = "The paused position expired. Resume from the oldest retained content."
             }
@@ -1395,7 +1487,7 @@ public final class PlaybackManager: ObservableObject {
         let playing = isPlaybackRequested
         if !playing { pausedLivePosition = position }
         item.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero,
-                  toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600))
+                  toleranceAfter: CMTime(seconds: 0.5, preferredTimescale: 600), completionHandler: nil)
         livePlayhead = position
     }
 
@@ -1415,27 +1507,61 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func seek(to seconds: Double) {
-        guard let item = player.currentItem else { return }
-        let target = max(0, min(seconds, vodDuration > 0 ? vodDuration : seconds))
+        guard let item = player.currentItem,
+              let target = PlaybackPolicy.vodSeekPosition(seconds, duration: vodDuration) else { return }
+        let session = sessionGeneration
+        let generation = itemGeneration
+        vodSeekGeneration &+= 1
+        let seekGeneration = vodSeekGeneration
         vodCurrentTime = target
         lastVODPosition = target
-        item.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.lastVODPosition = target
+        item.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak item] finished in
+            Task { @MainActor [weak self, weak item] in
+                guard finished, let self, let item,
+                      self.isCurrent(item, session: session, generation: generation),
+                      self.vodSeekGeneration == seekGeneration else { return }
+                self.lastVODPosition = target
             }
         }
     }
 
     public func seekRelative(_ deltaSeconds: Double) {
-        let target = max(0, vodCurrentTime + deltaSeconds)
-        seek(to: target)
+        seek(to: vodCurrentTime + deltaSeconds)
     }
 
     public func updateMediaTracks(for item: AVPlayerItem) {
+        mediaTracksTask?.cancel()
+        let session = sessionGeneration
+        let generation = itemGeneration
         let asset = item.asset
+        mediaTracksTask = Task { [weak self, weak item] in
+            async let audio = try? asset.loadMediaSelectionGroup(for: .audible)
+            async let subtitles = try? asset.loadMediaSelectionGroup(for: .legible)
+            let groups = await (audio, subtitles)
+            guard !Task.isCancelled, let self, let item,
+                  self.isCurrent(item, session: session, generation: generation) else { return }
+            self.audioSelectionGroup = groups.0
+            self.subtitleSelectionGroup = groups.1
+            self.applyMediaTracks(for: item)
+        }
+    }
 
+    private func resetMediaTracks() {
+        mediaTracksTask?.cancel()
+        mediaTracksTask = nil
+        audioSelectionGroup = nil
+        subtitleSelectionGroup = nil
+        availableAudioTracks = []
+        selectedAudioTrackID = nil
+        availableSubtitles = []
+        selectedSubtitleID = nil
+    }
+
+    private func applyMediaTracks(for item: AVPlayerItem) {
+        selectedAudioTrackID = nil
+        selectedSubtitleID = nil
         // Audio tracks
-        if let audioGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+        if let audioGroup = audioSelectionGroup {
             let currentSelected = item.currentMediaSelection.selectedMediaOption(in: audioGroup)
             var audioTracks: [MediaTrackOption] = []
             for option in audioGroup.options {
@@ -1458,7 +1584,7 @@ public final class PlaybackManager: ObservableObject {
         }
 
         // Subtitles
-        if let subGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+        if let subGroup = subtitleSelectionGroup {
             let currentSelected = item.currentMediaSelection.selectedMediaOption(in: subGroup)
             var subTracks: [MediaTrackOption] = []
             for option in subGroup.options {
@@ -1483,13 +1609,13 @@ public final class PlaybackManager: ObservableObject {
 
     public func selectAudioTrack(id: String) {
         guard let item = player.currentItem,
-              let audioGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) else { return }
+              let audioGroup = audioSelectionGroup else { return }
         for option in audioGroup.options {
             let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
             if optionID == id {
                 item.select(option, in: audioGroup)
                 selectedAudioTrackID = id
-                updateMediaTracks(for: item)
+                applyMediaTracks(for: item)
                 break
             }
         }
@@ -1497,21 +1623,21 @@ public final class PlaybackManager: ObservableObject {
 
     public func selectSubtitle(id: String?) {
         guard let item = player.currentItem,
-              let subGroup = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else { return }
+              let subGroup = subtitleSelectionGroup else { return }
         if let id {
             for option in subGroup.options {
                 let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
                 if optionID == id {
                     item.select(option, in: subGroup)
                     selectedSubtitleID = id
-                    updateMediaTracks(for: item)
+                    applyMediaTracks(for: item)
                     break
                 }
             }
         } else {
             item.select(nil, in: subGroup)
             selectedSubtitleID = nil
-            updateMediaTracks(for: item)
+            applyMediaTracks(for: item)
         }
     }
 

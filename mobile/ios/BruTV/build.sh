@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/apple-sdk.sh"
 TARGET="${1:-ios}"
 if [[ "$(uname -s)" == "Linux" ]]; then
   case "$TARGET" in
@@ -26,11 +27,20 @@ if [[ "$TARGET" == "--tvos" || "$TARGET" == "tvos" ]]; then
   DERIVED_DATA_PATH="${TVOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/simulator-tvos}"
   SCHEME="BruTV-tvOS"
   APP_NAME="BruTV-tvOS.app"
+  SDK=appletvsimulator
+elif [[ "$TARGET" == "--macos" || "$TARGET" == "macos" ]]; then
+  DESTINATION="generic/platform=macOS,variant=Mac Catalyst"
+  DERIVED_DATA_PATH="${MACOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/catalyst}"
+  SCHEME="BruTV"
+  APP_NAME="BruTV.app"
+  SDK=macosx
 else
+  [[ "$TARGET" == ios ]] || { echo "error: unknown platform: $TARGET" >&2; exit 2; }
   DESTINATION="${IOS_SIM_DESTINATION:-platform=iOS Simulator,name=iPhone 17e}"
   DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-$SCRIPT_DIR/build/simulator}"
   SCHEME="BruTV"
   APP_NAME="BruTV.app"
+  SDK=iphonesimulator
 fi
 CONFIGURATION="${IOS_CONFIGURATION:-Debug}"
 
@@ -43,11 +53,13 @@ command -v xcodebuild >/dev/null 2>&1 || {
   echo "error: xcodebuild not found" >&2
   exit 1
 }
+brutv_require_xcode_sdk "$SDK"
 
 cd "$SCRIPT_DIR"
 xcodebuild build \
   -project BruTV.xcodeproj \
   -scheme "$SCHEME" \
+  -sdk "$SDK" \
   -destination "$DESTINATION" \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \

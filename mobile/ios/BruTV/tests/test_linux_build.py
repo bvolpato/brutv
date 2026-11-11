@@ -6,6 +6,7 @@
 """Catalyst preflight must reject an unusable linker before building."""
 
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,9 @@ class LinkerPreflightTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.sdk = self.root / "sdk"
+        self.sdk_settings = self.sdk / "Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/SDKSettings.json"
+        self.sdk_settings.parent.mkdir(parents=True)
+        self.sdk_settings.write_text(json.dumps({"Version": "27.2", "SupportedTargets": {"iosmac": {}}}))
         self.swift = self.executable("swift", 'echo "Swift version 6.4.0"')
         self.xtool = self.executable(
             "xtool",
@@ -92,6 +96,14 @@ class LinkerPreflightTests(unittest.TestCase):
         self.executable("private-llvm/bin/ld64.lld", 'echo "LLD 23.1.3"')
         result = self.preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_old_sdk_is_rejected_even_with_new_deployment_target_metadata(self):
+        self.executable("sdk/toolset/bin/ld64.lld", 'echo "LLD 23.1.3"')
+        self.sdk_settings.write_text(json.dumps({"Version": "27.1", "SupportedTargets": {"iosmac": {}},
+                                               "DefaultProperties": {"IPHONEOS_DEPLOYMENT_TARGET": "99.0"}}))
+        result = self.preflight()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SDK 27.2 or later is required; selected SDK is 27.1", result.stderr)
 
 
 if __name__ == "__main__":

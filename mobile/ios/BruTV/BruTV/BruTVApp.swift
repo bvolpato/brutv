@@ -1,10 +1,8 @@
 import SwiftUI
-import AVFoundation
 
 @main
 struct BruTVApp: App {
     init() {
-        configureAudioSession()
         #if targetEnvironment(macCatalyst)
         configureCatalystLifecycle()
         #endif
@@ -13,15 +11,6 @@ struct BruTVApp: App {
     var body: some Scene {
         WindowGroup {
             AppRootView()
-        }
-    }
-
-    private func configureAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("AVAudioSession setup error: \(error)")
         }
     }
 

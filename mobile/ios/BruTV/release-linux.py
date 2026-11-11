@@ -48,6 +48,20 @@ def mac_metadata(app: Path) -> list[str]:
 
 def release(args: argparse.Namespace) -> None:
     platforms = PLATFORMS if args.platform == "all" else (args.platform,)
+    if args.app is not None and len(platforms) != 1:
+        raise ValueError("--app requires one selected platform")
+    selected_group = args.testflight_group or args.external_testflight_group
+    if selected_group and not args.upload:
+        raise ValueError("TestFlight distribution requires --upload")
+    if args.external_testflight_group and args.tester:
+        raise ValueError("--tester is only supported with --testflight-group")
+    if (args.tester or args.whats_new is not None) and not selected_group:
+        raise ValueError("--tester and --whats-new require a TestFlight group")
+    native_app = args.app.expanduser().resolve() if args.app is not None else None
+    if native_app is not None and (
+        native_app.suffix != ".app" or not native_app.is_dir()
+    ):
+        raise ValueError("--app must select an existing unsigned .app directory")
     build = Path(os.environ.get("IOS_RELEASE_DIR", ROOT / "build/release")).resolve()
     export = build / "export"
     env = dict(os.environ)
@@ -55,18 +69,19 @@ def release(args: argparse.Namespace) -> None:
     env.setdefault("XTOOL_BINARY", str(ROOT / "xtool-linux.sh"))
 
     # Validate every requested target before producing or uploading a release.
-    for platform in platforms:
-        run(
-            [
-                str(ROOT / "linux-build.sh"),
-                "--platform",
-                platform,
-                "--configuration",
-                "release",
-                "--check",
-            ],
-            env,
-        )
+    if native_app is None:
+        for platform in platforms:
+            run(
+                [
+                    str(ROOT / "linux-build.sh"),
+                    "--platform",
+                    platform,
+                    "--configuration",
+                    "release",
+                    "--check",
+                ],
+                env,
+            )
     for platform in platforms:
         run(signer(platform) + ["--preflight"], env)
     if args.upload:
@@ -78,19 +93,20 @@ def release(args: argparse.Namespace) -> None:
     artifacts: list[tuple[str, Path, list[str]]] = []
     for platform in platforms:
         destination = build / "linux" / platform
-        run(
-            [
-                str(ROOT / "linux-build.sh"),
-                "--platform",
-                platform,
-                "--configuration",
-                "release",
-                "--output",
-                str(destination),
-            ],
-            env,
-        )
-        app = destination / "xtool/BruTV.app"
+        if native_app is None:
+            run(
+                [
+                    str(ROOT / "linux-build.sh"),
+                    "--platform",
+                    platform,
+                    "--configuration",
+                    "release",
+                    "--output",
+                    str(destination),
+                ],
+                env,
+            )
+        app = native_app or destination / "xtool/BruTV.app"
         output = export / OUTPUTS[platform]
         run(signer(platform) + ["--app", str(app), "--output", str(output)], env)
         if not output.is_file() or output.stat().st_size == 0:
@@ -112,6 +128,18 @@ def release(args: argparse.Namespace) -> None:
         artifacts.append((platform, output, metadata))
 
     if args.upload:
+        testflight_arguments = []
+        if selected_group:
+            group_option = (
+                "--external-testflight-group"
+                if args.external_testflight_group
+                else "--testflight-group"
+            )
+            testflight_arguments = [group_option, selected_group]
+            if args.whats_new is not None:
+                testflight_arguments.extend(["--whats-new", args.whats_new])
+            for email in args.tester:
+                testflight_arguments.extend(["--tester", email])
         for platform, output, metadata in artifacts:
             run(
                 [
@@ -122,10 +150,18 @@ def release(args: argparse.Namespace) -> None:
                     "--platform",
                     UPLOAD_PLATFORMS[platform],
                     *metadata,
+                    *testflight_arguments,
                 ],
                 env,
             )
-        print("All requested builds were uploaded and processed by App Store Connect.")
+        if selected_group:
+            print(
+                f"All requested builds are available to {selected_group} in TestFlight."
+            )
+        else:
+            print(
+                "All requested builds were uploaded and processed by App Store Connect."
+            )
     else:
         for platform, output, _ in artifacts:
             print(f"{platform}: {output}")
@@ -137,6 +173,26 @@ def release(args: argparse.Namespace) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=("all", *PLATFORMS), default="all")
+    parser.add_argument(
+        "--app",
+        type=Path,
+        help="sign an existing native .app instead of compiling with xtool",
+    )
+    distribution = parser.add_mutually_exclusive_group()
+    distribution.add_argument(
+        "--testflight-group", help="release to an existing internal TestFlight group"
+    )
+    distribution.add_argument(
+        "--external-testflight-group",
+        help="submit beta review and release to an existing external TestFlight group",
+    )
+    parser.add_argument("--whats-new", help="TestFlight What to Test notes")
+    parser.add_argument(
+        "--tester",
+        action="append",
+        default=[],
+        help="invite a tester by email (repeatable)",
+    )
     parser.add_argument(
         "--upload", action="store_true", help="upload and wait for Apple processing"
     )

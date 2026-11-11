@@ -14,14 +14,18 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
         rawValue.localized
     }
 
+    public var tabTitle: String {
+        self == .home ? "BruTV" : title
+    }
+
     public var iconName: String {
         switch self {
-        case .home: return "house.fill"
-        case .liveTV: return "tv.fill"
-        case .movies: return "film.fill"
-        case .series: return "play.tv.fill"
-        case .favorites: return "heart.fill"
-        case .settings: return "gearshape.fill"
+        case .home: return "play.rectangle"
+        case .liveTV: return "antenna.radiowaves.left.and.right"
+        case .movies: return "film"
+        case .series: return "rectangle.stack"
+        case .favorites: return "heart"
+        case .settings: return "gearshape"
         }
     }
 }
@@ -31,6 +35,7 @@ public struct MainContentView: View {
     @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var selectedSection: NavigationSection? = {
         let args = ProcessInfo.processInfo.arguments
@@ -172,7 +177,9 @@ public struct MainContentView: View {
                 }
                 .tag(NavigationSection.favorites)
 
-            SettingsView()
+            NavigationStack {
+                SettingsView()
+            }
                 .tabItem {
                     Label(NavigationSection.settings.title, systemImage: NavigationSection.settings.iconName)
                 }
@@ -181,124 +188,91 @@ public struct MainContentView: View {
     }
     #endif
 
-    // iPad / Mac Multi-Column Persistent Navigation Rail Layout
+    // The iOS 17 fallback keeps the same tab content mounted while its sidebar resizes.
     private var ipadLayout: some View {
         HStack(spacing: 0) {
-            // Fixed Navigation Rail (cannot be collapsed or accidentally hidden)
-            VStack(spacing: 0) {
-                // Top brand mark / Home button
-                Button {
-                    selectedSection = .home
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: "play.tv.fill")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [.cyan, Color(hex: "#0077ED")],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                        Text("BruTV")
-                            .font(.system(size: 11, weight: .heavy, design: .rounded))
-                            .foregroundColor(selectedSection == .home ? .cyan : .white)
-                    }
-                    .frame(width: 76, height: 58)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(selectedSection == .home ? Color.cyan.opacity(0.18) : Color.clear)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(selectedSection == .home ? Color.cyan.opacity(0.35) : Color.clear, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-
-                Divider()
-                    .padding(.horizontal, 10)
-
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 8) {
-                        ForEach(NavigationSection.allCases.filter { $0 != .home }) { section in
-                            Button {
-                                selectedSection = section
-                            } label: {
-                                VStack(spacing: 5) {
-                                    Image(systemName: section.iconName)
-                                        .font(.system(size: 22, weight: .semibold))
-                                        .frame(width: 32, height: 26)
-                                        .foregroundColor(selectedSection == section ? .cyan : .secondary)
-
-                                    Text(section.title)
-                                        .font(.system(size: 11, weight: selectedSection == section ? .bold : .medium))
-                                        .foregroundColor(selectedSection == section ? .white : .secondary)
-                                        .multilineTextAlignment(.center)
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.8)
-                                }
-                                .frame(width: 76, height: 58)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(selectedSection == section ? Color.cyan.opacity(0.18) : Color.clear)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .stroke(selectedSection == section ? Color.cyan.opacity(0.35) : Color.clear, lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("\(section.rawValue)NavButton")
-                        }
-                    }
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, 6)
-                }
-
-                Spacer()
-
-                if let profile = account.currentProfile {
-                    Divider()
-                        .padding(.horizontal, 10)
-
-                    VStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.cyan)
-                            .frame(width: 7, height: 7)
-
-                        Text(profile.name.isEmpty ? (profile.username.isEmpty ? "Connected".localized : profile.username) : profile.name)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                }
-            }
-            .frame(width: horizontalSizeClass == .regular ? 88 : 0)
-            .clipped()
-            .accessibilityHidden(horizontalSizeClass != .regular)
-            .background(Color(hex: "#0e1422"))
+            legacySidebar
+                .frame(width: horizontalSizeClass == .regular ? (dynamicTypeSize.isAccessibilitySize ? 280 : 224) : 0)
+                .clipped()
+                .accessibilityHidden(horizontalSizeClass != .regular)
+                .background(Color(hex: "#0e1422"))
 
             Divider()
-                .opacity(horizontalSizeClass == .regular ? 1 : 0)
+                .frame(width: horizontalSizeClass == .regular ? 1 : 0)
 
             iphoneLayout
                 .toolbar(horizontalSizeClass == .regular ? .hidden : .visible, for: .tabBar)
         }
     }
 
-    // iPhone Tab View Layout
+    private var legacySidebar: some View {
+        VStack(spacing: 0) {
+            sidebarButton(.home)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            Divider()
+                .padding(.horizontal, 16)
+
+            ScrollView(.vertical) {
+                VStack(spacing: 4) {
+                    ForEach(NavigationSection.allCases.filter { $0 != .home }) { section in
+                        sidebarButton(section)
+                    }
+                }
+                .padding(.vertical, 10)
+            }
+
+            if let profile = account.currentProfile {
+                Divider()
+                    .padding(.horizontal, 16)
+                Label(
+                    profile.name.isEmpty ? (profile.username.isEmpty ? "Connected".localized : profile.username) : profile.name,
+                    systemImage: "person.crop.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+        }
+    }
+
+    private func sidebarButton(_ section: NavigationSection) -> some View {
+        let isSelected = selectedSection == section
+        return Button {
+            selectedSection = section
+        } label: {
+            Label(section.tabTitle, systemImage: section.iconName)
+                .symbolVariant(isSelected ? .fill : .none)
+                .font(section == .home ? .title3.weight(.bold) : .body.weight(isSelected ? .semibold : .regular))
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .foregroundStyle(isSelected ? Color.cyan : Color.primary)
+                .background {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(isSelected ? Color.cyan.opacity(0.15) : .clear)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .accessibilityLabel(section == .home ? "BruTV Home".localized : section.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("\(section.rawValue)NavButton")
+        .help(section.title)
+    }
+
+    // Shared tab content stays mounted when the system moves the navigation controls.
     private var iphoneLayout: some View {
         TabView(selection: tabSelection) {
             NavigationStack {
                 HomeView(onNavigate: { selectedSection = $0 })
             }
             .tabItem {
-                Label("BruTV", systemImage: "play.tv.fill")
+                Label(NavigationSection.home.tabTitle, systemImage: NavigationSection.home.iconName)
             }
             .tag(NavigationSection.home)
 
@@ -306,7 +280,7 @@ public struct MainContentView: View {
                 LiveTVView()
             }
             .tabItem {
-                Label("Live TV".localized, systemImage: "tv.fill")
+                Label(NavigationSection.liveTV.tabTitle, systemImage: NavigationSection.liveTV.iconName)
             }
             .tag(NavigationSection.liveTV)
 
@@ -314,7 +288,7 @@ public struct MainContentView: View {
                 VODView()
             }
             .tabItem {
-                Label("Movies".localized, systemImage: "film.fill")
+                Label(NavigationSection.movies.tabTitle, systemImage: NavigationSection.movies.iconName)
             }
             .tag(NavigationSection.movies)
 
@@ -322,7 +296,7 @@ public struct MainContentView: View {
                 SeriesView()
             }
             .tabItem {
-                Label("Series".localized, systemImage: "play.tv.fill")
+                Label(NavigationSection.series.tabTitle, systemImage: NavigationSection.series.iconName)
             }
             .tag(NavigationSection.series)
 
@@ -330,7 +304,7 @@ public struct MainContentView: View {
                 FavoritesView(onNavigate: { selectedSection = $0 })
             }
             .tabItem {
-                Label("Favorites".localized, systemImage: "heart.fill")
+                Label(NavigationSection.favorites.tabTitle, systemImage: NavigationSection.favorites.iconName)
             }
             .tag(NavigationSection.favorites)
 
@@ -338,7 +312,7 @@ public struct MainContentView: View {
                 SettingsView()
             }
             .tabItem {
-                Label("Settings".localized, systemImage: "gearshape.fill")
+                Label(NavigationSection.settings.tabTitle, systemImage: NavigationSection.settings.iconName)
             }
             .tag(NavigationSection.settings)
         }

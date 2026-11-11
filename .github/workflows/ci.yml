@@ -20,6 +20,14 @@ on:
           - ps5
           - web
           - full
+      apple_ui_scope:
+        description: Apple UI test scope for full device validation
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - regressions
 
 permissions:
   contents: read
@@ -90,7 +98,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.release_tools == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -117,33 +125,52 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select Xcode 27.1
+      - name: Select Xcode 27.2
         run: |
-          xcode_app=/Applications/Xcode_27.1.app
+          xcode_app=/Applications/Xcode_27.2.app
           if [[ ! -d "$xcode_app" ]]; then
-            echo "error: Xcode 27.1 is required for iPhone Duo validation" >&2
+            echo "error: Xcode 27.2 is required for the current Apple SDK validation" >&2
             exit 1
           fi
           sudo xcode-select --switch "$xcode_app/Contents/Developer"
-          xcodebuild -version
-          sdks=$(xcodebuild -showsdks)
-          if ! grep -Fq 'iOS 27.1' <<<"$sdks"; then
-            echo "error: the selected Xcode does not include the iOS 27.1 SDK" >&2
+          xcode_version=$(xcodebuild -version)
+          echo "$xcode_version"
+          if ! grep -Fxq 'Build version 27B52' <<<"$xcode_version"; then
+            echo "error: stable Xcode 27.2 (27B52) is required; the runner may still have the release candidate" >&2
             exit 1
           fi
+          sdks=$(xcodebuild -showsdks)
+          if ! grep -Fq 'iOS 27.2' <<<"$sdks"; then
+            echo "error: the selected Xcode does not include the iOS 27.2 SDK" >&2
+            exit 1
+          fi
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: matrix.target == 'ios-unit'
+        with:
+          version: '0.13.4'
+      - name: Validate generated Apple asset catalogs
+        if: matrix.target == 'ios-unit'
+        run: uv run --python 3.12 mobile/ios/BruTV/tests/test_prepare_xtool.py
       - name: Prepare Apple destination
         id: destination
         env:
           APPLE_SIMULATOR: ${{ matrix.simulator }}
           APPLE_DESTINATION: ${{ matrix.destination }}
+          APPLE_SIMULATOR_RUNTIME: ${{ matrix.runtime || 'com.apple.CoreSimulator.SimRuntime.iOS-27-2' }}
         run: |
           if [[ -n "$APPLE_SIMULATOR" ]]; then
             devices=$(xcrun simctl list devices available --json)
-            simulator_id=$(jq -r --arg name "$APPLE_SIMULATOR" \
-              '[.devices[][] | select(.name == $name)][0].udid // empty' <<<"$devices")
+            simulator_id=$(jq -r --arg name "$APPLE_SIMULATOR" --arg runtime "$APPLE_SIMULATOR_RUNTIME" \
+              '[.devices[$runtime][]? | select(.name == $name)][0].udid // empty' <<<"$devices")
             if [[ -z "$simulator_id" ]]; then
-              echo "error: required simulator is unavailable: $APPLE_SIMULATOR" >&2
-              exit 1
+              device_types=$(xcrun simctl list devicetypes --json)
+              device_type=$(jq -r --arg name "$APPLE_SIMULATOR" \
+                '[.devicetypes[] | select(.name == $name)][0].identifier // empty' <<<"$device_types")
+              if [[ -z "$device_type" ]]; then
+                echo "error: required simulator type is unavailable: $APPLE_SIMULATOR" >&2
+                exit 1
+              fi
+              simulator_id=$(xcrun simctl create "$APPLE_SIMULATOR" "$device_type" "$APPLE_SIMULATOR_RUNTIME")
             fi
             xcrun simctl bootstatus "$simulator_id" -b
             APPLE_DESTINATION="platform=iOS Simulator,id=$simulator_id"
@@ -155,8 +182,16 @@ jobs:
           APPLE_SCHEME: ${{ matrix.scheme }}
           APPLE_TARGET: ${{ matrix.target }}
           APPLE_TEST_TARGETS: ${{ matrix.tests }}
+          APPLE_UI_SCOPE: ${{ inputs.apple_ui_scope || 'all' }}
           APPLE_DESTINATION: ${{ steps.destination.outputs.destination }}
         run: |
+          case "$APPLE_UI_SCOPE" in
+            all|regressions) ;;
+            *)
+              echo "error: unsupported Apple UI scope: $APPLE_UI_SCOPE" >&2
+              exit 1
+              ;;
+          esac
           arguments=(
             -project mobile/ios/BruTV/BruTV.xcodeproj
             -scheme "$APPLE_SCHEME"
@@ -167,7 +202,14 @@ jobs:
           if [[ -n "$APPLE_TEST_TARGETS" ]]; then
             read -r -a test_targets <<<"$APPLE_TEST_TARGETS"
             for test_target in "${test_targets[@]}"; do
-              arguments+=("-only-testing:$test_target")
+              if [[ "$test_target" == BruTVUITests && "$APPLE_UI_SCOPE" == regressions ]]; then
+                arguments+=(
+                  -only-testing:BruTVUITests/BruTVUITests/testLiveRewindSettingPersistsAcrossLaunches
+                  -only-testing:BruTVUITests/BruTVUITests/testLogoutReturnsToLoginScreen
+                )
+              else
+                arguments+=("-only-testing:$test_target")
+              fi
             done
             arguments+=(-parallel-testing-enabled NO)
           fi

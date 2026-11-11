@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {MediaAdapter, MediaElement, PlaybackPosition, PlaybackSession, PlaybackStatus, PlaybackTimeline} from '../src/media/PlaybackSession';
 import {RecordingFallback} from '../src/media/RecordingFallback';
+import {SystemMediaSession} from '../src/media/SystemMediaSession';
 
 class FakeMedia implements MediaElement {
   currentTime = 0; duration = 100; paused = true;
@@ -74,6 +75,69 @@ test('seek clamps VOD range and skips live infinite-duration streams', async () 
   session.seek(150); assert.equal(media.currentTime, 100);
   media.duration = Infinity; session.seek(-10); assert.equal(media.currentTime, 100);
   await session.close();
+});
+
+test('explicit pause and play are idempotent and preserve pause requested during initialization', async () => {
+  const media = new FakeMedia();
+  let initialize!: () => void;
+  media.initializeGate = new Promise(resolve => {initialize = resolve;});
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}}), () => {});
+  session.surfaceCreated('screen');
+  const started = session.start('https://example.test/video.mp4');
+  await session.pause(); await session.pause();
+  initialize(); await started;
+  assert.equal(media.plays, 0);
+  assert.equal(media.paused, true);
+  await session.play(); await session.play();
+  assert.equal(media.plays, 1);
+  await session.pause(); await session.pause();
+  assert.equal(media.paused, true);
+  media.paused = false;
+  await session.pause();
+  assert.equal(media.paused, true);
+  await session.close();
+});
+
+test('system media controls expose the real seek window, preserve paused seek and clear exited sessions', async () => {
+  const media = new FakeMedia();
+  const range: PlaybackTimeline = {start: 20, end: 100, live: true, liveTarget: 95};
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}, timeline: () => range}), () => {});
+  session.surfaceCreated('screen'); await session.start('https://example.test/live.m3u8');
+  media.currentTime = 50;
+  let states: unknown[] = [];
+  let exits = 0;
+  const controls = new SystemMediaSession(session, {id: 'live:1', kind: 'live', name: 'Channel', group: ''}, () => {exits++;},
+    {updateMediaSessionStates: value => {states = value;}});
+  controls.update('playing', {...range, position: 50, paused: false, expired: false});
+  const [state] = await controls.handler.handleGetSessionState();
+  assert.equal(state.playbackState.playbackStatus, 'PLAYING');
+  assert.equal(state.mediaInfo?.seekRangeStart?.seconds, 20);
+  assert.equal(state.mediaInfo?.duration, undefined);
+  assert.equal(state.capabilities.actions.some(action => action.name === 'SEEK'), true);
+  await controls.handler.handlePause();
+  await controls.handler.handleSeek({seconds: 73, nanoseconds: 500000000});
+  assert.equal(media.currentTime, 73.5);
+  assert.equal(media.paused, true);
+  await assert.rejects(controls.handler.handleSeek({seconds: 101, nanoseconds: 0}), {name: 'SeekOutOfRangeError'});
+  await assert.rejects(controls.handler.handleSeek({seconds: 25, nanoseconds: -1}), {name: 'InvalidArgumentError'});
+  await assert.rejects(controls.handler.handlePlay({id: 9}), {name: 'InvalidStateError'});
+  await assert.rejects(controls.handler.handleNext(), {name: 'NotAllowedError'});
+  await controls.handler.handleStop();
+  assert.equal(exits, 1); assert.equal(media.releases, 1); assert.deepEqual(states, []);
+  assert.deepEqual(await controls.handler.handleGetSessionState(), []);
+  await assert.rejects(controls.handler.handlePlay(), {name: 'InvalidStateError'});
+});
+
+test('a failed system state update does not prevent decoder release or restart closed playback', async () => {
+  const media = new FakeMedia();
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}}), () => {});
+  await session.start('https://example.test/video.mp4');
+  const controls = new SystemMediaSession(session, {id: 'movie:1', kind: 'movie', name: 'Movie', group: ''}, () => {},
+    {updateMediaSessionStates: () => {throw new Error('Service stopped');}});
+  controls.update('playing');
+  await controls.handler.handleStop();
+  assert.equal(media.releases, 1);
+  await assert.rejects(controls.handler.handlePlay(), {name: 'InvalidStateError'});
 });
 
 test('live seek uses the finite adapter range, preserves pause and Go live resumes at normal holdback', async () => {

@@ -462,20 +462,20 @@ def bundle_info(
         raise SigningError(
             "release bundle UIDeviceFamily does not cover its intended devices"
         )
+    privacy = read_plist(bundle / "PrivacyInfo.xcprivacy")
+    if "NSPrivacyTracking" not in privacy:
+        raise SigningError("PrivacyInfo.xcprivacy is missing NSPrivacyTracking")
     if extension:
         if info.get("CFBundlePackageType") != "XPC!":
             raise SigningError("TopShelf extension must have CFBundlePackageType XPC!")
         point = info.get("NSExtension", {}).get("NSExtensionPointIdentifier")
-        if point != "com.apple.tv-services":
+        if point != "com.apple.tv-top-shelf":
             raise SigningError(
                 "TopShelf extension has an invalid NSExtensionPointIdentifier"
             )
         return info
     if info.get("CFBundlePackageType") != "APPL":
         raise SigningError("release bundle CFBundlePackageType must be APPL")
-    privacy = read_plist(bundle / "PrivacyInfo.xcprivacy")
-    if "NSPrivacyTracking" not in privacy:
-        raise SigningError("PrivacyInfo.xcprivacy is missing NSPrivacyTracking")
     if platform == "ios":
         for field in ("CFBundleIcons", "CFBundleIcons~ipad"):
             icon = info.get(field, {}).get("CFBundlePrimaryIcon", {})
@@ -490,12 +490,22 @@ def bundle_info(
                 raise SigningError(
                     f"release bundle is missing packaged icons for {field}"
                 )
-    elif not (bundle / "Assets.car").is_file() or not info.get("CFBundleIcons", {}).get(
-        "CFBundlePrimaryIcon", {}
-    ).get("CFBundleIconName"):
-        raise SigningError(
-            "tvOS release requires a compiled App Icon & Top Shelf asset catalog (Assets.car)"
-        )
+    else:
+        primary_icon = info.get("CFBundleIcons", {}).get("CFBundlePrimaryIcon")
+        top_shelf = info.get("TVTopShelfImage", {})
+        if (
+            not (bundle / "Assets.car").is_file()
+            or not isinstance(primary_icon, str)
+            or not primary_icon
+            or not isinstance(top_shelf, dict)
+            or any(
+                not isinstance(top_shelf.get(role), str) or not top_shelf[role]
+                for role in ("TVTopShelfPrimaryImage", "TVTopShelfPrimaryImageWide")
+            )
+        ):
+            raise SigningError(
+                "tvOS release requires compiled app icon and Top Shelf assets with their plist roles"
+            )
     return info
 
 

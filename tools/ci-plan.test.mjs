@@ -82,6 +82,7 @@ test('manual scopes select their named platform and full selects all six Apple r
   assert.equal(full.apple_matrix.include[1].simulator, 'iPhone 18 Pro');
   assert.equal(full.apple_matrix.include[2].simulator, 'iPad Pro 13-inch (M5)');
   assert.equal(full.apple_matrix.include[3].simulator, 'iPhone Duo');
+  assert.equal(full.apple_matrix.include[3].runtime, 'com.apple.CoreSimulator.SimRuntime.iOS-27-1');
   assert.equal(full.apple_matrix.include[1].tests, 'BruTVUITests');
   assert.throws(() => planChangedPaths([], { scope: 'invalid' }), /Unknown CI scope/);
 });

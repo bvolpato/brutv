@@ -7,10 +7,13 @@ import PackageDescription
 // Keep the default package portable so Linux core tests do not import UIKit.
 let package: Package
 if ProcessInfo.processInfo.environment["BRUTV_XTOOL"] == "1" {
+    let isTVOS = ProcessInfo.processInfo.environment["BRUTV_XTOOL_PLATFORM"] == "tvos"
     package = Package(
         name: "BruTV",
         platforms: [.iOS(.v17), .tvOS(.v17), .macCatalyst(.v17), .macOS(.v14)],
-        products: [.library(name: "BruTV", targets: ["BruTV"])],
+        products: [.library(name: "BruTV", targets: ["BruTV"])] + (isTVOS ? [
+            .library(name: "BruTVTopShelf", targets: ["BruTVTopShelf"])
+        ] : []),
         targets: [
             .target(
                 name: "BruTV",
@@ -20,7 +23,16 @@ if ProcessInfo.processInfo.environment["BRUTV_XTOOL"] == "1" {
                     "Info.plist", "Info-tvOS.plist", "Resources",
                 ]
             )
-        ],
+        ] + (isTVOS ? [
+            .target(
+                name: "BruTVTopShelf",
+                path: "BruTVTopShelf",
+                exclude: ["Info.plist", "BruTVTopShelf.entitlements"],
+                swiftSettings: [.define("TOPSHELF_EXTENSION")],
+                // The extension host discovers its principal class by name.
+                linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
+            )
+        ] : []),
         swiftLanguageVersions: [.v5]
     )
 } else {
@@ -39,6 +51,7 @@ if ProcessInfo.processInfo.environment["BRUTV_XTOOL"] == "1" {
                     "Info.plist", "Resources", "Views",
                     "Services/AccountStore.swift", "Services/FavoritesStore.swift",
                     "Services/HLSBufferEngine.swift", "Services/PlaybackManager.swift",
+                    "Services/PlaybackDiagnosticsStore.swift",
                     "Services/LiveTimeshiftServer.swift",
                     "Services/LocalizationManager.swift",
                 ],
@@ -48,6 +61,7 @@ if ProcessInfo.processInfo.environment["BRUTV_XTOOL"] == "1" {
                     "Services/LoginLink.swift", "Services/M3UPlaylistParser.swift",
                     "Services/XtreamCodesClient.swift",
                     "Services/SourceLibraryState.swift", "Services/PlaybackPolicy.swift",
+                    "Services/PlaybackDiagnostics.swift",
                     "Services/LiveTimeshift.swift",
                     "Services/MPEGTSRelay.swift", "Services/TopShelfStore.swift",
                 ]
@@ -66,6 +80,7 @@ if ProcessInfo.processInfo.environment["BRUTV_XTOOL"] == "1" {
                     "SourceLibraryStateTests.swift", "PlaybackPolicyTests.swift",
                     "LiveTimeshiftTests.swift",
                     "MPEGTSRelayTests.swift", "TopShelfStoreTests.swift",
+                    "PlaybackDiagnosticsTests.swift",
                 ]
             ),
         ],

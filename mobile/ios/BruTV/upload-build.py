@@ -6,7 +6,7 @@
 #     "PyJWT[crypto]>=2.10,<3",
 # ]
 # ///
-"""Upload a signed Apple app package and wait for App Store Connect processing.
+"""Upload a signed Apple app package and optionally distribute it to TestFlight.
 
 API contract: https://developer.apple.com/documentation/appstoreconnectapi/post-v1-builduploads
 Apple describes this platform-independent flow in WWDC25 session 324.
@@ -26,7 +26,7 @@ import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import jwt
 import requests
@@ -38,6 +38,22 @@ API_BASE = "https://api.appstoreconnect.apple.com/v1"
 
 class UploadError(Exception):
     """An actionable packaging, upload, or processing failure."""
+
+
+class APIError(UploadError):
+    """An API rejection with its structured status and error codes preserved."""
+
+    def __init__(self, status: int, errors: list[dict]):
+        self.status = status
+        self.codes = {
+            item["code"]
+            for item in errors
+            if isinstance(item, dict) and isinstance(item.get("code"), str)
+        }
+        super().__init__(
+            f"App Store Connect HTTP {status}: "
+            + (details(errors) or "No API error details returned.")
+        )
 
 
 def inspect_ipa(path: Path, platform: str = "IOS") -> dict[str, str]:
@@ -293,11 +309,40 @@ class BuildUploader:
         # Upload URLs have their own credentials. Never send API tokens or netrc credentials to them.
         self.transfer.trust_env = False
 
-    def request(self, method: str, path: str, *, body=None) -> dict:
+    def api_url(self, path: str) -> str:
+        try:
+            url = path if urlsplit(path).scheme else self.api_base + path
+            base, target = urlsplit(self.api_base), urlsplit(url)
+        except ValueError as error:
+            raise UploadError(
+                "App Store Connect returned an invalid API URL."
+            ) from error
+        if (
+            (target.scheme, target.netloc) != (base.scheme, base.netloc)
+            or target.username
+            or target.password
+            or target.fragment
+            or not target.path.startswith(base.path + "/")
+            or any(part in (".", "..") for part in target.path.split("/"))
+        ):
+            raise UploadError("App Store Connect returned an unsafe API URL.")
+        return url
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body=None,
+        collection: bool = False,
+        allow_no_content: bool = False,
+        allow_null: bool = False,
+    ) -> dict:
+        url = self.api_url(path)
         try:
             response = self.api.request(
                 method,
-                self.api_base + path,
+                url,
                 json=body,
                 headers={
                     "Authorization": "Bearer " + self.token(),
@@ -311,6 +356,8 @@ class BuildUploader:
                 f"App Store Connect {method} {path.split('?')[0]} failed ({type(error).__name__}). "
                 "A write may have succeeded; check App Store Connect before retrying."
             ) from error
+        if response.status_code == 204 and allow_no_content:
+            return {}
         try:
             payload = response.json()
         except ValueError as error:
@@ -320,17 +367,524 @@ class BuildUploader:
         if not isinstance(payload, dict):
             raise UploadError("App Store Connect returned an invalid JSON response.")
         if not 200 <= response.status_code < 300:
-            message = (
-                details(payload.get("errors", [])) or "No API error details returned."
+            errors = payload.get("errors", [])
+            raise APIError(
+                response.status_code, errors if isinstance(errors, list) else []
             )
-            raise UploadError(
-                f"App Store Connect HTTP {response.status_code}: {message}"
-            )
-        if not isinstance(payload.get("data"), dict):
+        data = payload.get("data")
+        if allow_null and "data" in payload and data is None:
+            return payload
+        if not isinstance(data, list if collection else dict) or (
+            collection and any(not isinstance(item, dict) for item in data)
+        ):
             raise UploadError(
                 "App Store Connect returned an invalid resource response."
             )
         return payload
+
+    def collection(self, path: str) -> list[dict]:
+        items = []
+        seen = set()
+        url = self.api_url(path)
+        endpoint = urlsplit(url).path
+        while url:
+            if url in seen or len(seen) >= 1000:
+                raise UploadError(
+                    "App Store Connect returned cyclic or excessive pagination."
+                )
+            seen.add(url)
+            payload = self.request("GET", url, collection=True)
+            items.extend(payload["data"])
+            links = payload.get("links", {})
+            if not isinstance(links, dict):
+                raise UploadError(
+                    "App Store Connect returned invalid pagination links."
+                )
+            next_page = links.get("next")
+            if next_page is None:
+                break
+            if not isinstance(next_page, str) or not next_page:
+                raise UploadError(
+                    "App Store Connect returned an invalid pagination link."
+                )
+            url = self.api_url(urljoin(url, next_page))
+            if urlsplit(url).path != endpoint:
+                raise UploadError(
+                    "App Store Connect pagination changed the requested endpoint."
+                )
+        return items
+
+    @staticmethod
+    def resource_id(resource: dict, kind: str) -> str:
+        identity = resource.get("id")
+        if (
+            resource.get("type") != kind
+            or not isinstance(identity, str)
+            or not identity
+        ):
+            raise UploadError(f"App Store Connect returned an invalid {kind} resource.")
+        return identity
+
+    def update_test_notes(self, build_id: str, notes: str) -> None:
+        localizations = self.collection(
+            "/builds/" + quote(build_id, safe="") + "/betaBuildLocalizations"
+        )
+        english = [
+            item
+            for item in localizations
+            if item.get("attributes", {}).get("locale") == "en-US"
+        ]
+        if len(english) > 1:
+            raise UploadError(
+                "App Store Connect returned multiple en-US build localizations."
+            )
+        if english:
+            localization = english[0]
+            localization_id = self.resource_id(localization, "betaBuildLocalizations")
+            if localization.get("attributes", {}).get("whatsNew") == notes:
+                return
+            self.request(
+                "PATCH",
+                "/betaBuildLocalizations/" + quote(localization_id, safe=""),
+                body={
+                    "data": {
+                        "type": "betaBuildLocalizations",
+                        "id": localization_id,
+                        "attributes": {"whatsNew": notes},
+                    }
+                },
+            )
+        else:
+            self.request(
+                "POST",
+                "/betaBuildLocalizations",
+                body={
+                    "data": {
+                        "type": "betaBuildLocalizations",
+                        "attributes": {"locale": "en-US", "whatsNew": notes},
+                        "relationships": {
+                            "build": {"data": {"type": "builds", "id": build_id}}
+                        },
+                    }
+                },
+            )
+
+    def distribute(
+        self,
+        build_id: str,
+        app_id: str,
+        group_name: str,
+        *,
+        whats_new: str | None = None,
+        testers: list[str] | None = None,
+        poll_interval: float = 15,
+        timeout: float = 1800,
+    ) -> None:
+        """Distribute a valid build to an existing internal group and verify availability."""
+        emails = list(dict.fromkeys(email.casefold() for email in (testers or [])))
+        if any(not re.fullmatch(r"[^@\s]+@[^@\s]+", email) for email in emails):
+            raise UploadError(
+                "Each --tester must be an email address without whitespace."
+            )
+        build_path = "/builds/" + quote(build_id, safe="")
+        build = self.request("GET", build_path)["data"]
+        if self.resource_id(build, "builds") != build_id:
+            raise UploadError("App Store Connect returned a different build.")
+        attributes = build.get("attributes", {})
+        if (
+            attributes.get("processingState") != "VALID"
+            or attributes.get("expired") is not False
+        ):
+            raise UploadError("TestFlight requires a VALID, nonexpired build.")
+        app = self.request("GET", build_path + "/app")["data"]
+        if self.resource_id(app, "apps") != app_id:
+            raise UploadError(
+                "Build does not belong to the selected App Store Connect app."
+            )
+        named_groups = [
+            group
+            for group in self.collection(
+                "/apps/" + quote(app_id, safe="") + "/betaGroups"
+            )
+            if group.get("attributes", {}).get("name") == group_name
+        ]
+        groups = [
+            group
+            for group in named_groups
+            if group.get("attributes", {}).get("isInternalGroup") is True
+        ]
+        if named_groups and not groups:
+            raise UploadError(
+                "The selected TestFlight group must be an internal group."
+            )
+        if len(groups) != 1:
+            raise UploadError(
+                "Select exactly one existing TestFlight group by its exact name."
+            )
+        group = groups[0]
+        group_id = self.resource_id(group, "betaGroups")
+        if group.get("attributes", {}).get("isInternalGroup") is not True:
+            raise UploadError(
+                "The selected TestFlight group must be an internal group."
+            )
+        group_path = "/betaGroups/" + quote(group_id, safe="") + "/relationships/"
+        detail = self.request("GET", build_path + "/buildBetaDetail")["data"]
+        state = detail.get("attributes", {}).get("internalBuildState")
+        if state == "MISSING_EXPORT_COMPLIANCE":
+            raise UploadError(
+                "Internal TestFlight is blocked by MISSING_EXPORT_COMPLIANCE. "
+                "Complete the build's export-compliance questions in App Store Connect, "
+                "then resume distribution with --build-id instead of uploading again."
+            )
+        build_ids = {
+            self.resource_id(item, "builds")
+            for item in self.collection(group_path + "builds")
+        }
+        tester_ids = (
+            {
+                self.resource_id(item, "betaTesters")
+                for item in self.collection(group_path + "betaTesters")
+            }
+            if emails
+            else set()
+        )
+        resolved = []
+        for email in emails:
+            matches = [
+                item
+                for item in self.collection(
+                    "/betaTesters?"
+                    + urlencode({"filter[email]": email, "filter[apps]": app_id})
+                )
+                if item.get("attributes", {}).get("email", "").casefold() == email
+            ]
+            if len(matches) > 1:
+                raise UploadError(
+                    "App Store Connect returned multiple testers for an email address."
+                )
+            resolved.append(
+                (
+                    email,
+                    self.resource_id(matches[0], "betaTesters") if matches else None,
+                )
+            )
+        # Complete build ownership and group checks before any TestFlight write.
+        if whats_new is not None:
+            self.update_test_notes(build_id, whats_new)
+        if build_id not in build_ids:
+            self.request(
+                "POST",
+                group_path + "builds",
+                body={"data": [{"type": "builds", "id": build_id}]},
+                allow_no_content=True,
+            )
+        requested_ids = set()
+        for email, tester_id in resolved:
+            if tester_id is None:
+                created = self.request(
+                    "POST",
+                    "/betaTesters",
+                    body={
+                        "data": {
+                            "type": "betaTesters",
+                            "attributes": {"email": email},
+                            "relationships": {
+                                "betaGroups": {
+                                    "data": [{"type": "betaGroups", "id": group_id}]
+                                }
+                            },
+                        }
+                    },
+                )["data"]
+                tester_id = self.resource_id(created, "betaTesters")
+            elif tester_id not in tester_ids:
+                self.request(
+                    "POST",
+                    group_path + "betaTesters",
+                    body={"data": [{"type": "betaTesters", "id": tester_id}]},
+                    allow_no_content=True,
+                )
+            requested_ids.add(tester_id)
+            try:
+                self.request(
+                    "POST",
+                    "/betaTesterInvitations",
+                    body={
+                        "data": {
+                            "type": "betaTesterInvitations",
+                            "relationships": {
+                                "app": {"data": {"type": "apps", "id": app_id}},
+                                "betaTester": {
+                                    "data": {"type": "betaTesters", "id": tester_id}
+                                },
+                            },
+                        }
+                    },
+                )
+            except APIError as error:
+                if error.status != 409 or error.codes != {
+                    "STATE_ERROR.TESTER_INVITE.ALREADY_ACCEPTED"
+                }:
+                    raise
+                print(
+                    "A requested tester has already accepted the app invitation.",
+                    flush=True,
+                )
+        deadline = time.monotonic() + timeout
+        state = None
+        while True:
+            assigned = {
+                self.resource_id(item, "builds")
+                for item in self.collection(group_path + "builds")
+            }
+            members = (
+                {
+                    self.resource_id(item, "betaTesters")
+                    for item in self.collection(group_path + "betaTesters")
+                }
+                if requested_ids
+                else set()
+            )
+            detail = self.request("GET", build_path + "/buildBetaDetail")["data"]
+            state = detail.get("attributes", {}).get("internalBuildState")
+            if (
+                build_id in assigned
+                and requested_ids <= members
+                and state == "IN_BETA_TESTING"
+            ):
+                print(
+                    f"Build {build_id} is available in TestFlight group {group_name!r}.",
+                    flush=True,
+                )
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise UploadError(
+                    f"Timed out verifying TestFlight group membership and availability; build {build_id}, internalBuildState {state!r}. Resume with --build-id instead of uploading again."
+                )
+            time.sleep(min(poll_interval, remaining))
+
+    def beta_review(self, build_path: str) -> dict | None:
+        try:
+            review = self.request(
+                "GET", build_path + "/betaAppReviewSubmission", allow_null=True
+            )["data"]
+        except APIError as error:
+            if error.status != 404:
+                raise
+            return None
+        if review is not None:
+            self.resource_id(review, "betaAppReviewSubmissions")
+            state = review.get("attributes", {}).get("betaReviewState")
+            if state not in ("WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED", "REJECTED"):
+                raise UploadError(f"Unknown TestFlight beta review state: {state!r}.")
+        return review
+
+    def check_beta_review_fields(
+        self, app_id: str, build_path: str, whats_new: str | None
+    ) -> None:
+        try:
+            detail = self.request(
+                "GET",
+                "/apps/" + quote(app_id, safe="") + "/betaAppReviewDetail",
+                allow_null=True,
+            )["data"]
+        except APIError as error:
+            if error.status != 404:
+                raise
+            detail = None
+        attributes = detail.get("attributes", {}) if detail else {}
+        missing = [
+            field
+            for field in (
+                "contactFirstName",
+                "contactLastName",
+                "contactPhone",
+                "contactEmail",
+            )
+            if not isinstance(attributes.get(field), str)
+            or not attributes[field].strip()
+        ]
+        if type(attributes.get("demoAccountRequired")) is not bool:
+            missing.append("demoAccountRequired")
+        elif attributes["demoAccountRequired"]:
+            missing.extend(
+                field
+                for field in ("demoAccountName", "demoAccountPassword")
+                if not isinstance(attributes.get(field), str)
+                or not attributes[field].strip()
+            )
+        if whats_new is None:
+            notes = self.collection(build_path + "/betaBuildLocalizations")
+            has_notes = any(
+                isinstance(item.get("attributes", {}).get("whatsNew"), str)
+                and item["attributes"]["whatsNew"].strip()
+                for item in notes
+            )
+        else:
+            has_notes = bool(whats_new.strip())
+        if not has_notes:
+            missing.append("betaBuildLocalizations.whatsNew")
+        if missing:
+            raise UploadError(
+                "Complete these TestFlight beta review fields in App Store Connect before submitting: "
+                + ", ".join(missing)
+                + "."
+            )
+
+    def distribute_external(
+        self,
+        build_id: str,
+        app_id: str,
+        group_name: str,
+        *,
+        whats_new: str | None = None,
+        poll_interval: float = 15,
+        timeout: float = 1800,
+    ) -> None:
+        """Submit beta review when needed and verify an existing external group's build."""
+        build_path = "/builds/" + quote(build_id, safe="")
+        build = self.request("GET", build_path)["data"]
+        if self.resource_id(build, "builds") != build_id:
+            raise UploadError("App Store Connect returned a different build.")
+        attributes = build.get("attributes", {})
+        if (
+            attributes.get("processingState") != "VALID"
+            or attributes.get("expired") is not False
+        ):
+            raise UploadError("TestFlight requires a VALID, nonexpired build.")
+        if attributes.get("buildAudienceType") != "APP_STORE_ELIGIBLE":
+            raise UploadError(
+                "External TestFlight requires buildAudienceType APP_STORE_ELIGIBLE. "
+                "An INTERNAL_ONLY build cannot be promoted; upload a build eligible for external testing."
+            )
+        app = self.request("GET", build_path + "/app")["data"]
+        if self.resource_id(app, "apps") != app_id:
+            raise UploadError(
+                "Build does not belong to the selected App Store Connect app."
+            )
+        groups = [
+            group
+            for group in self.collection(
+                "/apps/" + quote(app_id, safe="") + "/betaGroups"
+            )
+            if group.get("attributes", {}).get("name") == group_name
+            and group.get("attributes", {}).get("isInternalGroup") is False
+        ]
+        if len(groups) != 1:
+            raise UploadError(
+                "Select exactly one existing external TestFlight group by its exact name."
+            )
+        group_id = self.resource_id(groups[0], "betaGroups")
+        group_builds = (
+            "/betaGroups/" + quote(group_id, safe="") + "/relationships/builds"
+        )
+        assigned = {
+            self.resource_id(item, "builds") for item in self.collection(group_builds)
+        }
+        detail = self.request("GET", build_path + "/buildBetaDetail")["data"]
+        state = detail.get("attributes", {}).get("externalBuildState")
+        review = self.beta_review(build_path)
+        review_state = (
+            review.get("attributes", {}).get("betaReviewState") if review else None
+        )
+        if state == "BETA_REJECTED" or review_state == "REJECTED":
+            raise UploadError(
+                "TestFlight beta review was rejected. Review Apple's feedback in App Store Connect; human review is required before another submission."
+            )
+        if (
+            state == "READY_FOR_BETA_TESTING"
+            and detail.get("attributes", {}).get("autoNotifyEnabled") is False
+        ):
+            raise UploadError(
+                "This build is ready for external testing with automatic tester notifications disabled. "
+                "Choose Start Testing for the build in App Store Connect, then resume with --build-id. "
+                "The helper will not override this hold or notify testers."
+            )
+        ready_states = ("BETA_APPROVED", "READY_FOR_BETA_TESTING", "IN_BETA_TESTING")
+        pending_states = ("WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW")
+        if state not in ready_states + pending_states + ("READY_FOR_BETA_SUBMISSION",):
+            raise UploadError(
+                f"Build is not ready for external TestFlight distribution: externalBuildState {state!r}. Resolve this in App Store Connect, then resume with --build-id."
+            )
+        submit = review is None and state == "READY_FOR_BETA_SUBMISSION"
+        if submit:
+            self.check_beta_review_fields(app_id, build_path, whats_new)
+        if whats_new is not None:
+            self.update_test_notes(build_id, whats_new)
+        if submit:
+            review = self.request(
+                "POST",
+                "/betaAppReviewSubmissions",
+                body={
+                    "data": {
+                        "type": "betaAppReviewSubmissions",
+                        "relationships": {
+                            "build": {"data": {"type": "builds", "id": build_id}}
+                        },
+                    }
+                },
+            )["data"]
+            self.resource_id(review, "betaAppReviewSubmissions")
+            print(f"Submitted TestFlight beta review for build {build_id}.", flush=True)
+        deadline = time.monotonic() + timeout
+        previous = None
+        attached = False
+        while True:
+            detail = self.request("GET", build_path + "/buildBetaDetail")["data"]
+            state = detail.get("attributes", {}).get("externalBuildState")
+            review = self.beta_review(build_path)
+            review_state = (
+                review.get("attributes", {}).get("betaReviewState") if review else None
+            )
+            if state == "BETA_REJECTED" or review_state == "REJECTED":
+                raise UploadError(
+                    "TestFlight beta review was rejected. Review Apple's feedback in App Store Connect; human review is required before another submission."
+                )
+            if (
+                state == "READY_FOR_BETA_TESTING"
+                and detail.get("attributes", {}).get("autoNotifyEnabled") is False
+            ):
+                raise UploadError(
+                    "This build is ready for external testing with automatic tester notifications disabled. "
+                    "Choose Start Testing for the build in App Store Connect, then resume with --build-id. "
+                    "The helper will not override this hold or notify testers."
+                )
+            if (state, review_state) != previous:
+                print(
+                    f"External TestFlight state: {state}; beta review state: {review_state}.",
+                    flush=True,
+                )
+                previous = (state, review_state)
+            if (
+                build_id not in assigned
+                and not attached
+                and state in ready_states
+                and review_state not in ("WAITING_FOR_REVIEW", "IN_REVIEW")
+            ):
+                self.request(
+                    "POST",
+                    group_builds,
+                    body={"data": [{"type": "builds", "id": build_id}]},
+                    allow_no_content=True,
+                )
+                attached = True
+            assigned = {
+                self.resource_id(item, "builds")
+                for item in self.collection(group_builds)
+            }
+            if build_id in assigned and state == "IN_BETA_TESTING":
+                print(
+                    f"Build {build_id} is available in external TestFlight group {group_name!r}.",
+                    flush=True,
+                )
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise UploadError(
+                    f"External TestFlight distribution is still pending; build {build_id}, externalBuildState {state!r}, betaReviewState {review_state!r}. Resume with --build-id; the build is not confirmed available to this group."
+                )
+            time.sleep(min(poll_interval, remaining))
 
     def operations(self, operations: list[dict], size: int) -> list[dict]:
         if not isinstance(operations, list) or not operations:
@@ -616,6 +1170,26 @@ def main() -> int:
     parser.add_argument(
         "--app-id", default=os.environ.get("IOS_APP_STORE_ID", "6821989154")
     )
+    parser.add_argument(
+        "--build-id",
+        help="Distribute an existing processed build without uploading a package",
+    )
+    distribution = parser.add_mutually_exclusive_group()
+    distribution.add_argument(
+        "--testflight-group", help="Exact name of an existing internal TestFlight group"
+    )
+    distribution.add_argument(
+        "--external-testflight-group",
+        help="Exact name of an existing external TestFlight group; submit beta review when needed",
+    )
+    parser.add_argument("--whats-new", help="Set en-US TestFlight notes for this build")
+    parser.add_argument(
+        "--tester",
+        action="append",
+        default=[],
+        metavar="EMAIL",
+        help="Add and invite a tester to the internal group (repeatable)",
+    )
     parser.add_argument("--platform", choices=("IOS", "TV_OS", "MAC_OS"), default="IOS")
     parser.add_argument(
         "--bundle-id", help="Bundle ID from the signed app (required for MAC_OS)"
@@ -652,8 +1226,39 @@ def main() -> int:
         help="Validate API credentials and app ID without a package or network requests",
     )
     args = parser.parse_args()
-    if not args.preflight and args.package is None:
-        parser.error("package is required unless --preflight is selected")
+    if args.build_id is not None and not args.build_id.strip():
+        parser.error("--build-id must not be empty")
+    selected_group = args.testflight_group or args.external_testflight_group
+    if any(
+        group is not None and not group.strip()
+        for group in (
+            args.testflight_group,
+            args.external_testflight_group,
+        )
+    ):
+        parser.error("TestFlight group names must not be empty")
+    if args.external_testflight_group and args.tester:
+        parser.error("--tester is only supported with an internal --testflight-group")
+    if any(not re.fullmatch(r"[^@\s]+@[^@\s]+", email) for email in args.tester):
+        parser.error("each --tester must be an email address without whitespace")
+    if args.build_id and (
+        args.package is not None or args.preflight or args.validate_only
+    ):
+        parser.error(
+            "--build-id cannot be combined with a package, --preflight, or --validate-only"
+        )
+    if args.build_id and not selected_group:
+        parser.error(
+            "--build-id requires --testflight-group or --external-testflight-group"
+        )
+    if (args.whats_new is not None or args.tester) and not selected_group:
+        parser.error("--whats-new and --tester require a TestFlight group")
+    if selected_group and (args.preflight or args.validate_only):
+        parser.error(
+            "TestFlight distribution cannot be combined with --preflight or --validate-only"
+        )
+    if not args.preflight and not args.build_id and args.package is None:
+        parser.error("package is required unless --preflight or --build-id is selected")
     if not re.fullmatch(r"[1-9][0-9]*", args.app_id):
         parser.error("--app-id must be a positive App Store Connect numeric app ID")
     if not all(
@@ -678,7 +1283,8 @@ def main() -> int:
                 f"Validated {args.platform} package structure: {metadata['bundle_id']} {metadata['version']} ({metadata['build']})."
             )
         else:
-            BuildUploader(Token.from_environment()).upload(
+            uploader = BuildUploader(Token.from_environment())
+            build_id = args.build_id or uploader.upload(
                 args.package,
                 args.app_id,
                 platform=args.platform,
@@ -686,6 +1292,25 @@ def main() -> int:
                 poll_interval=args.poll_interval,
                 timeout=args.timeout,
             )
+            if args.testflight_group:
+                uploader.distribute(
+                    build_id,
+                    args.app_id,
+                    args.testflight_group,
+                    whats_new=args.whats_new,
+                    testers=args.tester,
+                    poll_interval=args.poll_interval,
+                    timeout=args.timeout,
+                )
+            elif args.external_testflight_group:
+                uploader.distribute_external(
+                    build_id,
+                    args.app_id,
+                    args.external_testflight_group,
+                    whats_new=args.whats_new,
+                    poll_interval=args.poll_interval,
+                    timeout=args.timeout,
+                )
     except (UploadError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
