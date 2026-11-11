@@ -27,6 +27,7 @@ mobile/ios/BruTV/**/__pycache__/
 *.dSYM
 
 # Signing secrets (never commit certificates or profiles)
+/.env
 *.p12
 *.p8
 *.cer

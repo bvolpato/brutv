@@ -1,12 +1,12 @@
 {
-  "originHash" : "36037d6e5c035a5992bc42cd6030dced38fe8b3278a5eb496f9a3171b71be7fd",
+  "originHash" : "cea8ae4875b5bac8513d15efa2d440b805dc6250fc47e748f74ad6bee416cb7b",
   "pins" : [
     {
       "identity" : "assetkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/bvolpato/AssetKit",
       "state" : {
-        "revision" : "cc948c71491a78183a08759dc07d4faef07ecad4"
+        "revision" : "eb6331f1a3f3ad40670d8e430f605bd884cc0203"
       }
     },
     {
