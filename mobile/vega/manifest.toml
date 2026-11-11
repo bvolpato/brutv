@@ -10,8 +10,19 @@ icon = "@image/BruTV.png"
 [[components.interactive]]
 id = "com.bvolpato.brutv.main"
 runtime-module = "/com.amazon.kepler.keplerscript.runtime.loader_2@IKeplerScript_2_0"
-categories = ["com.amazon.category.main"]
+categories = ["com.amazon.category.main", "com.amazon.category.kepler.media"]
 launch-type = "singleton"
+
+[[extras]]
+key = "interface.provider"
+component-id = "com.bvolpato.brutv.main"
+
+[extras.value.application]
+[[extras.value.application.interface]]
+interface_name = "com.amazon.kepler.media.IMediaPlaybackServer"
+command_options = ["SkipForward", "SkipBackward"]
+attribute_options = []
+features = ["AdvancedSeek"]
 
 [wants]
 [[wants.service]]

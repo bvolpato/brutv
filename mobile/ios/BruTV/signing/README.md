@@ -14,10 +14,10 @@ Git ignores this folder's signing material, including private keys, certificates
 2. Run the release script:
 
 ```bash
-IOS_P12_PASSWORD='<p12-password>' ./mobile/ios/BruTV/release.sh --skip-simulator-build
+IOS_P12_PASSWORD='<p12-password>' ./mobile/ios/BruTV/release.sh --platform ios --skip-simulator-build
 ```
 
-The script reads the profile name and the team ID from the profile. To override them, set `IOS_PROFILE_NAME` and `IOS_TEAM_ID`.
+The script reads the profile name and the team ID from the profile. `IOS_TEAM_ID` can select the expected team. The default `--platform all` also requires the separate Catalyst, tvOS, and TopShelf distribution inputs listed in the release guide.
 
 On Linux, select iOS explicitly:
 
@@ -35,7 +35,7 @@ Provide the files as base64 values:
 export IOS_CERTIFICATE_BASE64="$(base64 -i ios_distribution.p12)"
 export IOS_PROVISIONING_PROFILE_BASE64="$(base64 -i BruTV_App_Store_Distribution.mobileprovision)"
 export IOS_P12_PASSWORD="<p12-password>"
-./mobile/ios/BruTV/release.sh
+./mobile/ios/BruTV/release.sh --platform ios
 ```
 
 On macOS, the script creates a temporary keychain and archives with Xcode. On Linux, add `--platform ios` to build and sign the IPA with xtool. Add `--upload` and the App Store Connect API key configuration from the release guide to deliver it and wait for processing.

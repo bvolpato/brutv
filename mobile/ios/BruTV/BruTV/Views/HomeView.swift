@@ -88,7 +88,8 @@ public struct HomeView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Image(systemName: "play.tv.fill")
+                    Image(systemName: NavigationSection.home.iconName)
+                        .symbolVariant(.fill)
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(
                             LinearGradient(
@@ -433,7 +434,8 @@ public struct HomeView: View {
     private var topRatedMoviesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "film.fill")
+                Image(systemName: NavigationSection.movies.iconName)
+                    .symbolVariant(.fill)
                     .foregroundColor(.yellow)
                     .font(.system(size: 15, weight: .semibold))
                 Text("Top Rated Movies".localized)
@@ -481,7 +483,8 @@ public struct HomeView: View {
     private var topRatedSeriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "play.tv.fill")
+                Image(systemName: NavigationSection.series.iconName)
+                    .symbolVariant(.fill)
                     .foregroundColor(Color(hex: "#A855F7"))
                     .font(.system(size: 15, weight: .semibold))
                 Text("Top Rated Series".localized)
@@ -797,7 +800,7 @@ public struct HomeView: View {
             group.addTask {
                 let allVOD = (try? await client.fetchVODStreams()) ?? []
                 let ratedMovies = allVOD
-                    .map { (movie: $0, score: parseRating($0.rating)) }
+                    .map { (movie: $0, score: Self.parseRating($0.rating)) }
                     .sorted { $0.score > $1.score }
                 let filteredRatedMovies = ratedMovies.filter { $0.score > 0 }.prefix(20).map(\.movie)
                 let topMovies = !filteredRatedMovies.isEmpty ? Array(filteredRatedMovies) : Array(allVOD.prefix(20))
@@ -814,7 +817,7 @@ public struct HomeView: View {
             group.addTask {
                 let allSeries = (try? await client.fetchSeries()) ?? []
                 let ratedSeries = allSeries
-                    .map { (series: $0, score: parseRating($0.rating)) }
+                    .map { (series: $0, score: Self.parseRating($0.rating)) }
                     .sorted { $0.score > $1.score }
                 let filteredRatedSeries = ratedSeries.filter { $0.score > 0 }.prefix(20).map(\.series)
                 let topSeries = !filteredRatedSeries.isEmpty ? Array(filteredRatedSeries) : Array(allSeries.prefix(20))
@@ -841,7 +844,7 @@ public struct HomeView: View {
         }
     }
 
-    private func parseRating(_ raw: String?) -> Double {
+    private nonisolated static func parseRating(_ raw: String?) -> Double {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
         let cleaned = raw.components(separatedBy: "/").first ?? raw
         return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0

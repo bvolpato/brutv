@@ -119,8 +119,19 @@ export class PlaybackSession {
   }
 
   async toggle(): Promise<void> {
-    if (this.closed || !this.initialized) return;
-    this.wantsPlayback = !this.wantsPlayback;
+    await this.setPlaying(!this.wantsPlayback);
+  }
+
+  async play(): Promise<void> { await this.setPlaying(true); }
+
+  async pause(): Promise<void> { await this.setPlaying(false); }
+
+  private async setPlaying(playing: boolean): Promise<void> {
+    if (this.closed) return;
+    if (this.wantsPlayback === playing) {
+      if (playing ? (!this.ready || !this.media.paused) : (!this.initialized || this.media.paused)) return;
+    }
+    this.wantsPlayback = playing;
     if (this.wantsPlayback) {
       if (this.heldPosition !== undefined) {
         const range = this.adapter?.timeline?.();
@@ -133,16 +144,22 @@ export class PlaybackSession {
       if (this.ready) await this.media.play();
     } else {
       if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
-      this.media.pause(); this.heldPosition = this.media.currentTime;
+      if (this.initialized) {this.media.pause(); this.heldPosition = this.media.currentTime;}
+      this.report('paused');
     }
     this.updatePosition();
   }
 
   seek(delta: number): void {
     if (this.closed || !Number.isFinite(delta)) return;
+    this.seekTo(this.media.currentTime + delta);
+  }
+
+  seekTo(position: number): void {
+    if (this.closed || !Number.isFinite(position)) return;
     const range = this.adapter?.timeline?.();
-    if (range) this.media.currentTime = Math.max(range.start, Math.min(range.end, this.media.currentTime + delta));
-    else if (Number.isFinite(this.media.duration)) this.media.currentTime = Math.max(0, Math.min(this.media.duration, this.media.currentTime + delta));
+    if (range) this.media.currentTime = Math.max(range.start, Math.min(range.end, position));
+    else if (Number.isFinite(this.media.duration)) this.media.currentTime = Math.max(0, Math.min(this.media.duration, position));
     else return;
     if (!this.wantsPlayback) this.heldPosition = this.media.currentTime;
     this.expired = false; this.updatePosition();

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/apple-sdk.sh"
 PLATFORM=ios
 CONFIGURATION="${IOS_CONFIGURATION:-debug}"
 OUTPUT="${IOS_LINUX_BUILD_DIR:-}"
@@ -24,13 +25,13 @@ usage() {
 Usage: linux-build.sh [--platform ios|tvos|macos] [--configuration debug|release]
                       [--output DIRECTORY] [--prepare-only|--check]
 
-Build BruTV's native iPhone/iPad or universal Mac Catalyst app with xtool on Linux. Requires Swift 6.4,
+Build BruTV's native iPhone/iPad, Apple TV, or universal Mac Catalyst app with xtool on Linux. Requires Swift 6.4,
 xtool, and its Apple Darwin SDK. The output is DIRECTORY/xtool/BruTV.app.
 --prepare-only compiles resources and prepares the package without an Apple SDK.
 --check verifies the toolchain and SDK without preparing or building an app.
 Mac Catalyst requires the BruTV xtool fork and rcodesign for universal packaging.
 Release builds also emit DIRECTORY/xtool/BruTV.app.dSYM using the SDK's dsymutil.
-tvOS requires a brandassets compiler and currently fails explicitly.
+tvOS includes its layered app icon, Top Shelf branding, and TopShelf extension.
 XTOOL_BINARY and SWIFT_BINARY may select executable paths.
 USAGE
 }
@@ -54,11 +55,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PLATFORM" in
-  ios) ;;
-  tvos)
-    echo "error: BruTV's TVAppIcon.brandassets uses imagestack layers that the Linux AssetKit compiler cannot compile. A verified tvOS asset catalog compiler is required before building the tvOS app and TopShelf extension." >&2
-    exit 1
-    ;;
+  ios) DEVICE_TRIPLE=arm64-apple-ios ;;
+  tvos) DEVICE_TRIPLE=arm64-apple-tvos ;;
   macos) ;;
   *) echo "error: unsupported Apple platform: $PLATFORM" >&2; exit 2 ;;
 esac
@@ -102,6 +100,15 @@ if [[ "$PREPARE_ONLY" = false ]]; then
     echo "error: Apple Darwin SDK is missing. Download Xcode.xip from Apple, then run: xtool sdk install /path/to/Xcode.xip" >&2
     exit 1
   fi
+  SDK_ROOT=""
+  while IFS= read -r line; do
+    if [[ "$line" == "  Path: "* ]]; then SDK_ROOT="${line#"  Path: "}"; break; fi
+  done <<< "$SDK_STATUS"
+  [[ -n "$SDK_ROOT" ]] || { echo "error: xtool did not report the selected Darwin SDK path" >&2; exit 1; }
+  command -v uv >/dev/null 2>&1 || { echo "error: reading Apple SDK metadata requires uv" >&2; exit 1; }
+  SDK_VERSION="$(uv run "$SCRIPT_DIR/read-sdk-version.py" --sdk-root "$SDK_ROOT" --platform "$PLATFORM")"
+  read -r SDK_NAME SDK_NUMBER <<< "$SDK_VERSION"
+  brutv_require_sdk_version "$SDK_NAME" "$SDK_NUMBER"
   LINKER_BINARY="${XTOOL_LD64_LLD:-}"
   LLVM_TOOLS_DIR="${BRUTV_LLVM_TOOLS_DIR:-$SCRIPT_DIR/build/tools/llvm}"
   if [[ -z "$LINKER_BINARY" && -x "$LLVM_TOOLS_DIR/bin/ld64.lld" ]]; then
@@ -168,8 +175,12 @@ if [[ "$PREPARE_ONLY" = false ]]; then
     }
     command -v "$RCODESIGN" >/dev/null 2>&1 || { echo "error: rcodesign is required to combine the Catalyst arm64 and x86_64 executables. Set RCODESIGN to its path." >&2; exit 1; }
   else
-    "$XTOOL_BINARY" sdk status --triple arm64-apple-ios >/dev/null || {
-      echo "error: the selected xtool SDK lacks current iOS validation support. Use the tested BruTV fork and rerun setup-linux.sh." >&2
+    if [[ "$PLATFORM" = tvos && "$SUPPORTED_PLATFORMS" != *"tvOS"* ]]; then
+      echo "error: the selected xtool does not support tvOS. Use the tested BruTV fork." >&2
+      exit 1
+    fi
+    "$XTOOL_BINARY" sdk status --triple "$DEVICE_TRIPLE" >/dev/null || {
+      echo "error: the selected xtool SDK lacks current $PLATFORM validation support. Use the tested BruTV fork and rerun setup-linux.sh." >&2
       exit 1
     }
   fi
@@ -223,8 +234,14 @@ if [[ "$PLATFORM" = macos ]]; then
   mv "$TEMP_APP" "$OUTPUT/xtool/BruTV.app"
   chmod +x "$OUTPUT/xtool/BruTV.app/Contents/MacOS/BruTV"
 else
-  build "$OUTPUT" arm64-apple-ios
+  build "$OUTPUT" "$DEVICE_TRIPLE"
   [[ -f "$OUTPUT/xtool/BruTV.app/BruTV" ]] || { echo "error: xtool did not produce the BruTV app executable" >&2; exit 1; }
+  if [[ "$PLATFORM" = tvos ]]; then
+    [[ -f "$OUTPUT/xtool/BruTV.app/PlugIns/BruTVTopShelf.appex/BruTVTopShelf" ]] || {
+      echo "error: xtool did not produce the TopShelf extension executable" >&2
+      exit 1
+    }
+  fi
 fi
 echo "app: $OUTPUT/xtool/BruTV.app"
 if [[ "$CONFIGURATION" = release ]]; then
@@ -267,4 +284,18 @@ if [[ "$CONFIGURATION" = release ]]; then
   fi
   mv "$SYMBOL_STAGE/BruTV.app.dSYM" "$OUTPUT/xtool/BruTV.app.dSYM"
   echo "dsym: $OUTPUT/xtool/BruTV.app.dSYM"
+  if [[ "$PLATFORM" = tvos ]]; then
+    "$DSYMUTIL" --num-threads "${IOS_BUILD_JOBS:-4}" \
+      "$OUTPUT/xtool/BruTV.app/PlugIns/BruTVTopShelf.appex/BruTVTopShelf" \
+      --out "$SYMBOL_STAGE/BruTVTopShelf.appex.dSYM"
+    [[ -s "$SYMBOL_STAGE/BruTVTopShelf.appex.dSYM/Contents/Resources/DWARF/BruTVTopShelf" ]] || {
+      echo "error: dsymutil did not produce TopShelf's crash symbols" >&2
+      exit 1
+    }
+    if [[ -e "$OUTPUT/xtool/BruTVTopShelf.appex.dSYM" ]]; then
+      mv "$OUTPUT/xtool/BruTVTopShelf.appex.dSYM" "$SYMBOL_STAGE/previous-TopShelf.dSYM"
+    fi
+    mv "$SYMBOL_STAGE/BruTVTopShelf.appex.dSYM" "$OUTPUT/xtool/BruTVTopShelf.appex.dSYM"
+    echo "dsym: $OUTPUT/xtool/BruTVTopShelf.appex.dSYM"
+  fi
 fi

@@ -61,10 +61,20 @@ enum PlaybackPolicy {
         return position
     }
 
-    static func networkFailure(for error: Error?, httpStatus: Int? = nil) -> PlaybackFailure? {
+    static func vodSeekPosition(_ position: Double, duration: Double) -> Double? {
+        guard position.isFinite else { return nil }
+        return max(0, min(position, duration.isFinite && duration > 0 ? duration : position))
+    }
+
+    static func retriesAtEnd(isLive: Bool, url: URL?) -> Bool {
+        isLive && url.map { !$0.isFileURL } == true
+    }
+
+    static func networkFailure(for error: Error?, httpStatus: Int? = nil, localLiveRecording: Bool = false) -> PlaybackFailure? {
         if let status = httpStatus {
             switch status {
             case 401, 403: return .unauthorized
+            case 410 where localLiveRecording: return .transient
             case 404, 410: return .notFound
             case 408, 429, 500...599: return .transient
             case 400...499: return .unknown

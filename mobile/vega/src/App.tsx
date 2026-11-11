@@ -4,6 +4,8 @@ import {browse, Catalog, ContentItem, loadCatalog, loadEpisodes, Section} from '
 import {LoginSource, parseLogin} from './domain/login';
 import {PlayerScreen} from './media/PlayerScreen';
 import {TVButton} from './TVButton';
+import {emptyPreferences, libraryKey, LibrarySelection, updateLibrary} from './domain/preferences';
+import {loadPreferences, savePreferences} from './PreferencesStore';
 
 const CategoryTVButton = memo(function CategoryTVButton({
   label,
@@ -98,7 +100,11 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [splashOpacity, splashScale]);
 
-  const [language, setLanguage] = useState<'pt' | 'en'>('pt');
+  const [preferences, setPreferences] = useState(emptyPreferences);
+  const lastSavedPreferences = useRef(preferences);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [storageError, setStorageError] = useState(false);
+  const language = preferences.language;
   const [source, setSource] = useState<LoginSource>();
   const [catalog, setCatalog] = useState<Catalog>();
   const [input, setInput] = useState('');
@@ -109,8 +115,10 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState<string>();
   const [filter, setFilter] = useState<'all' | 'favorites' | 'recent'>('all');
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [recent, setRecent] = useState<string[]>([]);
+  const sourceKey = source ? libraryKey(source) : undefined;
+  const savedLibrary = sourceKey ? preferences.libraries[sourceKey] : undefined;
+  const favorites = useMemo(() => new Set(savedLibrary?.favorites), [savedLibrary]);
+  const recent = savedLibrary?.recent || [];
   const [episodes, setEpisodes] = useState<ContentItem[]>();
   const [selected, setSelected] = useState<ContentItem>();
   const [player, setPlayer] = useState<ContentItem>();
@@ -120,6 +128,24 @@ export default function App() {
   const closePlayer = useCallback(() => setPlayer(undefined), []);
 
   const isPt = language === 'pt';
+
+  useEffect(() => {
+    let active = true;
+    void loadPreferences().then(value => {if (active) {lastSavedPreferences.current = value; setPreferences(value);}})
+      .catch(() => {if (active) setStorageError(true);})
+      .finally(() => {if (active) setPreferencesReady(true);});
+    return () => {active = false;};
+  }, []);
+
+  useEffect(() => {
+    if (!preferencesReady || lastSavedPreferences.current === preferences) return;
+    lastSavedPreferences.current = preferences;
+    void savePreferences(preferences).catch(() => setStorageError(true));
+  }, [preferences, preferencesReady]);
+
+  const saveLibrary = (update: (selection: LibrarySelection) => LibrarySelection) => {
+    if (sourceKey) setPreferences(previous => updateLibrary(previous, sourceKey, update));
+  };
 
   useEffect(() => {
     if (!source) return;
@@ -208,7 +234,7 @@ export default function App() {
     requestController.current?.abort();
     setSource(undefined); setCatalog(undefined); setEpisodes(undefined); setSelected(undefined); setPlayer(undefined);
     setPassword(''); setUsername(''); setServer(''); setInput(''); setQuery(''); setGroup(undefined); setError('');
-    setFavorites(new Set()); setRecent([]); setLoading(false);
+    setLoading(false);
   };
 
   const openItem = async (item: ContentItem) => {
@@ -238,7 +264,7 @@ export default function App() {
       setError(isPt ? 'Este cliente suporta HLS, DASH e MP4. Escolha uma fonte compatível no provedor.' : 'This Vega starter plays HLS, DASH and MP4. Choose a supported source from your provider.');
       return;
     }
-    setRecent(previous => [item.id, ...previous.filter(id => id !== item.id)].slice(0, 50));
+    saveLibrary(previous => ({...previous, recent: [item.id, ...previous.recent.filter(id => id !== item.id)].slice(0, 50)}));
     setPlayer(item);
   };
 
@@ -251,7 +277,7 @@ export default function App() {
       <View style={styles.headerSpacer} />
       <TVButton
         label={isPt ? '🇧🇷 Português' : '🇺🇸 English'}
-        onPress={() => setLanguage(lang => lang === 'pt' ? 'en' : 'pt')}
+        onPress={() => {if (preferencesReady) setPreferences(previous => ({...previous, language: previous.language === 'pt' ? 'en' : 'pt'}));}}
       />
     </View>
 
@@ -299,7 +325,7 @@ export default function App() {
         />
       </View>
       <Text style={styles.help}>{isPt ? 'Suas credenciais ficam apenas na memória deste dispositivo.' : 'Your sign-in stays in memory and is not saved on this TV.'}</Text>
-      {!loading && <TVButton label={isPt ? 'Entrar' : 'Sign in'} onPress={signIn}/>}
+      {!loading && preferencesReady && <TVButton label={isPt ? 'Entrar' : 'Sign in'} onPress={signIn}/>}
     </View> : <>
       <View style={styles.row}>
         {(['live', 'movie', 'series'] as Section[]).map(value => (
@@ -373,7 +399,8 @@ export default function App() {
                 <TVButton label={isPt ? 'Assistir' : 'Play'} preferred onPress={() => startPlayback(selected)}/>
                 <TVButton
                   label={favorites.has(selected.id) ? (isPt ? 'Remover favorito' : 'Remove favorite') : (isPt ? 'Adicionar favorito' : 'Add favorite')}
-                  onPress={() => setFavorites(previous => { const next = new Set(previous); next.has(selected.id) ? next.delete(selected.id) : next.add(selected.id); return next; })}
+                  onPress={() => saveLibrary(previous => ({...previous, favorites: previous.favorites.includes(selected.id)
+                    ? previous.favorites.filter(id => id !== selected.id) : [...previous.favorites, selected.id]}))}
                 />
                 <TVButton label={isPt ? 'Voltar ao catálogo' : 'Back to content'} onPress={() => setSelected(undefined)}/>
               </View>
@@ -410,6 +437,9 @@ export default function App() {
       </View>
     )}
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+    {storageError && <Text accessibilityRole="alert" style={styles.error}>{isPt
+      ? 'Não foi possível salvar ou restaurar sua biblioteca. Você ainda pode assistir nesta sessão.'
+      : 'Your saved library could not be restored or updated. You can still watch in this session.'}</Text>}
 
     {showSplash && (
       <Animated.View style={[styles.splashContainer, { opacity: splashOpacity, transform: [{ scale: splashScale }] }]}>

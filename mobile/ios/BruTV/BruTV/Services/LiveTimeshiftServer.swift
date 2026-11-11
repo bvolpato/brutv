@@ -16,15 +16,15 @@ final class LiveTimeshiftServer: @unchecked Sendable {
 
     func start() async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            queue.async { [self] in
                 do {
                     let parameters = NWParameters.tcp
                     parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
                     let listener = try NWListener(using: parameters, on: .any)
                     self.listener = listener
                     self.startContinuation = continuation
-                    listener.stateUpdateHandler = { [weak self] state in
-                        guard let self else { return }
+                    listener.stateUpdateHandler = { [weak self, weak listener] state in
+                        guard let self, let listener else { return }
                         switch state {
                         case .ready:
                             guard let port = listener.port,

@@ -228,10 +228,10 @@ class SigningTests(unittest.TestCase):
                 }
             (app / "AppIcon@2x.png").write_bytes(b"test icon resource")
         else:
-            info["CFBundleIcons"] = {
-                "CFBundlePrimaryIcon": {
-                    "CFBundleIconName": "App Icon & Top Shelf Image"
-                }
+            info["CFBundleIcons"] = {"CFBundlePrimaryIcon": "App Icon - Small"}
+            info["TVTopShelfImage"] = {
+                "TVTopShelfPrimaryImage": "Top Shelf Image",
+                "TVTopShelfPrimaryImageWide": "Top Shelf Image Wide",
             }
             (app / "Assets.car").write_bytes(b"test compiled asset resource")
         (app / "Info.plist").write_bytes(plistlib.dumps(info))
@@ -374,6 +374,28 @@ class SigningTests(unittest.TestCase):
         with self.assertRaisesRegex(SIGN.SigningError, "CFBundleVersion"):
             SIGN.bundle_info(app, BUNDLE, "ios")
 
+    def test_tvos_brand_metadata_and_modern_topshelf_registration(self):
+        app = self.app("tvos")
+        SIGN.bundle_info(app, BUNDLE, "tvos")
+        info_path = app / "Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info["CFBundleIcons"]["CFBundlePrimaryIcon"] = {"CFBundleIconName": "App Icon"}
+        info_path.write_bytes(plistlib.dumps(info))
+        with self.assertRaisesRegex(SIGN.SigningError, "tvOS release requires"):
+            SIGN.bundle_info(app, BUNDLE, "tvos")
+        info.update(
+            {
+                "CFBundlePackageType": "XPC!",
+                "NSExtension": {"NSExtensionPointIdentifier": "com.apple.tv-top-shelf"},
+            }
+        )
+        info_path.write_bytes(plistlib.dumps(info))
+        SIGN.bundle_info(app, BUNDLE, "tvos", extension=True)
+        info["NSExtension"]["NSExtensionPointIdentifier"] = "com.apple.tv-services"
+        info_path.write_bytes(plistlib.dumps(info))
+        with self.assertRaisesRegex(SIGN.SigningError, "NSExtensionPointIdentifier"):
+            SIGN.bundle_info(app, BUNDLE, "tvos", extension=True)
+
     def test_rejects_empty_fat_binary_instead_of_skipping_signature_verification(self):
         with self.assertRaisesRegex(SIGN.SigningError, "architecture table"):
             SIGN.macho_slices(struct.pack(">II", 0xCAFEBABE, 0))
@@ -478,12 +500,13 @@ class SigningTests(unittest.TestCase):
                 "CFBundleIdentifier": f"{BUNDLE}.TopShelf",
                 "CFBundleExecutable": "BruTVTopShelf",
                 "CFBundlePackageType": "XPC!",
-                "NSExtension": {"NSExtensionPointIdentifier": "com.apple.tv-services"},
+                "NSExtension": {"NSExtensionPointIdentifier": "com.apple.tv-top-shelf"},
             }
         )
         (extension / "Info.plist").write_bytes(plistlib.dumps(extension_info))
         (extension / "BruTVTopShelf").write_bytes(unsigned_macho("tvos"))
         (extension / "BruTVTopShelf").chmod(0o755)
+        shutil.copy2(app / "PrivacyInfo.xcprivacy", extension / "PrivacyInfo.xcprivacy")
         group = "group.com.bvolpato.brutv"
         profile = self.profile(platform="tvos")
         profile["Entitlements"]["com.apple.security.application-groups"] = [group]

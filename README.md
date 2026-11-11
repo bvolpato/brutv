@@ -50,6 +50,8 @@ For source builds, see the [Apple](mobile/ios/RELEASE.md), [Android](mobile/andr
 
 BruTV sends playback and catalog requests from your device to the source you configure. It does not operate a hosted streaming or proxy service. Some platforms keep settings, source details, or temporary playback data on your device. See the [privacy policy](PRIVACY.md).
 
+The Apple apps keep bounded playback-health summaries locally. You can clear or share them in Settings; BruTV does not upload them automatically or include an analytics SDK. The summaries record startup, buffering and recovery events, and do not detect frozen video frames or general app hangs.
+
 A `brutv://login` link or sign-in QR code can include source credentials in the link. Only share it with a device or person you trust. The [join helper](https://bvolpato.github.io/brutv/join.html) reads credentials from the URL fragment (the part after `#`) so the page host does not receive them in the page request. Do not share a credential-bearing page URL publicly.
 
 ## Development
@@ -57,6 +59,7 @@ A `brutv://login` link or sign-in QR code can include source credentials in the 
 - Run the portable Apple core checks with `./test.sh --core`.
 - Run Android checks with `./mobile/android/test.sh` and the Android SDK installed.
 - Apple simulator tests require macOS and Xcode: `./test.sh`.
+- Build and test Apple releases with Xcode 27.2 and its SDKs. iPhone Duo UI checks use the compatible iOS 27.1 simulator runtime; physical fold transitions and playback remain device checks.
 - See each platform guide for its build environment and additional checks.
 
 CI selects checks from the changed files. Documentation changes skip app builds, while site changes run the join-page checks. Apple changes run unit tests, a short iPhone UI smoke suite, and tvOS/Catalyst builds. Test diagnostics are retained only on failure.

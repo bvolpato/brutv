@@ -16,6 +16,7 @@ xcuserdata/
 
 # BruTV build outputs
 mobile/ios/BruTV/screenshots/
+.build/
 mobile/ios/**/build/
 mobile/ios/**/artifact/
 mobile/ios/BruTV/build/
@@ -27,6 +28,7 @@ mobile/ios/BruTV/**/__pycache__/
 *.dSYM
 
 # Signing secrets (never commit certificates or profiles)
+/.env
 *.p12
 *.p8
 *.cer

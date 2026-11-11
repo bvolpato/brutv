@@ -3,6 +3,20 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+play_bundle=false
+gradle_args=()
+for argument in "$@"; do
+    case "$argument" in
+        --play-bundle) play_bundle=true ;;
+        -h|--help)
+            echo "Usage: ./release.sh [--play-bundle] [Gradle options...]"
+            echo "  --play-bundle  Also produce a separate API 24 Google Play App Bundle."
+            exit 0
+            ;;
+        *) gradle_args+=("$argument") ;;
+    esac
+done
+
 signing_properties="${BRUTV_ANDROID_SIGNING_PROPERTIES:-${XDG_CONFIG_HOME:-$HOME/.config}/brutv/android/keystore.properties}"
 if [[ ! -f "$signing_properties" ]]; then
     echo "Android release signing is not configured: $signing_properties is missing." >&2
@@ -24,7 +38,7 @@ if [[ -z "$keystore" || ! -f "$keystore" ]]; then
 fi
 
 export BRUTV_ANDROID_SIGNING_PROPERTIES="$signing_properties"
-./gradlew :app:assembleRelease :app:bundleRelease "$@"
+./gradlew :app:assembleRelease :app:bundleRelease "${gradle_args[@]}"
 
 apk="app/build/outputs/apk/release/app-release.apk"
 bundle="app/build/outputs/bundle/release/app-release.aab"
@@ -89,3 +103,40 @@ cp "$bundle" "$final_bundle"
 
 printf 'Signed APK: %s\n' "$final_apk"
 printf 'Signed AAB: %s\n' "$final_bundle"
+
+if [[ "$play_bundle" = true ]]; then
+    ./gradlew :app:bundleRelease -PbrutvMinSdk=24 "${gradle_args[@]}"
+
+    play_manifest="app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml"
+    if [[ ! -f "$play_manifest" ]] || ! grep -Fq 'android:minSdkVersion="24"' "$play_manifest"; then
+        echo "Google Play App Bundle manifest does not declare the required API 24 minimum." >&2
+        exit 1
+    fi
+
+    play_bundle_verification="$(jarsigner -verify "$bundle" 2>&1)" || {
+        printf '%s\n' "$play_bundle_verification" >&2
+        echo "Google Play App Bundle signature verification failed." >&2
+        exit 1
+    }
+    play_certificate_output="$(keytool -printcert -jarfile "$bundle" 2>&1)" || {
+        printf '%s\n' "$play_certificate_output" >&2
+        echo "Google Play App Bundle signer certificate could not be read." >&2
+        exit 1
+    }
+    play_certificate="$(printf '%s\n' "$play_certificate_output" | sed -n 's/^[[:space:]]*SHA256: //p' | sed -n '1p' | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "$play_certificate" || "$apk_certificate" != "$play_certificate" ]]; then
+        echo "Google Play App Bundle and direct APK do not have the same signing certificate." >&2
+        exit 1
+    fi
+
+    final_play_bundle="$distribution_dir/BruTV-android-play-${version_name}-${version_code}.aab"
+    cp "$bundle" "$final_play_bundle"
+    printf 'Signed Google Play App Bundle: %s\n' "$final_play_bundle"
+
+    ./gradlew :app:bundleRelease "${gradle_args[@]}"
+    standard_manifest="app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml"
+    if [[ ! -f "$standard_manifest" ]] || ! grep -Fq 'android:minSdkVersion="23"' "$standard_manifest"; then
+        echo "Standard App Bundle manifest was not restored to API 23." >&2
+        exit 1
+    fi
+fi
