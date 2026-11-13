@@ -20,6 +20,7 @@ on:
           - ps5
           - web
           - full
+          - macos-screenshots
       apple_ui_scope:
         description: Apple UI test scope for full device validation
         type: choice
@@ -39,6 +40,7 @@ concurrency:
 jobs:
   changes:
     name: Select affected checks
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'macos-screenshots'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -63,6 +65,47 @@ jobs:
       - name: Select platform checks
         id: plan
         run: node tools/ci-plan.mjs
+
+  macos-screenshots:
+    name: Capture native Mac Catalyst screenshots
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'macos-screenshots'
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select stable Xcode 27.2
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_27.2.app/Contents/Developer
+          [[ "$(xcodebuild -version)" == $'Xcode 27.2\nBuild version 27B52' ]]
+      - name: Capture the running Catalyst app
+        env:
+          TEST_RUNNER_BRUTV_MAC_SCREENSHOT_DIR: ${{ runner.temp }}/native-mac-screenshots
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/native-mac-screenshots"
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTVMacScreenshots \
+            -configuration Debug \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/mac-screenshot-build" \
+            -resultBundlePath "$RUNNER_TEMP/native-mac-screenshots/Capture.xcresult" \
+            -parallel-testing-enabled NO \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/xcodebuild.log"
+          jq -n --arg sourceRevision "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" \
+            '{sourceRevision:$sourceRevision,runId:$runId,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",syntheticFixtures:true}' \
+            > "$RUNNER_TEMP/native-mac-screenshots/provenance.json"
+      - name: Upload screenshots and native test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: brutv-native-mac-screenshots
+          path: ${{ runner.temp }}/native-mac-screenshots
+          if-no-files-found: error
+          retention-days: 30
 
   swift-core:
     name: Swift core tests
