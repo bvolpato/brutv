@@ -20,6 +20,7 @@ on:
           - ps5
           - web
           - full
+          - macos-screenshots
       apple_ui_scope:
         description: Apple UI test scope for full device validation
         type: choice
@@ -28,6 +29,14 @@ on:
         options:
           - all
           - regressions
+      macos_marketing_version:
+        description: Marketing version for native Mac screenshots
+        type: string
+        default: '1.0.2'
+      macos_build_number:
+        description: Build number for native Mac screenshots
+        type: string
+        default: '24'
 
 permissions:
   contents: read
@@ -39,6 +48,7 @@ concurrency:
 jobs:
   changes:
     name: Select affected checks
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'macos-screenshots'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -63,6 +73,70 @@ jobs:
       - name: Select platform checks
         id: plan
         run: node tools/ci-plan.mjs
+
+  macos-screenshots:
+    name: Capture native Mac Catalyst screenshots
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'macos-screenshots'
+    runs-on: xcode-27
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select stable Xcode 27.2
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_27.2.app/Contents/Developer
+          [[ "$(xcodebuild -version)" == $'Xcode 27.2\nBuild version 27B52' ]]
+      - name: Capture the running Catalyst app
+        env:
+          MACOS_MARKETING_VERSION: ${{ inputs.macos_marketing_version }}
+          MACOS_BUILD_NUMBER: ${{ inputs.macos_build_number }}
+        run: |
+          set -o pipefail
+          [[ "$MACOS_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          [[ "$MACOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          mkdir -p "$RUNNER_TEMP/native-mac-screenshots"
+          xcrun swift tools/macos-capture-display.swift \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/display.log"
+          xcrun swift -e 'import CoreGraphics; let bounds = CGDisplayBounds(CGMainDisplayID()); print("Persistent display bounds:", bounds); precondition(bounds.width >= 1440 && bounds.height >= 1000, "Native display mode did not persist")' \
+            | tee -a "$RUNNER_TEMP/native-mac-screenshots/display.log"
+          xcodebuild build \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV -configuration Release \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/mac-screenshot-build" \
+            MARKETING_VERSION="$MACOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$MACOS_BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/release-build.log"
+          xcodebuild test \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTVMacScreenshots \
+            -configuration Debug \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/mac-screenshot-build" \
+            -resultBundlePath "$RUNNER_TEMP/native-mac-screenshots/Capture.xcresult" \
+            -parallel-testing-enabled NO \
+            MARKETING_VERSION="$MACOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$MACOS_BUILD_NUMBER" \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/xcodebuild.log"
+          xcrun xcresulttool export attachments \
+            --path "$RUNNER_TEMP/native-mac-screenshots/Capture.xcresult" \
+            --output-path "$RUNNER_TEMP/native-mac-screenshots/attachments"
+          xcrun swift tools/macos-capture-export.swift \
+            "$RUNNER_TEMP/native-mac-screenshots/attachments" \
+            "$RUNNER_TEMP/native-mac-screenshots/screenshots"
+          jq -n --arg sourceRevision "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" \
+            --arg version "$MACOS_MARKETING_VERSION" --arg build "$MACOS_BUILD_NUMBER" \
+            '{sourceRevision:$sourceRevision,runId:$runId,version:$version,build:$build,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",export:"xcresulttool export attachments",syntheticFixtures:true}' \
+            > "$RUNNER_TEMP/native-mac-screenshots/provenance.json"
+      - name: Upload screenshots and native test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: brutv-native-mac-screenshots
+          path: ${{ runner.temp }}/native-mac-screenshots
+          if-no-files-found: error
+          retention-days: 30
 
   swift-core:
     name: Swift core tests

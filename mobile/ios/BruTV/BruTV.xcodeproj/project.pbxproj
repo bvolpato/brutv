@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		MACCAPTUREBF001 = {isa = PBXBuildFile; fileRef = MACCAPTURESRC001; };
 		APPBF043 /* PlaybackDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC043; };
 		APPBF044 /* PlaybackDiagnosticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC044; };
 		APPBF045 /* PlaybackDiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = APPSRC045; };
@@ -109,6 +110,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		MACCAPTUREPROXY001 = {isa = PBXContainerItemProxy; containerPortal = PROJECT001; proxyType = 1; remoteGlobalIDString = APPTARGET001; remoteInfo = BruTV; };
 		TVAPPPROXY001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = PROJECT001 /* Project object */;
@@ -147,6 +149,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		MACCAPTURESRC001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BruTVMacCaptureTests.swift; sourceTree = "<group>"; };
+		MACCAPTUREPROD001 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BruTVMacCaptureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		APPSRC043 /* PlaybackDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiagnostics.swift; sourceTree = "<group>"; };
 		APPSRC044 /* PlaybackDiagnosticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiagnosticsStore.swift; sourceTree = "<group>"; };
 		APPSRC045 /* PlaybackDiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiagnosticsView.swift; sourceTree = "<group>"; };
@@ -217,6 +221,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		MACCAPTUREFRAMEWORKS = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		TVAPPFRAMEWORKS /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -255,12 +260,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		MACCAPTUREGROUP = {isa = PBXGroup; children = (MACCAPTURESRC001,); path = BruTVMacCaptureTests; sourceTree = "<group>"; };
 		ROOTGROUP /* Root */ = {
 			isa = PBXGroup;
 			children = (
 				APPGROUP /* BruTV */,
 				TESTGROUP /* BruTVTests */,
 				UIGROUP /* BruTVUITests */,
+				MACCAPTUREGROUP,
 				TOPSHELFGROUP /* BruTVTopShelf */,
 				PRODUCTSGROUP /* Products */,
 			);
@@ -272,6 +279,7 @@
 				APPPROD001 /* BruTV.app */,
 				TESTPROD001 /* BruTVTests.xctest */,
 				UIPROD001 /* BruTVUITests.xctest */,
+				MACCAPTUREPROD001,
 				TVAPPPROD001 /* BruTV-tvOS.app */,
 				TOPSHELFPROD001 /* BruTVTopShelf.appex */,
 			);
@@ -411,6 +419,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		MACCAPTURETARGET001 = {isa = PBXNativeTarget; buildConfigurationList = MACCAPTURECONFIGLIST; buildPhases = (MACCAPTURESOURCES, MACCAPTUREFRAMEWORKS, MACCAPTURERESOURCES,); buildRules = (); dependencies = (MACCAPTUREDEPENDENCY001,); name = BruTVMacCaptureTests; productName = BruTVMacCaptureTests; productReference = MACCAPTUREPROD001; productType = "com.apple.product-type.bundle.ui-testing"; };
 		APPTARGET001 /* BruTV */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = APPCONFIGLIST;
@@ -521,6 +530,7 @@
 						CreatedOnToolsVersion = 16.0;
 						TestTargetID = APPTARGET001;
 					};
+					MACCAPTURETARGET001 = {CreatedOnToolsVersion = 27.2; TestTargetID = APPTARGET001; };
 					TVAPPTARGET001 = {
 						CreatedOnToolsVersion = 16.0;
 					};
@@ -545,6 +555,7 @@
 				APPTARGET001 /* BruTV */,
 				TESTTARGET001 /* BruTVTests */,
 				UITARGET001 /* BruTVUITests */,
+				MACCAPTURETARGET001,
 				TVAPPTARGET001 /* BruTV-tvOS */,
 				TOPSHELFTARGET001 /* BruTVTopShelf */,
 			);
@@ -552,6 +563,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		MACCAPTURERESOURCES = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		TVAPPRESOURCES /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -595,6 +607,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		MACCAPTURESOURCES = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (MACCAPTUREBF001,); runOnlyForDeploymentPostprocessing = 0; };
 		TVAPPSOURCES /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -726,6 +739,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		MACCAPTUREDEPENDENCY001 = {isa = PBXTargetDependency; target = APPTARGET001; targetProxy = MACCAPTUREPROXY001; };
 		TVAPPDEP001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = TOPSHELFTARGET001 /* BruTVTopShelf */;
@@ -744,6 +758,8 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		MACCAPTUREDEBUG = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.maccapturetests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = macosx; SUPPORTS_MACCATALYST = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = BruTV; }; name = Debug; };
+		MACCAPTURERELEASE = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = com.bvolpato.brutv.maccapturetests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = macosx; SUPPORTS_MACCATALYST = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = BruTV; }; name = Release; };
 		PROJECTDEBUG /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1029,6 +1045,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		MACCAPTURECONFIGLIST = {isa = XCConfigurationList; buildConfigurations = (MACCAPTUREDEBUG, MACCAPTURERELEASE,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		PROJECTCONFIGLIST /* Build configuration list for PBXProject "BruTV" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
