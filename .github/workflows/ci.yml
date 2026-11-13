@@ -87,6 +87,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/native-mac-screenshots"
           xcrun swift tools/macos-capture-display.swift \
             | tee "$RUNNER_TEMP/native-mac-screenshots/display.log"
+          xcrun swift -e 'import CoreGraphics; let bounds = CGDisplayBounds(CGMainDisplayID()); print("Persistent display bounds:", bounds); precondition(bounds.width >= 1440 && bounds.height >= 900, "Native display mode did not persist")' \
+            | tee -a "$RUNNER_TEMP/native-mac-screenshots/display.log"
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
             -scheme BruTVMacScreenshots \
