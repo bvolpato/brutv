@@ -7,9 +7,9 @@ final class BruTVMacCaptureTests: XCTestCase {
         continueAfterFailure = false
         for (name, section) in [("01_login", ""), ("02_channels", "Live TV"), ("03_settings", "Settings")] {
             let app = XCUIApplication()
-            app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "--native-mac-capture-window", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+            app.launchArguments = ["--reset-session", "--no-splash", "--native-mac-capture-window", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
             if !section.isEmpty {
-                app.launchArguments += ["--demo-login", "--section", section]
+                app.launchArguments += ["--ui-fixtures", "--demo-login", "--section", section]
             }
             app.launch()
             defer { app.terminate() }
