@@ -23,7 +23,7 @@ final class BruTVMacCaptureTests: XCTestCase {
             if section == "Live TV" {
                 XCTAssertTrue(app.buttons.matching(identifier: "channelCard").firstMatch.waitForExistence(timeout: 30))
             } else if section == "Settings" {
-                XCTAssertTrue(app.buttons["logoutButton"].waitForExistence(timeout: 20))
+                XCTAssertTrue(app.buttons["shareLoginQRButton"].waitForExistence(timeout: 20))
             } else {
                 XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 20))
             }
