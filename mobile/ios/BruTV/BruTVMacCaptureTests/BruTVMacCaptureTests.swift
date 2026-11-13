@@ -12,7 +12,7 @@ final class BruTVMacCaptureTests: XCTestCase {
 
         for (name, section) in [("01_login", ""), ("02_channels", "Live TV"), ("03_settings", "Settings")] {
             let app = XCUIApplication()
-            app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+            app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "--native-mac-capture-window", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
             if !section.isEmpty {
                 app.launchArguments += ["--demo-login", "--section", section]
             }
@@ -27,17 +27,10 @@ final class BruTVMacCaptureTests: XCTestCase {
             } else {
                 XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 20))
             }
-            let title = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-                .withOffset(CGVector(dx: 0, dy: 12))
-            title.press(forDuration: 0.1, thenDragTo: title.withOffset(
-                CGVector(dx: 40 - window.frame.minX, dy: 40 - window.frame.minY)
-            ))
-            for _ in 0..<3 where abs(window.frame.width - 1280) > 1 || abs(window.frame.height - 800) > 1 {
-                let frame = window.frame
-                let origin = window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
-                origin.withOffset(CGVector(dx: frame.width - 2, dy: frame.height - 2))
-                    .press(forDuration: 0.1, thenDragTo: origin.withOffset(CGVector(dx: 1278, dy: 798)))
-            }
+            let geometry = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in abs(window.frame.width - 1280) < 1 }, object: window
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [geometry], timeout: 10), .completed)
             let screenshot = window.screenshot()
             let source = try XCTUnwrap(CGImageSourceCreateWithData(screenshot.pngRepresentation as CFData, nil))
             let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))

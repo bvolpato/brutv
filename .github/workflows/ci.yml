@@ -29,6 +29,14 @@ on:
         options:
           - all
           - regressions
+      macos_marketing_version:
+        description: Marketing version for native Mac screenshots
+        type: string
+        default: '1.0.2'
+      macos_build_number:
+        description: Build number for native Mac screenshots
+        type: string
+        default: '24'
 
 permissions:
   contents: read
@@ -82,13 +90,25 @@ jobs:
       - name: Capture the running Catalyst app
         env:
           TEST_RUNNER_BRUTV_MAC_SCREENSHOT_DIR: ${{ runner.temp }}/native-mac-screenshots
+          MACOS_MARKETING_VERSION: ${{ inputs.macos_marketing_version }}
+          MACOS_BUILD_NUMBER: ${{ inputs.macos_build_number }}
         run: |
           set -o pipefail
+          [[ "$MACOS_MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]
+          [[ "$MACOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
           mkdir -p "$RUNNER_TEMP/native-mac-screenshots"
           xcrun swift tools/macos-capture-display.swift \
             | tee "$RUNNER_TEMP/native-mac-screenshots/display.log"
           xcrun swift -e 'import CoreGraphics; let bounds = CGDisplayBounds(CGMainDisplayID()); print("Persistent display bounds:", bounds); precondition(bounds.width >= 1440 && bounds.height >= 900, "Native display mode did not persist")' \
             | tee -a "$RUNNER_TEMP/native-mac-screenshots/display.log"
+          xcodebuild build \
+            -project mobile/ios/BruTV/BruTV.xcodeproj \
+            -scheme BruTV -configuration Release \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath "$RUNNER_TEMP/mac-screenshot-build" \
+            MARKETING_VERSION="$MACOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$MACOS_BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/release-build.log"
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
             -scheme BruTVMacScreenshots \
@@ -97,10 +117,12 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/mac-screenshot-build" \
             -resultBundlePath "$RUNNER_TEMP/native-mac-screenshots/Capture.xcresult" \
             -parallel-testing-enabled NO \
+            MARKETING_VERSION="$MACOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$MACOS_BUILD_NUMBER" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             | tee "$RUNNER_TEMP/native-mac-screenshots/xcodebuild.log"
           jq -n --arg sourceRevision "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" \
-            '{sourceRevision:$sourceRevision,runId:$runId,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",syntheticFixtures:true}' \
+            --arg version "$MACOS_MARKETING_VERSION" --arg build "$MACOS_BUILD_NUMBER" \
+            '{sourceRevision:$sourceRevision,runId:$runId,version:$version,build:$build,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",syntheticFixtures:true}' \
             > "$RUNNER_TEMP/native-mac-screenshots/provenance.json"
       - name: Upload screenshots and native test evidence
         if: always()
