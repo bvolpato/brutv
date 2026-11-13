@@ -213,7 +213,7 @@ The manual `macos-screenshots` CI scope runs the Catalyst app with offline fixtu
 GH_CONFIG_DIR=/home/bruno/.config/gh-personal gh workflow run ci.yml --repo bvolpato/brutv --ref BRANCH -f scope=macos-screenshots
 ```
 
-Download the `brutv-native-mac-screenshots` artifact from the successful run and inspect every image before uploading. The workflow requires a native display large enough for a 1280 x 800 window. Captures must be 1280 x 800 or 2560 x 1600, both accepted [Mac screenshot sizes](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications). The artifact includes JPEG files without transparency, original XCUI screenshot attachments, native test results, logs, and source provenance. It does not resize, composite, or reconstruct the interface. Fixture captures verify the rendered UI, not live-provider playback.
+Download the `brutv-native-mac-screenshots` artifact from the successful run and inspect every image before uploading. The workflow requires a native display large enough for a 1280 x 800 window. Captures must be 1280 x 800 or 2560 x 1600, both accepted [Mac screenshot sizes](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications). The UI test stores original screenshots as XCTest attachments. After the test finishes, `xcresulttool` exports them and the workflow encodes JPEG files under `screenshots/`, outside the test runner's sandbox. The artifact also includes original attachments, native test results, logs, and source provenance. It does not resize, composite, or reconstruct the interface. Fixture captures verify the rendered UI, not live-provider playback.
 
 ---
 

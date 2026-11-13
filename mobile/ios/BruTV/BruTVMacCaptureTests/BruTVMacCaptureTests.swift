@@ -1,15 +1,10 @@
 import CoreGraphics
 import ImageIO
-import UniformTypeIdentifiers
 import XCTest
 
 final class BruTVMacCaptureTests: XCTestCase {
     func testCaptureNativeMacScreenshots() throws {
         continueAfterFailure = false
-        let output = try XCTUnwrap(ProcessInfo.processInfo.environment["BRUTV_MAC_SCREENSHOT_DIR"])
-        let directory = URL(fileURLWithPath: output, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
         for (name, section) in [("01_login", ""), ("02_channels", "Live TV"), ("03_settings", "Settings")] {
             let app = XCUIApplication()
             app.launchArguments = ["--reset-session", "--ui-fixtures", "--no-splash", "--native-mac-capture-window", "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -28,17 +23,15 @@ final class BruTVMacCaptureTests: XCTestCase {
                 XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 20))
             }
             let geometry = XCTNSPredicateExpectation(
-                predicate: NSPredicate { _, _ in abs(window.frame.width - 1280) < 1 }, object: window
+                predicate: NSPredicate { _, _ in
+                    abs(window.frame.width - 1280) < 1 && abs(window.frame.height - 800) < 1
+                }, object: window
             )
             XCTAssertEqual(XCTWaiter.wait(for: [geometry], timeout: 10), .completed)
             let screenshot = window.screenshot()
             let source = try XCTUnwrap(CGImageSourceCreateWithData(screenshot.pngRepresentation as CFData, nil))
             let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
             XCTAssertTrue([(1280, 800), (2560, 1600)].contains { $0.0 == image.width && $0.1 == image.height }, "Native window capture must have an accepted 16:10 size, got \(image.width)x\(image.height)")
-            let url = directory.appendingPathComponent("\(name).jpg")
-            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
-            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.98] as CFDictionary)
-            XCTAssertTrue(CGImageDestinationFinalize(destination))
             let attachment = XCTAttachment(screenshot: screenshot)
             attachment.name = name
             attachment.lifetime = .keepAlways

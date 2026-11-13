@@ -89,7 +89,6 @@ jobs:
           [[ "$(xcodebuild -version)" == $'Xcode 27.2\nBuild version 27B52' ]]
       - name: Capture the running Catalyst app
         env:
-          TEST_RUNNER_BRUTV_MAC_SCREENSHOT_DIR: ${{ runner.temp }}/native-mac-screenshots
           MACOS_MARKETING_VERSION: ${{ inputs.macos_marketing_version }}
           MACOS_BUILD_NUMBER: ${{ inputs.macos_build_number }}
         run: |
@@ -120,9 +119,15 @@ jobs:
             MARKETING_VERSION="$MACOS_MARKETING_VERSION" CURRENT_PROJECT_VERSION="$MACOS_BUILD_NUMBER" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             | tee "$RUNNER_TEMP/native-mac-screenshots/xcodebuild.log"
+          xcrun xcresulttool export attachments \
+            --path "$RUNNER_TEMP/native-mac-screenshots/Capture.xcresult" \
+            --output-path "$RUNNER_TEMP/native-mac-screenshots/attachments"
+          xcrun swift tools/macos-capture-export.swift \
+            "$RUNNER_TEMP/native-mac-screenshots/attachments" \
+            "$RUNNER_TEMP/native-mac-screenshots/screenshots"
           jq -n --arg sourceRevision "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" \
             --arg version "$MACOS_MARKETING_VERSION" --arg build "$MACOS_BUILD_NUMBER" \
-            '{sourceRevision:$sourceRevision,runId:$runId,version:$version,build:$build,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",syntheticFixtures:true}' \
+            '{sourceRevision:$sourceRevision,runId:$runId,version:$version,build:$build,platform:"Mac Catalyst",capture:"XCUIElement.screenshot",export:"xcresulttool export attachments",syntheticFixtures:true}' \
             > "$RUNNER_TEMP/native-mac-screenshots/provenance.json"
       - name: Upload screenshots and native test evidence
         if: always()
