@@ -377,6 +377,12 @@ def validate_app(app, bundle_id):
             raise ReleaseError(
                 "Catalyst Info.plist must declare CFBundleSupportedPlatforms=[MacOSX]"
             )
+        if not isinstance(info.get("LSMinimumSystemVersion"), str) or not re.fullmatch(
+            r"\d+\.\d+(?:\.\d+)?", info["LSMinimumSystemVersion"]
+        ):
+            raise ReleaseError(
+                "Catalyst Info.plist has an invalid LSMinimumSystemVersion"
+            )
         for name in (
             "DTPlatformName",
             "DTPlatformVersion",
@@ -711,7 +717,7 @@ def build_product_archive(app, info, output, directory):
     ET.SubElement(package, "update-bundle")
     ET.SubElement(package, "atomic-update-bundle")
     xml_file(component / "PackageInfo", package)
-    distribution = ET.Element("installer-gui-script", {"minSpecVersion": "1"})
+    distribution = ET.Element("installer-gui-script", {"minSpecVersion": "2"})
     ET.SubElement(distribution, "title").text = info.get(
         "CFBundleDisplayName", app.stem
     )
@@ -753,6 +759,13 @@ def build_product_archive(app, info, output, directory):
     )
     reference.text = f"#{component_name}"
     ET.SubElement(distribution, "product", {"id": bundle_id, "version": version})
+    ET.SubElement(
+        ET.SubElement(
+            ET.SubElement(distribution, "volume-check"), "allowed-os-versions"
+        ),
+        "os-version",
+        {"min": info["LSMinimumSystemVersion"]},
+    )
     xml_file(directory / "Distribution", distribution)
     run(
         [

@@ -15,6 +15,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -413,6 +414,7 @@ class MacReleaseTests(unittest.TestCase):
             "CFBundleVersion": "42",
             "CFBundleShortVersionString": "1.2",
             "CFBundleSupportedPlatforms": ["MacOSX"],
+            "LSMinimumSystemVersion": "14.0",
             "DTPlatformName": "macosx",
             "DTPlatformVersion": "27.0",
             "DTPlatformBuild": "26A425",
@@ -465,6 +467,23 @@ class MacReleaseTests(unittest.TestCase):
         )
         executable.chmod(0o755)
         return app
+
+    def test_app_requires_minimum_macos_version(self):
+        self.require_packaging_tools()
+        app = self.make_app()
+        path = app / "Contents/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        for value in (None, "invalid"):
+            with self.subTest(minimum=value):
+                if value is None:
+                    info.pop("LSMinimumSystemVersion")
+                else:
+                    info["LSMinimumSystemVersion"] = value
+                path.write_bytes(plistlib.dumps(info))
+                with self.assertRaisesRegex(
+                    sign_mac.ReleaseError, "LSMinimumSystemVersion"
+                ):
+                    sign_mac.validate_app(app, BUNDLE_ID)
 
     def test_macho_sdk_version_must_match_recorded_sdk(self):
         self.require_packaging_tools()
@@ -615,6 +634,13 @@ class MacReleaseTests(unittest.TestCase):
             expanded = self.directory / "expanded-product"
             expanded.mkdir()
             sign_mac.run([sign_mac.tool("xar"), "-xf", str(output)], cwd=expanded)
+            distribution = ET.parse(expanded / "Distribution").getroot()
+            self.assertEqual(
+                distribution.find("volume-check/allowed-os-versions/os-version").get(
+                    "min"
+                ),
+                "14.0",
+            )
             payload = gzip.decompress((expanded / "BruTV.pkg/Payload").read_bytes())
             sign_mac.run(
                 [sign_mac.tool("cpio"), "-id", "--no-absolute-filenames"],
