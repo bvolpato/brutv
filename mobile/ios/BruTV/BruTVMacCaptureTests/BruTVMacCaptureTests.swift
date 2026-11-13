@@ -27,6 +27,11 @@ final class BruTVMacCaptureTests: XCTestCase {
             } else {
                 XCTAssertTrue(app.buttons["connectButton"].waitForExistence(timeout: 20))
             }
+            let title = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+                .withOffset(CGVector(dx: 0, dy: 12))
+            title.press(forDuration: 0.1, thenDragTo: title.withOffset(
+                CGVector(dx: 40 - window.frame.minX, dy: 40 - window.frame.minY)
+            ))
             for _ in 0..<3 where abs(window.frame.width - 1280) > 1 || abs(window.frame.height - 800) > 1 {
                 let frame = window.frame
                 let origin = window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))

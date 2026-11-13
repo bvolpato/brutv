@@ -85,6 +85,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/native-mac-screenshots"
+          xcrun swift tools/macos-capture-display.swift \
+            | tee "$RUNNER_TEMP/native-mac-screenshots/display.log"
           xcodebuild test \
             -project mobile/ios/BruTV/BruTV.xcodeproj \
             -scheme BruTVMacScreenshots \

@@ -207,6 +207,14 @@ Each folder has `01_login`, `02_channels`, `03_player`, `04_guide`, and `05_sett
 
 Capture Mac Catalyst screenshots from the running native app on macOS. The optional `generate_mac_screenshots.py` helper creates concept mockups from iPad images under `build/mockups/`; it is excluded from the store capture workflow and does not provide native UI evidence.
 
+The manual `macos-screenshots` CI scope runs the Catalyst app with offline fixtures and captures its actual login, channel list, and settings windows through XCUI. Select the branch containing the capture workflow:
+
+```bash
+GH_CONFIG_DIR=/home/bruno/.config/gh-personal gh workflow run ci.yml --repo bvolpato/brutv --ref BRANCH -f scope=macos-screenshots
+```
+
+Download the `brutv-native-mac-screenshots` artifact from the successful run and inspect every image before uploading. The workflow requires a native display large enough for a 1280 x 800 window. Captures must be 1280 x 800 or 2560 x 1600, both accepted [Mac screenshot sizes](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications). The artifact includes JPEG files without transparency, original XCUI screenshot attachments, native test results, logs, and source provenance. It does not resize, composite, or reconstruct the interface. Fixture captures verify the rendered UI, not live-provider playback.
+
 ---
 
 ## 4. Building the Signed App Store IPA
