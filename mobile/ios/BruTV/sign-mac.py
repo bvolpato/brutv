@@ -153,7 +153,11 @@ def load_identity(path, password_name, kind, directory):
             raise ReleaseError(
                 "installer certificate is missing its Mac Installer Distribution extended key usage"
             ) from exc
-        if ObjectIdentifier("1.2.840.113635.100.4.10") not in usage:
+        # Apple WWDR CPS 4.11.6 identifies third-party installer submissions.
+        if (
+            ObjectIdentifier("1.2.840.113635.100.4.9") not in usage
+            or "1.2.840.113635.100.6.1.8" not in extensions
+        ):
             raise ReleaseError(
                 "installer certificate must be Mac Installer Distribution (3rd Party Mac Developer Installer), not Developer ID Installer"
             )
@@ -373,6 +377,12 @@ def validate_app(app, bundle_id):
             raise ReleaseError(
                 "Catalyst Info.plist must declare CFBundleSupportedPlatforms=[MacOSX]"
             )
+        if not isinstance(info.get("LSMinimumSystemVersion"), str) or not re.fullmatch(
+            r"\d+\.\d+(?:\.\d+)?", info["LSMinimumSystemVersion"]
+        ):
+            raise ReleaseError(
+                "Catalyst Info.plist has an invalid LSMinimumSystemVersion"
+            )
         for name in (
             "DTPlatformName",
             "DTPlatformVersion",
@@ -581,6 +591,11 @@ def validate_signed_app(app, info, certificate, entitlements, roots, directory):
                 str(roots),
                 "-purpose",
                 "any",
+                *code_cms_extension_options(
+                    cms,
+                    roots,
+                    {"1.2.840.113635.100.6.1.7", "1.2.840.113635.100.6.1.4"},
+                ),
                 "-signer",
                 str(signer_path),
             ]
@@ -593,6 +608,35 @@ def validate_signed_app(app, info, certificate, entitlements, roots, directory):
                 "Catalyst executable signature uses the wrong distribution certificate"
             )
     validate_resource_files(app, info, resources_bytes)
+
+
+def code_cms_extension_options(cms, roots, markers):
+    # OpenSSL cannot interpret Apple's critical role markers. Validate them
+    # explicitly before permitting it to verify the signature and trust chain.
+    standard = {"2.5.29.19", "2.5.29.15", "2.5.29.37"}
+    certificates = pkcs7.load_der_pkcs7_certificates(cms.read_bytes())
+    certificates.extend(x509.load_pem_x509_certificates(roots.read_bytes()))
+    for certificate in certificates:
+        try:
+            is_ca = certificate.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            ).value.ca
+        except x509.ExtensionNotFound:
+            is_ca = False
+        for extension in certificate.extensions:
+            if not extension.critical or extension.oid.dotted_string in standard:
+                continue
+            if (
+                not is_ca
+                and extension.oid.dotted_string in markers
+                and isinstance(extension.value, x509.UnrecognizedExtension)
+                and extension.value.value == b"\x05\x00"
+            ):
+                continue
+            raise ReleaseError(
+                f"unsupported critical code-signing certificate extension: {extension.oid.dotted_string}"
+            )
+    return ["-ignore_critical", "-no-CApath", "-no-CAstore"]
 
 
 def xml_file(path, element):
@@ -673,7 +717,7 @@ def build_product_archive(app, info, output, directory):
     ET.SubElement(package, "update-bundle")
     ET.SubElement(package, "atomic-update-bundle")
     xml_file(component / "PackageInfo", package)
-    distribution = ET.Element("installer-gui-script", {"minSpecVersion": "1"})
+    distribution = ET.Element("installer-gui-script", {"minSpecVersion": "2"})
     ET.SubElement(distribution, "title").text = info.get(
         "CFBundleDisplayName", app.stem
     )
@@ -715,6 +759,13 @@ def build_product_archive(app, info, output, directory):
     )
     reference.text = f"#{component_name}"
     ET.SubElement(distribution, "product", {"id": bundle_id, "version": version})
+    ET.SubElement(
+        ET.SubElement(
+            ET.SubElement(distribution, "volume-check"), "allowed-os-versions"
+        ),
+        "os-version",
+        {"min": info["LSMinimumSystemVersion"]},
+    )
     xml_file(directory / "Distribution", distribution)
     run(
         [
@@ -797,6 +848,7 @@ def validate_product_archive(path, roots, directory, bundle_id):
                 str(roots),
                 "-purpose",
                 "any",
+                *code_cms_extension_options(cms, roots, {"1.2.840.113635.100.6.1.8"}),
                 "-signer",
                 str(directory / "pkg-signer.pem"),
             ]
@@ -816,7 +868,11 @@ def validate_product_archive(path, roots, directory, bundle_id):
             raise ReleaseError(
                 "Mac product archive signer is not a Mac Installer Distribution certificate"
             ) from exc
-        if ObjectIdentifier("1.2.840.113635.100.4.10") not in usage:
+        extensions = {extension.oid.dotted_string for extension in signer.extensions}
+        if (
+            ObjectIdentifier("1.2.840.113635.100.4.9") not in usage
+            or "1.2.840.113635.100.6.1.8" not in extensions
+        ):
             raise ReleaseError(
                 "Mac product archive signer is not a Mac Installer Distribution certificate"
             )

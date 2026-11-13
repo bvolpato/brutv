@@ -95,6 +95,20 @@ IOS_BUILD_NUMBER=21 uv run --no-project --env-file .env -- ./mobile/ios/BruTV/re
 
 Choose an unused build number in App Store Connect before each upload. A team API key with the Developer role can upload builds across the team's apps; provisioning profiles remain specific to each app.
 
+For Mac Catalyst, use an Apple Distribution application certificate, a **Mac Installer Distribution** installer certificate, and a **Mac Catalyst App Store** provisioning profile for the shared bundle identifier. Developer ID certificates serve a different distribution route. Keep both P12 files and the profile outside the repository, with their paths and passwords in `.env`.
+
+```bash
+# Build a universal Release app, sign the installer, and distribute to BruTV Internal.
+IOS_MARKETING_VERSION=1.0.2 IOS_BUILD_NUMBER=24 uv run --no-project --env-file .env -- ./mobile/ios/BruTV/release.sh --platform macos --upload --testflight-group 'BruTV Internal'
+
+# Reuse an existing unsigned app when only signing or delivery needs correction.
+uv run --no-project --env-file .env -- ./mobile/ios/BruTV/release.sh --platform macos --app /path/to/xtool/BruTV.app --upload --testflight-group 'BruTV Internal'
+```
+
+Select a marketing version whose App Store Connect release train accepts uploads. Apple rejects new builds for a closed version even when the build number is unused. `IOS_MARKETING_VERSION` overrides the checked-in version for Linux builds, including Catalyst.
+
+The reused app must already contain the intended version, unused build number, icon resources, and both architectures. The `--app` option signs that artifact without recompiling or changing its version. Preserve its adjacent `BruTV.app.dSYM` for symbolication. Reuse the existing SDK, linker, and signing-tool caches through `BRUTV_TOOLS_DIR`, `BRUTV_LLVM_TOOLS_DIR`, and `BRUTV_MAC_TOOLS_DIR` when working from another checkout. If Apple has already received an upload, resume processing or group assignment with its build ID instead of uploading the same build again.
+
 Certificate and provisioning profile variables also accept `_BASE64` in place of `_PATH`. Do not put passwords or key contents in command arguments. iOS/tvOS use the private zsign installation; Mac Catalyst uses rcodesign and genuine BOM/CPIO/XAR installer tools. The helpers verify distribution profiles, certificate trust, entitlements, executable signatures, sealed resources, and installer checksums. They preserve an existing output if signing fails. `upload-build.py --validate-only` validates package structure offline; cryptographic verification belongs to the signing helper.
 
 ## macOS prerequisites

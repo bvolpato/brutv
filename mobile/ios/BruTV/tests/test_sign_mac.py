@@ -15,6 +15,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -34,7 +35,16 @@ TEAM = "TESTTEAM01"
 BUNDLE_ID = "com.bvolpato.brutv"
 
 
-def certificate(kind, issuer=None, issuer_key=None):
+def certificate(
+    kind,
+    issuer=None,
+    issuer_key=None,
+    *,
+    installer_eku="1.2.840.113635.100.4.9",
+    installer_marker="1.2.840.113635.100.6.1.8",
+    marker_critical=True,
+    extra_critical=None,
+):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name(
         [
@@ -84,19 +94,22 @@ def certificate(kind, issuer=None, issuer_key=None):
         for oid in ("1.2.840.113635.100.6.1.7", "1.2.840.113635.100.6.1.4"):
             builder = builder.add_extension(
                 x509.UnrecognizedExtension(ObjectIdentifier(oid), b"\x05\x00"),
-                critical=False,
+                critical=marker_critical,
             )
     elif kind == "installer":
         builder = builder.add_extension(
-            x509.ExtendedKeyUsage([ObjectIdentifier("1.2.840.113635.100.4.10")]),
+            x509.ExtendedKeyUsage([ObjectIdentifier(installer_eku)]),
             critical=True,
         )
-        builder = builder.add_extension(
-            x509.UnrecognizedExtension(
-                ObjectIdentifier("1.2.840.113635.100.6.1.8"), b"\x05\x00"
-            ),
-            critical=False,
-        )
+        if installer_marker is not None:
+            builder = builder.add_extension(
+                x509.UnrecognizedExtension(
+                    ObjectIdentifier(installer_marker), b"\x05\x00"
+                ),
+                critical=marker_critical,
+            )
+    if extra_critical is not None:
+        builder = builder.add_extension(extra_critical, critical=True)
     return key, builder.sign(issuer_key or key, hashes.SHA256())
 
 
@@ -260,6 +273,101 @@ class MacReleaseTests(unittest.TestCase):
                 path, "MACOS_INSTALLER_P12_PASSWORD", "installer", self.directory
             )
 
+    def test_installer_submission_certificate_role(self):
+        for label, eku, marker, accepted in (
+            ("submission", "1.2.840.113635.100.4.9", "1.2.840.113635.100.6.1.8", True),
+            ("store", "1.2.840.113635.100.4.10", "1.2.840.113635.100.6.1.10", False),
+            (
+                "developer-id",
+                "1.2.840.113635.100.4.13",
+                "1.2.840.113635.100.6.1.14",
+                False,
+            ),
+            ("missing-marker", "1.2.840.113635.100.4.9", None, False),
+        ):
+            with self.subTest(role=label):
+                key, cert = certificate(
+                    "installer",
+                    self.root,
+                    self.root_key,
+                    installer_eku=eku,
+                    installer_marker=marker,
+                )
+                directory = self.directory / label
+                directory.mkdir()
+                path = directory / "identity.p12"
+                path.write_bytes(
+                    pkcs12.serialize_key_and_certificates(
+                        b"fixture",
+                        key,
+                        cert,
+                        [self.root],
+                        serialization.BestAvailableEncryption(b"secret"),
+                    )
+                )
+                with patch.dict(os.environ, {"MACOS_INSTALLER_P12_PASSWORD": "secret"}):
+                    if accepted:
+                        loaded, team, pem = sign_mac.load_identity(
+                            path, "MACOS_INSTALLER_P12_PASSWORD", "installer", directory
+                        )
+                        self.assertEqual(loaded.serial_number, cert.serial_number)
+                        self.assertEqual(team, TEAM)
+                        self.assertEqual(pem.stat().st_mode & 0o777, 0o600)
+                    else:
+                        with self.assertRaisesRegex(
+                            sign_mac.ReleaseError, "Mac Installer Distribution"
+                        ):
+                            sign_mac.load_identity(
+                                path,
+                                "MACOS_INSTALLER_P12_PASSWORD",
+                                "installer",
+                                directory,
+                            )
+
+    def test_code_cms_rejects_unsupported_critical_extensions(self):
+        marker = "1.2.840.113635.100.6.1.8"
+        for label, target, oid, value in (
+            ("leaf", "leaf", "1.2.3.4", b"\x05\x00"),
+            ("issuer", "issuer", "1.2.3.4", b"\x05\x00"),
+            ("root", "root", "1.2.3.4", b"\x05\x00"),
+            ("ca-marker", "issuer", marker, b"\x05\x00"),
+            ("malformed-marker", "leaf", marker, b"\x04\x00"),
+        ):
+            with self.subTest(case=label):
+                extra = x509.UnrecognizedExtension(ObjectIdentifier(oid), value)
+                root_key, root = certificate(
+                    "root", extra_critical=extra if target == "root" else None
+                )
+                issuer_key, issuer = certificate(
+                    "profile-issuer",
+                    root,
+                    root_key,
+                    extra_critical=extra if target == "issuer" else None,
+                )
+                key, cert = certificate(
+                    "installer",
+                    issuer,
+                    issuer_key,
+                    installer_marker=None
+                    if oid == marker and target == "leaf"
+                    else marker,
+                    extra_critical=extra if target == "leaf" else None,
+                )
+                cms = self.directory / f"{label}.der"
+                cms.write_bytes(
+                    pkcs7.PKCS7SignatureBuilder()
+                    .set_data(b"signed content")
+                    .add_signer(cert, key, hashes.SHA256())
+                    .add_certificate(issuer)
+                    .sign(serialization.Encoding.DER, [pkcs7.PKCS7Options.Binary])
+                )
+                roots = self.directory / f"{label}-roots.pem"
+                roots.write_bytes(root.public_bytes(serialization.Encoding.PEM))
+                with self.assertRaisesRegex(
+                    sign_mac.ReleaseError, "unsupported critical"
+                ):
+                    sign_mac.code_cms_extension_options(cms, roots, {marker})
+
     def test_signed_profile_requires_trust(self):
         profile_path = self.directory / "profile.provisionprofile"
         profile_path.write_bytes(self.signed_profile_bytes())
@@ -274,11 +382,14 @@ class MacReleaseTests(unittest.TestCase):
             sign_mac.read_profile(profile_path, roots)
 
     def test_application_certificate_cannot_sign_a_provisioning_profile(self):
+        key, cert = certificate(
+            "application", self.root, self.root_key, marker_critical=False
+        )
         profile_path = self.directory / "forged.provisionprofile"
         profile_path.write_bytes(
             pkcs7.PKCS7SignatureBuilder()
             .set_data(plistlib.dumps(self.profile))
-            .add_signer(self.app_cert, self.app_key, hashes.SHA256())
+            .add_signer(cert, key, hashes.SHA256())
             .add_certificate(self.root)
             .sign(serialization.Encoding.DER, [pkcs7.PKCS7Options.Binary])
         )
@@ -303,6 +414,7 @@ class MacReleaseTests(unittest.TestCase):
             "CFBundleVersion": "42",
             "CFBundleShortVersionString": "1.2",
             "CFBundleSupportedPlatforms": ["MacOSX"],
+            "LSMinimumSystemVersion": "14.0",
             "DTPlatformName": "macosx",
             "DTPlatformVersion": "27.0",
             "DTPlatformBuild": "26A425",
@@ -355,6 +467,23 @@ class MacReleaseTests(unittest.TestCase):
         )
         executable.chmod(0o755)
         return app
+
+    def test_app_requires_minimum_macos_version(self):
+        self.require_packaging_tools()
+        app = self.make_app()
+        path = app / "Contents/Info.plist"
+        info = plistlib.loads(path.read_bytes())
+        for value in (None, "invalid"):
+            with self.subTest(minimum=value):
+                if value is None:
+                    info.pop("LSMinimumSystemVersion")
+                else:
+                    info["LSMinimumSystemVersion"] = value
+                path.write_bytes(plistlib.dumps(info))
+                with self.assertRaisesRegex(
+                    sign_mac.ReleaseError, "LSMinimumSystemVersion"
+                ):
+                    sign_mac.validate_app(app, BUNDLE_ID)
 
     def test_macho_sdk_version_must_match_recorded_sdk(self):
         self.require_packaging_tools()
@@ -490,9 +619,28 @@ class MacReleaseTests(unittest.TestCase):
             self.assertEqual(
                 sign_mac.main(["--validate-only", "--output", str(output)]), 0
             )
+            _, other_root = certificate("root")
+            other_roots = self.directory / "other-roots.pem"
+            other_roots.write_bytes(other_root.public_bytes(serialization.Encoding.PEM))
+            errors = io.StringIO()
+            with (
+                patch.dict(os.environ, {"MACOS_APPLE_ROOT_CA_PATH": str(other_roots)}),
+                contextlib.redirect_stderr(errors),
+            ):
+                self.assertEqual(
+                    sign_mac.main(["--validate-only", "--output", str(output)]), 1
+                )
+            self.assertIn("certificate verify error", errors.getvalue())
             expanded = self.directory / "expanded-product"
             expanded.mkdir()
             sign_mac.run([sign_mac.tool("xar"), "-xf", str(output)], cwd=expanded)
+            distribution = ET.parse(expanded / "Distribution").getroot()
+            self.assertEqual(
+                distribution.find("volume-check/allowed-os-versions/os-version").get(
+                    "min"
+                ),
+                "14.0",
+            )
             payload = gzip.decompress((expanded / "BruTV.pkg/Payload").read_bytes())
             sign_mac.run(
                 [sign_mac.tool("cpio"), "-id", "--no-absolute-filenames"],
