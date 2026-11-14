@@ -98,6 +98,7 @@ class PreparationTests(unittest.TestCase):
         )
         self.assertEqual(extension["CFBundleIdentifier"], "com.example.tv.shelf")
         self.assertEqual(extension["UIDeviceFamily"], [3])
+        self.assertEqual(extension["UIRequiredDeviceCapabilities"], ["arm64"])
         self.assertEqual(
             extension["NSExtension"]["NSExtensionPrincipalClass"],
             "BruTVTopShelf.ContentProvider",

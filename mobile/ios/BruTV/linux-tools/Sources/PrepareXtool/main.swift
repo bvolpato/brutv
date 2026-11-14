@@ -343,6 +343,7 @@ struct PrepareXtool {
             }
             extensionInfo["MinimumOSVersion"] = minimumOS
             extensionInfo["UIDeviceFamily"] = [3]
+            extensionInfo["UIRequiredDeviceCapabilities"] = ["arm64"]
             try writePlist(extensionInfo, to: output.appendingPathComponent("TopShelf-Info.plist"))
         }
 
