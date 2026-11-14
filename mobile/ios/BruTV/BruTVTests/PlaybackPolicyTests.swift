@@ -129,6 +129,15 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertFalse(PlaybackPolicy.retriesAtEnd(isLive: true, url: nil))
     }
 
+    func testBackgroundAudioDeclarationRequiresAudioBackgroundMode() {
+        XCTAssertTrue(PlaybackPolicy.declaresBackgroundAudio(in: ["UIBackgroundModes": ["audio"]]))
+        XCTAssertTrue(PlaybackPolicy.declaresBackgroundAudio(in: ["UIBackgroundModes": ["fetch", "audio"]]))
+        XCTAssertFalse(PlaybackPolicy.declaresBackgroundAudio(in: ["UIBackgroundModes": ["fetch"]]))
+        XCTAssertFalse(PlaybackPolicy.declaresBackgroundAudio(in: ["UIBackgroundModes": []]))
+        XCTAssertFalse(PlaybackPolicy.declaresBackgroundAudio(in: [:]))
+        XCTAssertFalse(PlaybackPolicy.declaresBackgroundAudio(in: nil))
+    }
+
     // MARK: - Quality step-down
 
     func testOneStallKeepsQualityAndTwoStallsCapBelowThePlayingVariant() {

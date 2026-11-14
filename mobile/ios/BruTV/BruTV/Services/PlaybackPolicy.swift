@@ -70,6 +70,10 @@ enum PlaybackPolicy {
         isLive && url.map { !$0.isFileURL } == true
     }
 
+    static func declaresBackgroundAudio(in infoDictionary: [String: Any]?) -> Bool {
+        (infoDictionary?["UIBackgroundModes"] as? [String])?.contains("audio") == true
+    }
+
     static func networkFailure(for error: Error?, httpStatus: Int? = nil, localLiveRecording: Bool = false) -> PlaybackFailure? {
         if let status = httpStatus {
             switch status {

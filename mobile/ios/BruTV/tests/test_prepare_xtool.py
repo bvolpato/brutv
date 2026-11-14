@@ -89,6 +89,7 @@ class PreparationTests(unittest.TestCase):
         extension = self.plist("TopShelf-Info.plist")
         self.assertEqual(app["CFBundleIdentifier"], "com.example.tv")
         self.assertEqual(app["UIDeviceFamily"], [3])
+        self.assertNotIn("UIBackgroundModes", app)
         self.assertEqual(
             app["CFBundleIcons"]["CFBundlePrimaryIcon"], "App Icon - Small"
         )
@@ -142,6 +143,7 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         info = self.plist("Info.plist")
         self.assertEqual(info["UIDeviceFamily"], [1, 2])
+        self.assertEqual(info["UIBackgroundModes"], ["audio"])
         self.assertNotIn("TVTopShelfImage", info)
         self.assertTrue(
             info["CFBundleIcons"]["CFBundlePrimaryIcon"]["CFBundleIconFiles"]
