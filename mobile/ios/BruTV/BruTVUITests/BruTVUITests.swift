@@ -117,6 +117,38 @@ final class BruTVUITests: XCTestCase {
         }
     }
 
+    private func assertLiveTransportAlignment(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) throws {
+        let identifiers = ["playerPrevButton", "playerLiveRewindButton", "playerPlayPauseButton", "playerLiveForwardButton", "playerNextButton"]
+        let snapshot = try app.windows.firstMatch.snapshot()
+        let buttons = snapshotDescendants(snapshot).filter { $0.elementType == .button }
+        let frames = try identifiers.map { identifier in
+            try XCTUnwrap(buttons.first { $0.identifier == identifier }, "\(identifier) is missing from the transport row", file: file, line: line).frame
+        }
+        let play = frames[2]
+        for (identifier, frame) in zip(identifiers, frames) {
+            // The local WAV fixture has no live seek range. Disabled seek controls
+            // must still occupy their places in the row, even when not hittable.
+            let button = app.buttons[identifier]
+            if button.isEnabled {
+                XCTAssertTrue(button.isHittable, "\(identifier) is not reachable", file: file, line: line)
+            }
+            XCTAssertTrue(snapshot.frame.contains(frame), "\(identifier) is outside the window: \(frame)", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(identifier) has a narrow hit area", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) has a short hit area", file: file, line: line)
+            XCTAssertEqual(frame.midY, play.midY, accuracy: 1, "\(identifier) is not aligned with play/pause", file: file, line: line)
+        }
+        XCTAssertEqual(play.midX, (frames[0].midX + frames[4].midX) / 2, accuracy: 1,
+                       "Play/pause is not centered between channel controls", file: file, line: line)
+        XCTAssertEqual(play.midX, (frames[1].midX + frames[3].midX) / 2, accuracy: 1,
+                       "Play/pause is not centered between seek controls", file: file, line: line)
+        let gaps = zip(frames, frames.dropFirst()).map { $1.minX - $0.maxX }
+        for (index, gap) in gaps.enumerated() {
+            XCTAssertGreaterThan(gap, 0, "\(identifiers[index]) and \(identifiers[index + 1]) overlap or are out of order", file: file, line: line)
+        }
+        XCTAssertEqual(gaps[0], gaps[3], accuracy: 1, "Channel-to-seek spacing is asymmetric", file: file, line: line)
+        XCTAssertEqual(gaps[1], gaps[2], accuracy: 1, "Spacing around play/pause is asymmetric", file: file, line: line)
+    }
+
     private func assertOnChannelList(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(
             app.buttons["playerBackButton"].waitForNonExistence(timeout: 5),
@@ -431,6 +463,7 @@ final class BruTVUITests: XCTestCase {
             )
             XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed, "Window did not finish rotating")
             try assertButtonsFitWindow(app, identifiers: ["playerBackButton", "playerCloseButton", "playerGuideButton", "playerPrevButton", "playerPlayPauseButton", "playerNextButton", "playerMuteButton", "playerMoreOptionsButton"])
+            try assertLiveTransportAlignment(app)
             app.buttons["playerGuideButton"].tap()
             let guideClose = app.buttons["guideCloseButton"]
             XCTAssertTrue(guideClose.waitForExistence(timeout: 5), "Channel guide did not open after rotation")

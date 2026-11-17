@@ -760,7 +760,7 @@ public struct PlayerView: View {
 
                 VStack(spacing: 10) {
                     liveTransportControls
-                    HStack(spacing: 16) {
+                    HStack(spacing: 12) {
                         guideButton
                         audioSubtitleMenu
                         muteButton
@@ -792,11 +792,28 @@ public struct PlayerView: View {
     }
 
     private var liveTransportControls: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             prevChannelButton
+            if playback.settings.liveRewind { liveSeekButton(forward: false) }
             playPauseButton
+            if playback.settings.liveRewind { liveSeekButton(forward: true) }
             nextChannelButton
         }
+    }
+
+    private func liveSeekButton(forward: Bool) -> some View {
+        Button {
+            playback.seekLive(by: forward ? 10 : -10)
+            scheduleControlsAutoHide()
+        } label: {
+            Image(systemName: forward ? "goforward.10" : "gobackward.10")
+                .font(.system(size: 15, weight: .semibold))
+        }
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
+        .disabled(!playback.canSeekLive)
+        .opacity(playback.canSeekLive ? 1.0 : 0.35)
+        .accessibilityLabel(forward ? "Forward 10 seconds".localized : "Rewind 10 seconds".localized)
+        .accessibilityIdentifier(forward ? "playerLiveForwardButton" : "playerLiveRewindButton")
     }
 
     private var vodRewindButton: some View {
@@ -1157,37 +1174,11 @@ public struct PlayerView: View {
                 }
             }
 
-            if isSeekable {
-                HStack(spacing: 8) {
-                    Button {
-                        playback.seekLive(by: -10)
-                        scheduleControlsAutoHide()
-                    } label: {
-                        Image(systemName: "gobackward.10")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 28))
-                    .accessibilityLabel("Rewind 10 seconds".localized)
-
-                    Button {
-                        playback.seekLive(by: 10)
-                        scheduleControlsAutoHide()
-                    } label: {
-                        Image(systemName: "goforward.10")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 28))
-                    .accessibilityLabel("Forward 10 seconds".localized)
-
-                    if playback.isRecoveringLiveBuffer {
-                        Text("Buffering rewind…".localized)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.cyan.opacity(0.85))
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-                }
+            if playback.isRecoveringLiveBuffer {
+                Text("Buffering rewind…".localized)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.cyan.opacity(0.85))
+                    .lineLimit(1)
             }
         }
     }
