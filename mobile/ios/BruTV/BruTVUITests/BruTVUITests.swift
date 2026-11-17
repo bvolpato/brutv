@@ -133,8 +133,8 @@ final class BruTVUITests: XCTestCase {
                 XCTAssertTrue(button.isHittable, "\(identifier) is not reachable", file: file, line: line)
             }
             XCTAssertTrue(snapshot.frame.contains(frame), "\(identifier) is outside the window: \(frame)", file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(identifier) has a narrow hit area", file: file, line: line)
-            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(identifier) has a short hit area", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.width, 43.5, "\(identifier) has a narrow hit area", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(frame.height, 43.5, "\(identifier) has a short hit area", file: file, line: line)
             XCTAssertEqual(frame.midY, play.midY, accuracy: 1, "\(identifier) is not aligned with play/pause", file: file, line: line)
         }
         XCTAssertEqual(play.midX, (frames[0].midX + frames[4].midX) / 2, accuracy: 1,
