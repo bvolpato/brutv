@@ -300,6 +300,18 @@ std::string headerCase(std::string value) {
     }
     return value;
 }
+bool forbiddenHeaderName(std::string_view name) {
+    return ieq(name, "host") || ieq(name, "connection") || ieq(name, "content-length") ||
+           ieq(name, "transfer-encoding") || ieq(name, "upgrade") || ieq(name, "te") ||
+           ieq(name, "keep-alive") || ieq(name, "proxy-connection") ||
+           ieq(name, "proxy-authorization");
+}
+bool validHeaderValue(std::string_view value) {
+    return !value.empty() && value.size() <= 4096 &&
+           std::none_of(value.begin(), value.end(), [](unsigned char c) {
+               return c < 0x20 || c == 0x7f;
+           });
+}
 void addHeader(std::unordered_map<std::string, std::string>& headers, std::string_view option) {
     auto equals = option.find('=');
     if (equals == std::string_view::npos || equals == 0) return;
@@ -311,8 +323,7 @@ void addHeader(std::unordered_map<std::string, std::string>& headers, std::strin
     else if (key.rfind("http-header-", 0) == 0) name = headerCase(key.substr(12));
     else return;
     auto value = trim(option.substr(equals + 1));
-    if (value.empty() || value.size() > 8192 || value.find_first_of("\r\n") != std::string::npos ||
-        ieq(name, "host") || ieq(name, "connection") || ieq(name, "content-length")) return;
+    if (!validHeaderValue(value) || forbiddenHeaderName(name)) return;
     headers[name] = std::move(value);
 }
 void addJsonHeaders(std::unordered_map<std::string, std::string>& headers, std::string_view jsonText) {
@@ -327,8 +338,7 @@ void addJsonHeaders(std::unordered_map<std::string, std::string>& headers, std::
             const bool token = std::all_of(name.begin(), name.end(), [](unsigned char c) {
                 return std::isalnum(c) || std::string_view("!#$%&'*+-.^_|~").find(static_cast<char>(c)) != std::string_view::npos || c == 0x60;
             });
-            if (!token || value.empty() || value.size() > 8192 || value.find_first_of("\r\n") != std::string::npos ||
-                ieq(name, "host") || ieq(name, "connection") || ieq(name, "content-length")) continue;
+            if (!token || !validHeaderValue(value) || forbiddenHeaderName(name)) continue;
             headers[headerCase(name)] = value;
         }
     } catch (...) {
@@ -459,6 +469,12 @@ std::int64_t ji(const Json& object, std::string_view key) {
 }
 Json providerJson(std::string_view response) {
     if (response.size() > kMaxResponse) throw CatalogError("The provider response exceeds the size limit.");
+    if (response.size() >= 3 &&
+        static_cast<unsigned char>(response[0]) == 0xEF &&
+        static_cast<unsigned char>(response[1]) == 0xBB &&
+        static_cast<unsigned char>(response[2]) == 0xBF) {
+        response.remove_prefix(3);
+    }
     if (!jsonDepthWithin(response)) throw CatalogError("The provider response exceeds the nesting limit.");
     try {
         auto value = Json::parse(response.begin(), response.end());
@@ -650,7 +666,90 @@ std::optional<Source> parseLoginLink(const std::string& input) {
     return fromPlaylist(text);
 }
 
+std::optional<std::string> alternateXtreamLiveUrl(const std::string& url) {
+    if (url.empty() || url.size() > 8192) return std::nullopt;
+    for (unsigned char c : url) {
+        if (c <= 0x20 || c == 0x7f || c == '\\') return std::nullopt;
+    }
+    const std::string_view view(url);
+    const std::size_t schemeEnd = view.find("://");
+    if (schemeEnd == std::string_view::npos) return std::nullopt;
+    const std::string_view scheme = view.substr(0, schemeEnd);
+    if (!ieq(scheme, "http") && !ieq(scheme, "https")) return std::nullopt;
+    const std::size_t authStart = schemeEnd + 3;
+    const std::size_t pathStart = view.find('/', authStart);
+    if (pathStart == std::string_view::npos || pathStart == authStart) return std::nullopt;
+    const std::size_t suffixStart = view.find_first_of("?#", pathStart);
+    const std::size_t pathEnd = suffixStart == std::string_view::npos ? view.size() : suffixStart;
+    const std::string_view path = view.substr(pathStart, pathEnd - pathStart);
+    const std::string_view suffix =
+        suffixStart == std::string_view::npos ? std::string_view{} : view.substr(suffixStart);
+
+    // Split path into non-leading segments; empty segments invalidate live URLs.
+    std::vector<std::string_view> segments;
+    std::size_t pos = 1; // skip leading '/'
+    while (pos <= path.size()) {
+        const std::size_t slash = path.find('/', pos);
+        const std::size_t end = slash == std::string_view::npos ? path.size() : slash;
+        segments.push_back(path.substr(pos, end - pos));
+        if (slash == std::string_view::npos) break;
+        pos = slash + 1;
+    }
+    if (segments.size() < 3) return std::nullopt;
+    for (const auto segment : segments) {
+        if (segment.empty()) return std::nullopt;
+    }
+    const std::size_t count = segments.size();
+    const bool hasLivePrefix = count >= 4 && ieq(segments[count - 4], "live");
+    const auto isNonLiveRoot = [](std::string_view root) {
+        return ieq(root, "movie") || ieq(root, "series") || ieq(root, "timeshift") ||
+               ieq(root, "vod") || ieq(root, "hls") || ieq(root, "streams") ||
+               ieq(root, "static") || ieq(root, "assets");
+    };
+    const bool isShortXtreamLive = count == 3 && !isNonLiveRoot(segments[0]);
+    if (!hasLivePrefix && !isShortXtreamLive) {
+        return std::nullopt;
+    }
+    const std::string_view leaf = segments[count - 1];
+    std::size_t extLength = 0;
+    std::string_view replacementExt;
+    if (leaf.size() > 5 && ieq(leaf.substr(leaf.size() - 5), ".m3u8")) {
+        extLength = 5;
+        replacementExt = ".ts";
+    } else if (leaf.size() > 3 && ieq(leaf.substr(leaf.size() - 3), ".ts")) {
+        extLength = 3;
+        replacementExt = ".m3u8";
+    } else {
+        return std::nullopt;
+    }
+
+    std::string out;
+    out.reserve(url.size() + 2);
+    out.append(view.substr(0, pathEnd - extLength));
+    out.append(replacementExt);
+    out.append(suffix);
+    return out;
+}
+
 CatalogClient::CatalogClient(HttpGet httpGet) : httpGet_(std::move(httpGet)) {}
+
+std::string CatalogClient::preferredLiveFormat(const Source& source) const {
+    std::lock_guard<std::mutex> lock(formatMutex_);
+    const auto found = preferredLiveFormats_.find(sourceId(source));
+    if (found != preferredLiveFormats_.end() && !found->second.empty()) {
+        return found->second;
+    }
+    return "m3u8";
+}
+
+void CatalogClient::setPreferredLiveFormat(const Source& source, std::string format) {
+    format = lower(trim(format));
+    if (format == "hls") format = "m3u8";
+    else if (format == "mpegts") format = "ts";
+    if (format != "m3u8" && format != "ts") return;
+    std::lock_guard<std::mutex> lock(formatMutex_);
+    preferredLiveFormats_[sourceId(source)] = std::move(format);
+}
 
 void CatalogClient::authenticate(const Source& source) const {
     if (source.type == SourceType::M3U) {
@@ -671,6 +770,20 @@ void CatalogClient::authenticate(const Source& source) const {
     const auto status = lower(js(user, "status"));
     if ((auth != "1" && auth != "true") || status == "disabled" || status == "expired")
         throw CatalogError("The provider rejected this sign-in.");
+    if (user.contains("allowed_output_formats") && user["allowed_output_formats"].is_array()) {
+        bool allowsM3u8 = false;
+        bool allowsTs = false;
+        for (const auto& entry : user["allowed_output_formats"]) {
+            if (!entry.is_string()) continue;
+            const auto fmt = lower(trim(entry.get<std::string>()));
+            if (fmt == "m3u8" || fmt == "hls") allowsM3u8 = true;
+            else if (fmt == "ts" || fmt == "mpegts") allowsTs = true;
+        }
+        if (allowsM3u8 || allowsTs) {
+            std::lock_guard<std::mutex> lock(formatMutex_);
+            preferredLiveFormats_[sourceId(source)] = allowsM3u8 ? "m3u8" : "ts";
+        }
+    }
 }
 
 Catalog CatalogClient::load(const Source& source, MediaKind kind) const {
@@ -738,7 +851,7 @@ Catalog CatalogClient::load(const Source& source, MediaKind kind) const {
         item.kind = kind;
         item.categoryId = js(value, "category_id");
         if (auto category = categoryNames.find(item.categoryId); category != categoryNames.end()) item.categoryName = category->second;
-        if (kind == MediaKind::Live) item.mediaUrl = streamUrl(source, "live", providerId, "m3u8");
+        if (kind == MediaKind::Live) item.mediaUrl = streamUrl(source, "live", providerId, preferredLiveFormat(source));
         else if (kind == MediaKind::Movie) {
             auto extension = js(value, "container_extension");
             item.mediaUrl = streamUrl(source, "movie", providerId, extension.empty() ? "mp4" : extension);

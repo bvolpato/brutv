@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -94,6 +95,10 @@ std::string sourceId(const Source& source);
 // Invalid or unsupported input returns std::nullopt.
 std::optional<Source> parseLoginLink(const std::string& input);
 
+// Derives the alternate Xtream live stream URL (/live/u/p/id.m3u8 <-> .ts or /u/p/id.m3u8 <-> .ts),
+// preserving query parameters and fragments. Returns std::nullopt for non-matching URLs.
+std::optional<std::string> alternateXtreamLiveUrl(const std::string& url);
+
 class CatalogClient {
 public:
     explicit CatalogClient(HttpGet httpGet);
@@ -102,9 +107,13 @@ public:
     Catalog load(const Source& source, MediaKind kind) const;
     std::vector<MediaItem> loadEpisodes(const Source& source, const std::string& seriesId) const;
     std::vector<EpgEntry> loadEpg(const Source& source, const std::string& streamId) const;
+    std::string preferredLiveFormat(const Source& source) const;
+    void setPreferredLiveFormat(const Source& source, std::string format);
 
 private:
     HttpGet httpGet_;
+    mutable std::mutex formatMutex_;
+    mutable std::unordered_map<std::string, std::string> preferredLiveFormats_;
 };
 
 class SettingsStore {

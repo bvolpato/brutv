@@ -80,6 +80,7 @@ struct Chunk {
     int fd = -1;
     std::size_t bytes = 0;
     std::vector<Record> records;
+    std::vector<std::size_t> keyframes;
 
     explicit Chunk(const std::string& directory) {
         std::string pattern = directory + "/brutv-rewind-XXXXXX";
@@ -89,7 +90,8 @@ struct Chunk {
         if (fd < 0) {
             throw std::runtime_error("Cannot create temporary storage for live rewind.");
         }
-        const bool privateFile = ::fchmod(fd, S_IRUSR | S_IWUSR) == 0;
+        const bool privateFile =
+            ::fchmod(fd, S_IRUSR | S_IWUSR) == 0 || errno == ENOSYS || errno == EPERM;
         const bool unlinked = ::unlink(name.data()) == 0;
         if (!privateFile || !unlinked) {
             ::close(fd);
@@ -241,6 +243,9 @@ bool PacketSpool::append(const AVPacket* packet, double timelineSeconds, bool vi
         impl_->chunks.pop_back();
         throw;
     }
+    if (videoKeyframe) {
+        chunk.keyframes.push_back(chunk.records.size());
+    }
     chunk.records.push_back({impl_->nextSequence++, chunk.bytes, timelineSeconds, videoKeyframe});
     chunk.bytes += size;
     impl_->bytes += size;
@@ -263,46 +268,51 @@ PacketSpool::ReadResult PacketSpool::read(std::uint64_t& cursor, AVPacket* packe
         cursor = first;
         return ReadResult::Expired;
     }
-    for (const auto& chunk : impl_->chunks) {
+    const auto chunkIt = std::lower_bound(
+        impl_->chunks.begin(), impl_->chunks.end(), cursor,
+        [](const std::unique_ptr<Chunk>& candidate, std::uint64_t sequence) {
+            return candidate->records.back().sequence < sequence;
+        });
+    if (chunkIt != impl_->chunks.end()) {
+        const auto& chunk = *chunkIt;
         const auto record = std::lower_bound(chunk->records.begin(), chunk->records.end(), cursor,
             [](const Chunk::Record& candidate, std::uint64_t sequence) { return candidate.sequence < sequence; });
-        if (record == chunk->records.end()) {
-            continue;
-        }
-        if (::lseek(chunk->fd, static_cast<off_t>(record->offset), SEEK_SET) < 0) {
-            throw std::runtime_error("Cannot position the temporary live buffer.");
-        }
-        PacketHeader header{};
-        readBytes(chunk->fd, &header, sizeof(header));
-        av_packet_unref(packet);
-        if (av_new_packet(packet, header.size) < 0) {
-            throw std::runtime_error("Cannot allocate a live buffer packet.");
-        }
-        try {
-            readBytes(chunk->fd, packet->data, static_cast<std::size_t>(header.size));
-            packet->pts = header.pts;
-            packet->dts = header.dts;
-            packet->duration = header.duration;
-            packet->pos = header.pos;
-            packet->stream_index = header.stream;
-            packet->flags = header.flags;
-            packet->time_base = {header.timeBaseNum, header.timeBaseDen};
-            for (int index = 0; index < header.sideCount; ++index) {
-                SideHeader side{};
-                readBytes(chunk->fd, &side, sizeof(side));
-                auto* bytes = av_packet_new_side_data(packet,
-                    static_cast<AVPacketSideDataType>(side.type), static_cast<std::size_t>(side.size));
-                if (!bytes) {
-                    throw std::runtime_error("Cannot allocate live buffer packet metadata.");
-                }
-                readBytes(chunk->fd, bytes, static_cast<std::size_t>(side.size));
+        if (record != chunk->records.end()) {
+            if (::lseek(chunk->fd, static_cast<off_t>(record->offset), SEEK_SET) < 0) {
+                throw std::runtime_error("Cannot position the temporary live buffer.");
             }
-        } catch (...) {
+            PacketHeader header{};
+            readBytes(chunk->fd, &header, sizeof(header));
             av_packet_unref(packet);
-            throw;
+            if (av_new_packet(packet, header.size) < 0) {
+                throw std::runtime_error("Cannot allocate a live buffer packet.");
+            }
+            try {
+                readBytes(chunk->fd, packet->data, static_cast<std::size_t>(header.size));
+                packet->pts = header.pts;
+                packet->dts = header.dts;
+                packet->duration = header.duration;
+                packet->pos = header.pos;
+                packet->stream_index = header.stream;
+                packet->flags = header.flags;
+                packet->time_base = {header.timeBaseNum, header.timeBaseDen};
+                for (int index = 0; index < header.sideCount; ++index) {
+                    SideHeader side{};
+                    readBytes(chunk->fd, &side, sizeof(side));
+                    auto* bytes = av_packet_new_side_data(packet,
+                        static_cast<AVPacketSideDataType>(side.type), static_cast<std::size_t>(side.size));
+                    if (!bytes) {
+                        throw std::runtime_error("Cannot allocate live buffer packet metadata.");
+                    }
+                    readBytes(chunk->fd, bytes, static_cast<std::size_t>(side.size));
+                }
+            } catch (...) {
+                av_packet_unref(packet);
+                throw;
+            }
+            cursor = record->sequence + 1;
+            return ReadResult::Ready;
         }
-        cursor = record->sequence + 1;
-        return ReadResult::Ready;
     }
     return impl_->finished ? ReadResult::Finished : ReadResult::Waiting;
 }
@@ -312,15 +322,27 @@ std::uint64_t PacketSpool::seek(double targetSeconds) const {
     if (impl_->chunks.empty()) {
         return 0;
     }
-    auto sequence = impl_->chunks.front()->records.front().sequence;
-    for (const auto& chunk : impl_->chunks) {
-        for (const auto& record : chunk->records) {
-            if (record.keyframe && record.seconds <= targetSeconds) {
-                sequence = record.sequence;
-            }
-        }
+    const auto chunkIt = std::upper_bound(
+        impl_->chunks.begin(), impl_->chunks.end(), targetSeconds,
+        [](double target, const std::unique_ptr<Chunk>& candidate) {
+            return target < candidate->records.front().seconds;
+        });
+    if (chunkIt == impl_->chunks.begin()) {
+        return impl_->chunks.front()->records.front().sequence;
     }
-    return sequence;
+    const auto& chunk = *std::prev(chunkIt);
+    if (chunk->keyframes.empty()) {
+        return chunk->records.front().sequence;
+    }
+    const auto keyframeIt = std::upper_bound(
+        chunk->keyframes.begin(), chunk->keyframes.end(), targetSeconds,
+        [&](double target, std::size_t index) {
+            return target < chunk->records[index].seconds;
+        });
+    if (keyframeIt == chunk->keyframes.begin()) {
+        return chunk->records[chunk->keyframes.front()].sequence;
+    }
+    return chunk->records[*std::prev(keyframeIt)].sequence;
 }
 
 PacketSpool::Snapshot PacketSpool::snapshot() const {

@@ -29,6 +29,9 @@ std::string defaultSettings() {
 } // namespace
 int main(int argc, char **argv) {
     try {
+#ifdef BRUTV_PS5
+        ::setenv("SSL_CERT_FILE", "/app0/assets/ca-bundle.crt", 0);
+#endif
         bool preview = false;
         int frames = 0;
         std::string screenshot, source, play, settings = defaultSettings(),
@@ -88,8 +91,10 @@ int main(int argc, char **argv) {
             app.handle(platform->poll());
             app.tick();
             const int width = platform->width(), height = platform->height();
-            if (width < 1 || height < 1)
+            if (width < 1 || height < 1) {
+                std::this_thread::sleep_until(nextFrame);
                 continue;
+            }
             gfx.begin(width, height);
             app.render();
             gfx.end();
