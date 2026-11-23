@@ -42,7 +42,11 @@ struct BruTVApp: App {
                 let openWindows = UIApplication.shared.connectedScenes
                     .filter { $0.activationState != .unattached && $0.session.role == .windowApplication }
                 if openWindows.isEmpty {
-                    exit(0)
+                    Task { @MainActor in
+                        PlaybackManager.shared.stop()
+                        await PlaybackManager.shared.waitForPendingTeardown()
+                        exit(0)
+                    }
                 }
             }
         }

@@ -2,9 +2,9 @@ import SwiftUI
 
 public struct FavoritesView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
+    @State private var playingStreamID: Int? = PlaybackManager.shared.currentStream?.id
     @State private var favoriteStreams: [LiveStream] = []
     @State private var recentStreams: [LiveStream] = []
     @State private var searchText: String = ""
@@ -125,9 +125,9 @@ public struct FavoritesView: View {
                                 ForEach(filteredFavoriteStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
-                                        isSelected: playback.currentStream?.id == stream.id
+                                        isSelected: playingStreamID == stream.id
                                     ) {
-                                        playback.play(stream: stream, from: filteredFavoriteStreams)
+                                        PlaybackManager.shared.play(stream: stream, from: filteredFavoriteStreams)
                                     }
                                 }
                             }
@@ -185,9 +185,9 @@ public struct FavoritesView: View {
                                 ForEach(filteredRecentStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
-                                        isSelected: playback.currentStream?.id == stream.id
+                                        isSelected: playingStreamID == stream.id
                                     ) {
-                                        playback.play(stream: stream, from: filteredRecentStreams)
+                                        PlaybackManager.shared.play(stream: stream, from: filteredRecentStreams)
                                     }
                                 }
                             }
@@ -200,6 +200,7 @@ public struct FavoritesView: View {
         .background(Color(white: 0.04).ignoresSafeArea())
         .navigationTitle("")
         .toolbar(.hidden, for: .navigationBar)
+        .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
         .task {
             await loadStreams()
         }

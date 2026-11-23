@@ -1,13 +1,16 @@
 import SwiftUI
 
 public struct LiveTVView: View {
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var favorites = FavoritesStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
+    @State private var playingStreamID: Int? = PlaybackManager.shared.currentStream?.id
     @State private var categories: [LiveCategory] = []
     @State private var selectedCategoryID: String = "ALL"
     @State private var streams: [LiveStream] = []
+    @State private var filteredStreams: [LiveStream] = []
+    @State private var availableQualities: [StreamQuality] = [.all]
+    @State private var menuItems: [CategoryMenuItem] = []
     @State private var searchText: String = ""
     @FocusState private var isChannelSearchFocused: Bool
     @State private var categorySearchText: String = ""
@@ -42,7 +45,7 @@ public struct LiveTVView: View {
         #endif
     }
 
-    private var availableQualities: [StreamQuality] {
+    private func recomputeAvailableQualities() {
         let qualitiesInStreams = Set(streams.map(\.quality))
         var list: [StreamQuality] = [.all]
         for q in [StreamQuality.uhd4k, .fhd, .hd, .sd] {
@@ -50,21 +53,25 @@ public struct LiveTVView: View {
                 list.append(q)
             }
         }
-        return list
+        availableQualities = list
     }
 
-    private var filteredStreams: [LiveStream] {
-        streams.filter { stream in
-            if showFavoritesOnly && !favorites.isFavorite(channelID: stream.id) {
+    private func recomputeFilteredStreams() {
+        let favOnly = showFavoritesOnly
+        let query = searchText
+        let quality = selectedQuality
+        if !favOnly && query.isEmpty && quality == .all {
+            filteredStreams = streams
+            return
+        }
+        filteredStreams = streams.filter { stream in
+            if favOnly && !favorites.isFavorite(channelID: stream.id) {
                 return false
             }
-            // Search text filter
-            if !searchText.isEmpty {
-                let matchesName = stream.name.localizedCaseInsensitiveContains(searchText)
-                if !matchesName { return false }
+            if !query.isEmpty && !stream.name.localizedCaseInsensitiveContains(query) {
+                return false
             }
-            // Quality filter
-            if selectedQuality != .all && stream.quality != selectedQuality {
+            if quality != .all && stream.quality != quality {
                 return false
             }
             return true
@@ -78,7 +85,7 @@ public struct LiveTVView: View {
         return categories.first(where: { $0.id == selectedCategoryID })?.name ?? selectedCategoryID
     }
 
-    private var menuItems: [CategoryMenuItem] {
+    private func recomputeMenuItems() {
         var items: [CategoryMenuItem] = []
 
         let allIcon = categoryIcons["ALL"] ?? allLoadedStreams.first(where: { $0.iconURL != nil })?.iconURL
@@ -107,7 +114,7 @@ public struct LiveTVView: View {
             )
         }
 
-        return items
+        menuItems = items
     }
 
     public var body: some View {
@@ -133,7 +140,16 @@ public struct LiveTVView: View {
         }
         .background(Color(white: 0.04).ignoresSafeArea())
         .navigationTitle("")
+        .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
+        .onChange(of: searchText) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: selectedQuality) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: showFavoritesOnly) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: favorites.favoriteChannelIDs) { _, _ in
+            if showFavoritesOnly { recomputeFilteredStreams() }
+        }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -187,7 +203,16 @@ public struct LiveTVView: View {
         .background(Color(white: 0.04).ignoresSafeArea())
         .navigationTitle("")
         .toolbar(.hidden, for: .navigationBar)
+        .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
+        .onChange(of: searchText) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: selectedQuality) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: showFavoritesOnly) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: favorites.favoriteChannelIDs) { _, _ in
+            if showFavoritesOnly { recomputeFilteredStreams() }
+        }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -586,10 +611,10 @@ public struct LiveTVView: View {
                     ForEach(filteredStreams) { stream in
                         ChannelCardView(
                             stream: stream,
-                            isSelected: playback.currentStream?.id == stream.id
+                            isSelected: playingStreamID == stream.id
                         ) {
                             isChannelSearchFocused = false
-                            playback.play(stream: stream, from: filteredStreams)
+                            PlaybackManager.shared.play(stream: stream, from: filteredStreams)
                         }
                     }
                 }
@@ -637,6 +662,7 @@ public struct LiveTVView: View {
             }
             await MainActor.run {
                 self.categories = sorted
+                self.recomputeMenuItems()
             }
         } catch {
             print("Failed to fetch live categories: \(error)")
@@ -685,9 +711,12 @@ public struct LiveTVView: View {
                     self.categoryIcons = icons
                     self.categoryCounts = counts
 
+                    self.recomputeAvailableQualities()
                     if self.selectedQuality != .all && !self.availableQualities.contains(self.selectedQuality) {
                         self.selectedQuality = .all
                     }
+                    self.recomputeFilteredStreams()
+                    self.recomputeMenuItems()
                 }
             } catch {
                 await MainActor.run {

@@ -151,6 +151,23 @@ public struct AppRootView: View {
                 if let vod = (try? await account.client.fetchVODStreams())?.first(where: { $0.id == vodId }) {
                     PlaybackManager.shared.playVOD(vod: vod)
                 }
+            } else if typeParam == "series", let episodeId = Int(idParam) {
+                let topShelfItem = TopShelfStore.shared.loadPayload().continueWatching.first {
+                    $0.kind == "series" && $0.id == idParam
+                }
+                let ext = components.queryItems?.first(where: { $0.name == "ext" })?.value ?? "mp4"
+                let episode = SeriesEpisode(
+                    id: episodeId,
+                    episodeNum: 1,
+                    title: topShelfItem?.title ?? "Episode \(episodeId)",
+                    containerExtension: ext,
+                    season: 1,
+                    info: SeriesEpisodeInfo(movieImage: topShelfItem?.imageURLString)
+                )
+                PlaybackManager.shared.playEpisode(
+                    episode: episode,
+                    seriesName: topShelfItem?.subtitle ?? ""
+                )
             }
         }
     }

@@ -45,8 +45,12 @@ public struct PlayerView: View {
         dismiss()
     }
 
-    /// Esc leaves full screen first. When the window is not full screen, it goes back to the channels.
+    /// Esc leaves full screen or closes the guide first. Otherwise it returns to the channels.
     private func handleEscape() {
+        if showGuideDrawer {
+            withAnimation { showGuideDrawer = false }
+            return
+        }
         #if targetEnvironment(macCatalyst)
         if MacWindowFullScreen.isActive {
             toggleMacFullScreen()
@@ -79,6 +83,7 @@ public struct PlayerView: View {
         #endif
     }
 
+    #if !os(tvOS)
     /// Hands the provider URL to VLC through its x-callback URL. If VLC is not
     /// installed, opens its App Store page.
     private func openInVLC() {
@@ -92,6 +97,7 @@ public struct PlayerView: View {
             UIApplication.shared.open(store)
         }
     }
+    #endif
 
     private var streamName: String {
         if let live = playback.currentStream {
@@ -244,6 +250,7 @@ public struct PlayerView: View {
                     }
                     .controlSize(.large)
 
+                    #if !os(tvOS)
                     if playback.providerURL != nil {
                         Button {
                             openInVLC()
@@ -255,6 +262,7 @@ public struct PlayerView: View {
                         .tint(.cyan)
                         .accessibilityIdentifier("playerOpenInVLCButton")
                     }
+                    #endif
                 }
                 .padding(24)
                 .background(
@@ -268,7 +276,7 @@ public struct PlayerView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        TechStatsHUD(telemetry: playback.telemetry)
+                        TechStatsHUD(telemetry: playback.telemetry, format: playback.activeFormatLabel)
                             .padding(.top, 60)
                             .padding(.trailing, 16)
                     }
@@ -398,9 +406,15 @@ public struct PlayerView: View {
             playback.togglePlayPause()
         }
         .onExitCommand {
-            dismissPlayer(stop: true)
+            if showGuideDrawer {
+                withAnimation { showGuideDrawer = false }
+            } else {
+                dismissPlayer(stop: true)
+            }
         }
         .onMoveCommand { direction in
+            guard !showGuideDrawer else { return }
+            if case .failed = playback.playbackState { return }
             switch direction {
             case .up:
                 playback.previousChannel()

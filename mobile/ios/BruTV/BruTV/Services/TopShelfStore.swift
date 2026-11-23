@@ -62,11 +62,15 @@ public final class TopShelfStore: @unchecked Sendable {
     private let defaults: UserDefaults
 
     public init(suiteName: String? = appGroupID) {
+        #if os(tvOS)
         if let suiteName, let groupDefaults = UserDefaults(suiteName: suiteName) {
             self.defaults = groupDefaults
         } else {
             self.defaults = .standard
         }
+        #else
+        self.defaults = .standard
+        #endif
     }
 
     public init(userDefaults: UserDefaults) {

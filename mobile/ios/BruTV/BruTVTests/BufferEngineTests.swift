@@ -19,6 +19,10 @@ final class BufferEngineTests: XCTestCase {
 
         HLSBufferEngine.shared.configurePlayerItem(item, with: .balanced)
         XCTAssertEqual(item.preferredForwardBufferDuration, 4.0)
+        XCTAssertTrue(item.canUseNetworkResourcesForLiveStreamingWhilePaused)
+
+        HLSBufferEngine.shared.configurePlayerItem(item, with: .balanced, liveRewindEnabled: false)
+        XCTAssertFalse(item.canUseNetworkResourcesForLiveStreamingWhilePaused)
 
         HLSBufferEngine.shared.configurePlayerItem(item, with: .highStability)
         XCTAssertEqual(item.preferredForwardBufferDuration, 10.0)

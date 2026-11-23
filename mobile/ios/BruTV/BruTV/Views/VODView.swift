@@ -9,12 +9,13 @@ public enum CatalogSortOrder: String, CaseIterable, Identifiable {
 }
 
 public struct VODView: View {
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var categories: [VODCategory] = []
     @State private var selectedCategoryID: String = "all"
     @State private var movies: [VODStream] = []
+    @State private var filteredMovies: [VODStream] = []
+    @State private var menuItems: [CategoryMenuItem] = []
     @State private var searchText: String = ""
     @State private var sortOrder: CatalogSortOrder = .defaultOrder
     @State private var isLoading: Bool = false
@@ -29,7 +30,7 @@ public struct VODView: View {
 
     public init() {}
 
-    private var filteredMovies: [VODStream] {
+    private func recomputeFilteredMovies() {
         let base: [VODStream]
         if searchText.isEmpty {
             base = movies
@@ -39,11 +40,11 @@ public struct VODView: View {
 
         switch sortOrder {
         case .defaultOrder:
-            return base
+            filteredMovies = base
         case .topRated:
-            return base.sorted { parseRating($0.rating) > parseRating($1.rating) }
+            filteredMovies = base.sorted { parseRating($0.rating) > parseRating($1.rating) }
         case .alphabetical:
-            return base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            filteredMovies = base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
     }
 
@@ -60,7 +61,7 @@ public struct VODView: View {
         return categories.first(where: { $0.id == selectedCategoryID })?.name.localized ?? selectedCategoryID
     }
 
-    private var menuItems: [CategoryMenuItem] {
+    private func recomputeMenuItems() {
         var items: [CategoryMenuItem] = []
 
         let allIcon = categoryIcons["all"] ?? allLoadedMovies.first(where: { $0.iconURL != nil })?.iconURL
@@ -89,7 +90,7 @@ public struct VODView: View {
             )
         }
 
-        return items
+        menuItems = items
     }
 
     public var body: some View {
@@ -118,7 +119,11 @@ public struct VODView: View {
         .sheet(item: $selectedMovie) { movie in
             VODDetailView(movie: movie, selectedMovie: $selectedMovie)
         }
+        .onChange(of: searchText) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: sortOrder) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -161,7 +166,11 @@ public struct VODView: View {
         .sheet(item: $selectedMovie) { movie in
             VODDetailView(movie: movie, selectedMovie: $selectedMovie)
         }
+        .onChange(of: searchText) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: sortOrder) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -396,7 +405,7 @@ public struct VODView: View {
 
             // Quick Play badge
             Button {
-                playback.playVOD(vod: movie)
+                PlaybackManager.shared.playVOD(vod: movie)
             } label: {
                 Image(systemName: "play.fill")
                     .font(.system(size: 11, weight: .bold))
@@ -418,11 +427,13 @@ public struct VODView: View {
             let cats = try await client.fetchVODCategories()
             await MainActor.run {
                 self.categories = [allCat] + cats
+                self.recomputeMenuItems()
                 loadMovies(categoryID: self.selectedCategoryID)
             }
         } catch {
             await MainActor.run {
                 self.categories = [allCat]
+                self.recomputeMenuItems()
                 loadMovies(categoryID: self.selectedCategoryID)
             }
         }
@@ -462,6 +473,8 @@ public struct VODView: View {
                     }
                     self.categoryIcons = icons
                     self.categoryCounts = counts
+                    self.recomputeFilteredMovies()
+                    self.recomputeMenuItems()
                 }
             } catch {
                 await MainActor.run {
@@ -481,7 +494,6 @@ public struct VODView: View {
 public struct VODDetailView: View {
     public let movie: VODStream
     @Binding public var selectedMovie: VODStream?
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var details: VODDetails?
@@ -643,7 +655,7 @@ public struct VODDetailView: View {
                     let target = movie
                     selectedMovie = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        playback.playVOD(vod: target)
+                        PlaybackManager.shared.playVOD(vod: target)
                     }
                 } label: {
                     HStack(spacing: 8) {

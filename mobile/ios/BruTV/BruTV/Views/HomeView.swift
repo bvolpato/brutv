@@ -2,10 +2,10 @@ import SwiftUI
 
 public struct HomeView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
+    @State private var playingStreamID: Int? = PlaybackManager.shared.currentStream?.id
     @State private var recentStreams: [LiveStream] = []
     @State private var favoriteStreams: [LiveStream] = []
     @State private var topRatedMovies: [VODStream] = []
@@ -67,6 +67,7 @@ public struct HomeView: View {
         .sheet(item: $selectedSeries) { series in
             SeriesDetailView(series: series, selectedSeries: $selectedSeries)
         }
+        .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
         .task {
             await loadHomeContent()
         }
@@ -242,7 +243,7 @@ public struct HomeView: View {
 
                     HStack(spacing: 12) {
                         Button {
-                            playback.playVOD(vod: movie)
+                            PlaybackManager.shared.playVOD(vod: movie)
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "play.fill")
@@ -531,12 +532,12 @@ public struct HomeView: View {
     // MARK: - Cards
 
     private func homeChannelCard(stream: LiveStream, playlist: [LiveStream]) -> some View {
-        let isCurrent = playback.currentStream?.id == stream.id
+        let isCurrent = playingStreamID == stream.id
         let isFav = favorites.isFavorite(channelID: stream.id)
 
         return HStack(spacing: 8) {
             Button {
-                playback.play(stream: stream, from: playlist)
+                PlaybackManager.shared.play(stream: stream, from: playlist)
             } label: {
                 HStack(spacing: 12) {
                     ZStack {
@@ -657,7 +658,7 @@ public struct HomeView: View {
                     HStack {
                         Spacer()
                         Button {
-                            playback.playVOD(vod: movie)
+                            PlaybackManager.shared.playVOD(vod: movie)
                         } label: {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 9, weight: .bold))

@@ -10,7 +10,7 @@ final class ContentProvider: TVTopShelfContentProvider {
         // Continue Watching Shelf
         if !payload.continueWatching.isEmpty {
             let continueItems = payload.continueWatching.map { item -> TVTopShelfSectionedItem in
-                let shelfItem = TVTopShelfSectionedItem(identifier: "continue-\(item.id)")
+                let shelfItem = TVTopShelfSectionedItem(identifier: "continue-\(item.kind)-\(item.id)")
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
                     shelfItem.title = "\(item.title) · \(subtitle)"
                 } else {
