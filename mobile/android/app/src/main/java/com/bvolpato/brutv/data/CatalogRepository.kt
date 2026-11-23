@@ -4,47 +4,84 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.Strictness
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
+import com.google.gson.stream.MalformedJsonException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okio.Buffer
 import okio.ByteString.Companion.decodeBase64
 import okio.buffer
 import okio.source
+import java.io.BufferedReader
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.PushbackInputStream
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
+import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLKeyException
+import javax.net.ssl.SSLPeerUnverifiedException
+import kotlin.random.Random
 
 class CatalogDataException(message: String) : IOException(message)
 
 /** Xtream Codes and M3U data adapter. Create one repository per saved source profile. */
-class CatalogRepository(
+class CatalogRepository internal constructor(
     source: SourceConfig,
-    private val client: OkHttpClient = defaultClient,
-    private val localPlaylistDirectory: File? = null,
+    private val client: OkHttpClient,
+    private val localPlaylistDirectory: File?,
+    private val retryDelay: suspend (Long) -> Unit,
+    private val jitter: () -> Double,
+    private val maxJsonBytes: Long,
 ) {
+    constructor(
+        source: SourceConfig,
+        client: OkHttpClient = defaultClient,
+        localPlaylistDirectory: File? = null,
+    ) : this(
+        source = source,
+        client = client,
+        localPlaylistDirectory = localPlaylistDirectory,
+        retryDelay = { delay(it) },
+        jitter = { Random.nextDouble() },
+        maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
+    )
+
     private val source = source.normalized()
     private val baseUrl: HttpUrl? = if (this.source.type == SourceType.XTREAM) this.source.server.toHttpUrlOrNull() else null
     private val cache = ConcurrentHashMap<MediaKind, CatalogSection>()
     @Volatile private var playlistEntries: List<PlaylistItem>? = null
+    @Volatile private var preferredLiveExtension: String = "m3u8"
+    @Volatile var maxConnections: Int = 1
+        private set
 
     suspend fun authenticate() {
         if (source.type == SourceType.M3U) {
@@ -59,6 +96,14 @@ class CatalogRepository(
         if (auth == 0 || status == "disabled" || status == "expired") {
             throw CatalogDataException("The provider rejected this sign-in.")
         }
+        val allowedFormats = user.arrayOrNull("allowed_output_formats")
+            ?.elements()
+            ?.mapNotNull { element ->
+                element.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isJsonNull }
+                    ?.asJsonPrimitive?.asString
+            }
+        preferredLiveExtension = selectLiveExtension(allowedFormats)
+        maxConnections = parseMaxConnections(user.string("max_connections"))
     }
 
     suspend fun load(kind: MediaKind): CatalogSection {
@@ -128,6 +173,8 @@ class CatalogRepository(
     fun clearCache() {
         cache.clear()
         playlistEntries = null
+        preferredLiveExtension = "m3u8"
+        maxConnections = 1
     }
 
     private suspend fun loadXtreamSection(kind: MediaKind): CatalogSection {
@@ -137,50 +184,122 @@ class CatalogRepository(
             MediaKind.SERIES -> "get_series_categories" to "get_series"
             MediaKind.EPISODE -> return CatalogSection()
         }
-        val categoryJson = requestJson(categoryAction)
-        val itemJson = requestJson(itemAction)
-        val categoryArray = categoryJson.arrayOrNull()
-            ?: throw CatalogDataException("The provider returned an invalid category response.")
-        val itemArray = itemJson.arrayOrNull()
-            ?: throw CatalogDataException("The provider returned an invalid catalog response.")
-        val categories = categoryArray.elements().mapNotNull { element ->
-            val item = element.objectOrNull() ?: return@mapNotNull null
-            val id = item.string("category_id").ifBlank { item.string("id") }
-            if (id.isBlank()) null else Category(id, item.string("category_name").ifBlank { "Uncategorized" })
-        }.distinctBy { it.id }
-        val entries = itemArray.elements().mapNotNull { element ->
-            val item = element.objectOrNull() ?: return@mapNotNull null
-            val providerId = when (kind) {
-                MediaKind.LIVE -> item.string("stream_id")
-                MediaKind.MOVIE -> item.string("stream_id")
-                MediaKind.SERIES -> item.string("series_id").ifBlank { item.string("id") }
-                MediaKind.EPISODE -> ""
-            }.ifBlank { item.string("id") }
-            if (providerId.isBlank()) return@mapNotNull null
-            val id = "${source.id}:${kind.name.lowercase(Locale.ROOT)}:$providerId"
-            val categoryId = item.string("category_id")
-            val name = item.string("name").ifBlank { item.string("title") }.ifBlank { "Untitled" }
-            val extension = item.string("container_extension").ifBlank { "mp4" }
-            val playbackUrl = when (kind) {
-                MediaKind.LIVE -> streamUrl("live", providerId, "m3u8")
-                MediaKind.MOVIE -> streamUrl("movie", providerId, extension)
-                MediaKind.SERIES, MediaKind.EPISODE -> ""
+        val categories = requestJsonStream(categoryAction) { reader, call ->
+            if (reader.peek() != JsonToken.BEGIN_ARRAY) {
+                throw CatalogDataException("The provider returned an invalid category response.")
             }
-            MediaEntry(
-                id = id,
-                providerId = providerId,
-                name = name,
-                kind = kind,
-                categoryId = categoryId,
-                artwork = item.string("stream_icon").ifBlank { item.string("cover") }.ifBlank { item.string("cover_big") },
-                rating = item.string("rating").ifBlank { item.string("rating_5based") },
-                plot = item.string("plot"),
-                streamUrl = playbackUrl,
-                containerExtension = extension,
-                epgId = item.string("epg_channel_id"),
-            )
-        }.distinctBy { it.id }
-        return CatalogSection(categories, entries)
+            val result = ArrayList<Category>()
+            val seenIds = HashSet<String>()
+            reader.beginArray()
+            while (reader.hasNext()) {
+                if (call.isCanceled()) throw CancellationException("The provider request was cancelled.")
+                if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+                    reader.skipValue()
+                    continue
+                }
+                var categoryId = ""
+                var fallbackId = ""
+                var categoryName = ""
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    when (reader.nextName()) {
+                        "category_id" -> categoryId = reader.readScalarString()
+                        "id" -> fallbackId = reader.readScalarString()
+                        "category_name" -> categoryName = reader.readScalarString()
+                        else -> reader.skipValue()
+                    }
+                }
+                reader.endObject()
+                val id = categoryId.ifBlank { fallbackId }
+                if (id.isNotBlank() && seenIds.add(id)) {
+                    result += Category(id, categoryName.ifBlank { "Uncategorized" })
+                }
+            }
+            reader.endArray()
+            result
+        }
+        val kindLower = kind.name.lowercase(Locale.ROOT)
+        val entries = requestJsonStream(itemAction) { reader, call ->
+            if (reader.peek() != JsonToken.BEGIN_ARRAY) {
+                throw CatalogDataException("The provider returned an invalid catalog response.")
+            }
+            val result = ArrayList<MediaEntry>()
+            val seenIds = HashSet<String>()
+            reader.beginArray()
+            while (reader.hasNext()) {
+                if (call.isCanceled()) throw CancellationException("The provider request was cancelled.")
+                if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+                    reader.skipValue()
+                    continue
+                }
+                var streamId = ""
+                var seriesId = ""
+                var genericId = ""
+                var categoryId = ""
+                var name = ""
+                var title = ""
+                var containerExtension = ""
+                var streamIcon = ""
+                var cover = ""
+                var coverBig = ""
+                var rating = ""
+                var rating5Based = ""
+                var plot = ""
+                var epgChannelId = ""
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    when (reader.nextName()) {
+                        "stream_id" -> streamId = reader.readScalarString()
+                        "series_id" -> seriesId = reader.readScalarString()
+                        "id" -> genericId = reader.readScalarString()
+                        "category_id" -> categoryId = reader.readScalarString()
+                        "name" -> name = reader.readScalarString()
+                        "title" -> title = reader.readScalarString()
+                        "container_extension" -> containerExtension = reader.readScalarString()
+                        "stream_icon" -> streamIcon = reader.readScalarString()
+                        "cover" -> cover = reader.readScalarString()
+                        "cover_big" -> coverBig = reader.readScalarString()
+                        "rating" -> rating = reader.readScalarString()
+                        "rating_5based" -> rating5Based = reader.readScalarString()
+                        "plot" -> plot = reader.readScalarString()
+                        "epg_channel_id" -> epgChannelId = reader.readScalarString()
+                        else -> reader.skipValue()
+                    }
+                }
+                reader.endObject()
+                val providerId = when (kind) {
+                    MediaKind.LIVE, MediaKind.MOVIE -> streamId
+                    MediaKind.SERIES -> seriesId.ifBlank { genericId }
+                    MediaKind.EPISODE -> ""
+                }.ifBlank { genericId }
+                if (providerId.isBlank()) continue
+                val id = "${source.id}:$kindLower:$providerId"
+                if (!seenIds.add(id)) continue
+                val resolvedName = name.ifBlank { title }.ifBlank { "Untitled" }
+                val extension = containerExtension.ifBlank { "mp4" }
+                val playbackUrl = when (kind) {
+                    MediaKind.LIVE -> streamUrl("live", providerId, preferredLiveExtension)
+                    MediaKind.MOVIE -> streamUrl("movie", providerId, extension)
+                    MediaKind.SERIES, MediaKind.EPISODE -> ""
+                }
+                result += MediaEntry(
+                    id = id,
+                    providerId = providerId,
+                    name = resolvedName,
+                    kind = kind,
+                    categoryId = categoryId,
+                    artwork = streamIcon.ifBlank { cover }.ifBlank { coverBig },
+                    rating = rating.ifBlank { rating5Based },
+                    plot = plot,
+                    streamUrl = playbackUrl,
+                    containerExtension = extension,
+                    epgId = epgChannelId,
+                )
+            }
+            reader.endArray()
+            result
+        }
+        return CatalogSection.build(categories, entries)
     }
 
     private suspend fun loadPlaylistSection(kind: MediaKind): CatalogSection {
@@ -198,7 +317,7 @@ class CatalogRepository(
             )
         }
         val categories = entries.asSequence().map { it.categoryId }.distinct().map { Category(it, it) }.toList()
-        return CatalogSection(categories = categories, entries = entries)
+        return CatalogSection.build(categories = categories, entries = entries)
     }
 
     private suspend fun loadPlaylist(): List<PlaylistItem> {
@@ -211,7 +330,7 @@ class CatalogRepository(
             val url = source.playlistUrl.toHttpUrlOrNull()
                 ?: throw CatalogDataException("The playlist address is invalid.")
             execute(Request.Builder().url(url).get().build()) { response, call ->
-                val body = response.body ?: throw CatalogDataException("The playlist response was empty.")
+                val body = response.body
                 try {
                     M3UPlaylistParser.parse(body.source()) {
                         if (call.isCanceled()) throw CancellationException("The provider request was cancelled.")
@@ -245,19 +364,61 @@ class CatalogRepository(
         }
     }
 
-    private suspend fun requestJson(action: String?, vararg params: Pair<String, String>): JsonElement {
+    private fun buildXtreamRequest(action: String?, vararg params: Pair<String, String>): Request {
         val base = baseUrl ?: throw CatalogDataException("The provider address is invalid.")
         val builder = base.newBuilder().addPathSegment("player_api.php")
             .addQueryParameter("username", source.username)
             .addQueryParameter("password", source.password)
         if (action != null) builder.addQueryParameter("action", action)
         params.forEach { (name, value) -> builder.addQueryParameter(name, value) }
-        val request = Request.Builder().url(builder.build()).get().build()
+        return Request.Builder().url(builder.build()).get().build()
+    }
+
+    private suspend fun <T> requestJsonStream(
+        action: String?,
+        vararg params: Pair<String, String>,
+        parseStream: (JsonReader, Call) -> T,
+    ): T {
+        val request = buildXtreamRequest(action, *params)
+        return execute(request) { response, call ->
+            val body = response.body
+            val bounded = PushbackInputStream(BoundedInputStream(body.byteStream(), maxJsonBytes), 3)
+            val bom = ByteArray(3)
+            var bomRead = 0
+            while (bomRead < 3) {
+                val n = bounded.read(bom, bomRead, 3 - bomRead)
+                if (n <= 0) break
+                bomRead += n
+            }
+            if (bomRead > 0 && !(bomRead == 3 && bom[0] == 0xEF.toByte() && bom[1] == 0xBB.toByte() && bom[2] == 0xBF.toByte())) {
+                bounded.unread(bom, 0, bomRead)
+            }
+            try {
+                JsonReader(BufferedReader(InputStreamReader(bounded, Charsets.UTF_8), 16 * 1024)).use { reader ->
+                    reader.strictness = Strictness.LENIENT
+                    parseStream(reader, call)
+                }
+            } catch (error: CatalogDataException) {
+                throw error
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: MalformedJsonException) {
+                throw CatalogDataException("The provider returned invalid JSON.")
+            } catch (_: IllegalStateException) {
+                throw CatalogDataException("The provider returned invalid JSON.")
+            } catch (_: NumberFormatException) {
+                throw CatalogDataException("The provider returned invalid JSON.")
+            }
+        }
+    }
+
+    private suspend fun requestJson(action: String?, vararg params: Pair<String, String>): JsonElement {
+        val request = buildXtreamRequest(action, *params)
         return execute(request) { response, _ ->
-            val body = response.body ?: throw CatalogDataException("The provider returned an empty response.")
+            val body = response.body
             val bytes = readBounded(body, maxJsonBytes)
             try {
-                JsonParser.parseString(bytes.readUtf8())
+                JsonParser.parseString(bytes.readUtf8().removePrefix("\uFEFF"))
             } catch (_: Exception) {
                 throw CatalogDataException("The provider returned invalid JSON.")
             }
@@ -278,36 +439,93 @@ class CatalogRepository(
     private fun encodePathSegment(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
 
-    private suspend fun <T> execute(request: Request, parse: (Response, Call) -> T): T =
-        suspendCancellableCoroutine { continuation ->
-            val call = client.newCall(request.newBuilder().header("User-Agent", USER_AGENT).build())
-            continuation.invokeOnCancellation { call.cancel() }
-            call.enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    continuation.resumeWith(Result.failure(CatalogDataException("Could not connect to the provider.")))
-                }
+    private sealed interface AttemptOutcome<out T> {
+        data class Success<T>(val value: T) : AttemptOutcome<T>
+        data class Retry(val delayMs: Long, val fallbackError: CatalogDataException) : AttemptOutcome<Nothing>
+        data class Failure(val error: Throwable) : AttemptOutcome<Nothing>
+    }
 
-                override fun onResponse(call: Call, response: Response) {
-                    val outcome: Result<T> = try {
-                        response.use {
-                            if (!it.isSuccessful) {
-                                throw CatalogDataException("Provider request failed with HTTP ${it.code}.")
-                            }
-                            Result.success(parse(it, call))
-                        }
-                    } catch (error: CatalogDataException) {
-                        Result.failure(error)
-                    } catch (error: CancellationException) {
-                        Result.failure(error)
-                    } catch (_: IOException) {
-                        Result.failure(CatalogDataException("Could not connect to the provider."))
-                    } catch (_: Exception) {
-                        Result.failure(CatalogDataException("The provider response could not be read."))
-                    }
-                    continuation.resumeWith(outcome)
+    private suspend fun <T> execute(request: Request, parse: (Response, Call) -> T): T {
+        var attempt = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            when (val outcome = executeOnce(request, attempt, parse)) {
+                is AttemptOutcome.Success -> return outcome.value
+                is AttemptOutcome.Failure -> throw outcome.error
+                is AttemptOutcome.Retry -> {
+                    if (attempt >= MAX_TRANSIENT_RETRIES) throw outcome.fallbackError
+                    attempt++
+                    currentCoroutineContext().ensureActive()
+                    retryDelay(outcome.delayMs)
                 }
-            })
+            }
         }
+    }
+
+    private suspend fun <T> executeOnce(
+        request: Request,
+        attempt: Int,
+        parse: (Response, Call) -> T,
+    ): AttemptOutcome<T> = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request.newBuilder().header("User-Agent", USER_AGENT).build())
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (call.isCanceled()) {
+                    continuation.resumeWith(Result.success(AttemptOutcome.Failure(CancellationException("The provider request was cancelled."))))
+                    return
+                }
+                val error = CatalogDataException("Could not connect to the provider.")
+                val outcome = if (attempt < MAX_TRANSIENT_RETRIES && isRetryableCatalogIo(e)) {
+                    AttemptOutcome.Retry(computeBackoffMs(attempt, retryAfterMs = null), error)
+                } else {
+                    AttemptOutcome.Failure(error)
+                }
+                continuation.resumeWith(Result.success(outcome))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val outcome: AttemptOutcome<T> = try {
+                    response.use {
+                        if (!it.isSuccessful) {
+                            val error = CatalogDataException("Provider request failed with HTTP ${it.code}.")
+                            if (attempt < MAX_TRANSIENT_RETRIES && isRetryableHttpStatus(it.code)) {
+                                val retryAfterMs = parseRetryAfterMs(it.header("Retry-After"))
+                                return@use AttemptOutcome.Retry(computeBackoffMs(attempt, retryAfterMs), error)
+                            }
+                            return@use AttemptOutcome.Failure(error)
+                        }
+                        AttemptOutcome.Success(parse(it, call))
+                    }
+                } catch (error: CatalogDataException) {
+                    AttemptOutcome.Failure(error)
+                } catch (error: CancellationException) {
+                    AttemptOutcome.Failure(error)
+                } catch (error: IOException) {
+                    if (call.isCanceled()) {
+                        AttemptOutcome.Failure(CancellationException("The provider request was cancelled."))
+                    } else {
+                        val wrapped = CatalogDataException("Could not connect to the provider.")
+                        if (attempt < MAX_TRANSIENT_RETRIES && isRetryableCatalogIo(error)) {
+                            AttemptOutcome.Retry(computeBackoffMs(attempt, retryAfterMs = null), wrapped)
+                        } else {
+                            AttemptOutcome.Failure(wrapped)
+                        }
+                    }
+                } catch (_: Exception) {
+                    AttemptOutcome.Failure(CatalogDataException("The provider response could not be read."))
+                }
+                continuation.resumeWith(Result.success(outcome))
+            }
+        })
+    }
+
+    private fun computeBackoffMs(attempt: Int, retryAfterMs: Long?): Long {
+        if (retryAfterMs != null) return retryAfterMs.coerceIn(0L, MAX_RETRY_AFTER_MS)
+        val base = if (attempt == 0) 500L else 1_500L
+        val factor = 0.8 + jitter().coerceIn(0.0, 1.0) * 0.4
+        return (base * factor).toLong().coerceAtMost(MAX_RETRY_AFTER_MS)
+    }
 
     private fun readBounded(body: ResponseBody, limit: Long): Buffer {
         val buffer = Buffer()
@@ -357,14 +575,109 @@ class CatalogRepository(
     }
 
     companion object {
-        private const val USER_AGENT = "BruTV/1.0"
+        internal const val USER_AGENT = "BruTV/1.0"
+        private const val MAX_TRANSIENT_RETRIES = 2
+        internal const val MAX_RETRY_AFTER_MS = 10_000L
         private val LOCAL_PLAYLIST_NAME = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\\.m3u")
-        private const val maxJsonBytes = 64L * 1024 * 1024
+        private const val DEFAULT_MAX_JSON_BYTES = 64L * 1024 * 1024
         private val defaultClient = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(45, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS)
             .build()
+
+        internal fun isRetryableHttpStatus(code: Int): Boolean =
+            code == 408 || code == 429 || code in 500..599
+
+        internal fun isRetryableCatalogIo(error: IOException): Boolean {
+            val causes = generateSequence<Throwable>(error) { it.cause }.take(12).toList()
+            if (causes.any {
+                    it is SSLPeerUnverifiedException ||
+                        it is SSLKeyException ||
+                        it is CertificateException ||
+                        it is CertPathValidatorException
+                }
+            ) {
+                return false
+            }
+            if (causes.any { it is SSLHandshakeException }) {
+                return causes.any { it is SocketTimeoutException || it is SocketException || it is EOFException }
+            }
+            return true
+        }
+
+        internal fun selectLiveExtension(allowedFormats: List<String>?): String {
+            val normalized = allowedFormats
+                ?.mapNotNull { it.trim().removePrefix(".").lowercase(Locale.ROOT).takeIf(String::isNotEmpty) }
+                ?.toSet()
+                .orEmpty()
+            if (normalized.isEmpty()) return "m3u8"
+            val hasHls = "m3u8" in normalized || "hls" in normalized
+            val hasTs = "ts" in normalized || "mpegts" in normalized
+            return if (!hasHls && hasTs) "ts" else "m3u8"
+        }
+
+        internal fun parseMaxConnections(raw: String?): Int =
+            raw?.trim()?.toIntOrNull()?.takeIf { it > 0 } ?: 1
+
+        internal fun parseRetryAfterMs(header: String?, nowMs: Long = System.currentTimeMillis()): Long? {
+            val value = header?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            value.toLongOrNull()?.let { seconds ->
+                return (seconds.coerceAtLeast(0L) * 1_000L).coerceAtMost(MAX_RETRY_AFTER_MS)
+            }
+            val parsed = runCatching {
+                SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US).apply {
+                    isLenient = false
+                    timeZone = TimeZone.getTimeZone("GMT")
+                }.parse(value)?.time
+            }.getOrNull() ?: return null
+            return (parsed - nowMs).coerceIn(0L, MAX_RETRY_AFTER_MS)
+        }
+    }
+}
+
+private class BoundedInputStream(
+    private val delegate: InputStream,
+    private val limitBytes: Long,
+) : InputStream() {
+    private var bytesRead = 0L
+
+    override fun read(): Int {
+        val next = delegate.read()
+        if (next >= 0 && ++bytesRead > limitBytes) {
+            throw CatalogDataException("The provider response exceeds the size limit.")
+        }
+        return next
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        val count = delegate.read(b, off, len)
+        if (count > 0) {
+            bytesRead += count
+            if (bytesRead > limitBytes) {
+                throw CatalogDataException("The provider response exceeds the size limit.")
+            }
+        }
+        return count
+    }
+
+    override fun close() {
+        delegate.close()
+    }
+}
+
+private fun JsonReader.readScalarString(): String = when (peek()) {
+    JsonToken.STRING, JsonToken.NUMBER -> nextString()
+    JsonToken.BOOLEAN -> nextBoolean().toString()
+    JsonToken.NULL -> {
+        nextNull()
+        ""
+    }
+    else -> {
+        skipValue()
+        ""
     }
 }
 

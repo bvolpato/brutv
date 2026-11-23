@@ -11,6 +11,7 @@ import android.util.Rational
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -26,6 +27,7 @@ import com.bvolpato.brutv.ui.BruTvViewModel
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: BruTvViewModel
     private var activePlayer: Player? = null
+    private var isTv = false
     private var pictureInPicture by mutableStateOf(false)
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) = updatePictureInPicture()
@@ -35,7 +37,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val isTv = getSystemService(UiModeManager::class.java).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+        isTv = getSystemService(UiModeManager::class.java)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
         if (isTv) {
             WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -69,26 +71,43 @@ class MainActivity : ComponentActivity() {
         updatePictureInPicture()
     }
 
-    private fun updatePictureInPicture() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
-            !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
-        val player = activePlayer
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun buildPictureInPictureParams(player: Player?): PictureInPictureParams {
         val video = player?.videoSize
         val aspect = if (video != null && video.width > 0 && video.height > 0) {
             val ratio = (video.width.toFloat() * video.pixelWidthHeightRatio / video.height).coerceIn(0.42f, 2.39f)
             Rational((ratio * 1000).toInt(), 1000)
-        } else Rational(16, 9)
+        } else {
+            Rational(16, 9)
+        }
         val params = PictureInPictureParams.Builder().setAspectRatio(aspect)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) params.setAutoEnterEnabled(player?.isPlaying == true)
-        setPictureInPictureParams(params.build())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            params.setAutoEnterEnabled(player?.isPlaying == true)
+        }
+        return params.build()
+    }
+
+    private fun updatePictureInPicture() {
+        if (isTv || Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            !packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            return
+        }
+        runCatching {
+            setPictureInPictureParams(buildPictureInPictureParams(activePlayer))
+        }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activePlayer?.isPlaying == true &&
-            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-            updatePictureInPicture()
-            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build())
+        if (!isTv && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activePlayer?.isPlaying == true &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            runCatching {
+                val params = buildPictureInPictureParams(activePlayer)
+                setPictureInPictureParams(params)
+                enterPictureInPictureMode(params)
+            }
         }
     }
 

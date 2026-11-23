@@ -1,5 +1,8 @@
 package com.bvolpato.brutv.playback
 
+import android.os.Looper
+import com.bvolpato.brutv.data.CatalogRepository
+import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
@@ -8,25 +11,34 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
-import java.util.UUID
 import java.util.Collections
+import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.Call
+import okhttp3.ConnectionPool
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.HttpUrl.Companion.toHttpUrl
+
+internal class TimeShiftHttpException(val statusCode: Int) : IOException("The live source returned HTTP $statusCode.")
 
 internal data class TimeShiftRecordingSnapshot(
     val durationMs: Long,
@@ -47,17 +59,26 @@ internal class HlsTimeShiftSession private constructor(
     private val headers: Map<String, String>,
     private val limits: TimeShiftLimits,
     client: OkHttpClient,
-    sourceUrl: String,
+    private val originalUrl: String,
 ) : Closeable {
     private data class Resource(val name: String, val file: File, val bytes: Long)
-    private data class Segment(val spec: RecordedSegmentSpec, val resource: Resource?, val map: Resource?, val startOffsetMs: Long)
+    private data class Segment(
+        val spec: RecordedSegmentSpec,
+        val resource: Resource?,
+        val map: Resource?,
+        val startOffsetMs: Long,
+        val localSequence: Long,
+        val localDiscontinuity: Long,
+    )
     private data class Retired(val segment: Segment, val expiresAt: Long)
 
     private val lock = Any()
     private val closed = AtomicBoolean(false)
+    private val closeCompleted = CompletableDeferred<Unit>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val calls = Collections.newSetFromMap(ConcurrentHashMap<Call, Boolean>())
     private val sockets = Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
+    private val connectionSlots = Semaphore(MAX_CONCURRENT_LOOPBACK_CONNECTIONS)
     private val segments = ArrayDeque<Segment>()
     private val retired = ArrayDeque<Retired>()
     private val maps = mutableMapOf<String, Resource>()
@@ -68,6 +89,11 @@ internal class HlsTimeShiftSession private constructor(
     private var resourceNumber = 0L
     private var sourceNumber = 0L
     private var totalDurationMs = 0L
+    private var windowDurationMs = 0L
+    private var nextLocalSequence = 0L
+    private var localDiscontinuity = 0L
+    private var lastUpstreamSequence: Long? = null
+    private var lastUpstreamDiscontinuity: Long? = null
     private val playerSources = linkedMapOf<String, LocalTimeShiftSource>()
     private var diskBytes = 0L
     private var targetDuration = 0
@@ -77,23 +103,36 @@ internal class HlsTimeShiftSession private constructor(
     private var recording = true
     private var ended = false
     private var notice: String? = null
-    private var upstream = ""
-    private val sourceOrigin = sourceUrl.toHttpUrl()
-    private val guardedClient = client.newBuilder().addNetworkInterceptor { chain ->
-        val request = chain.request()
-        val actual = request.url
-        val sameOrigin = actual.scheme == sourceOrigin.scheme && actual.host == sourceOrigin.host && actual.port == sourceOrigin.port
-        val safe = if (sameOrigin) request else request.newBuilder().apply {
-            headers.keys.filterNot { it.equals("User-Agent", true) }.forEach(::removeHeader)
-        }.build()
-        chain.proceed(safe)
-    }.build()
+    private var upstream = originalUrl
+    private var lastAdvanceElapsedMs = nowElapsedMs()
+    private val snapshotRef = AtomicReference(
+        TimeShiftRecordingSnapshot(0L, 0L, true, null, 0L),
+    )
+    private val sourceOrigin = originalUrl.toHttpUrl()
+    private val sessionPool = ConnectionPool(4, 30, TimeUnit.SECONDS)
+    private val guardedClient = client.newBuilder()
+        .connectionPool(sessionPool)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .addNetworkInterceptor(CrossOriginHeaderStripInterceptor(sourceOrigin, headers.keys))
+        .build()
 
     val playbackUrl: String get() = "http://127.0.0.1:${server.localPort}/$token/live.m3u8"
 
-    fun snapshot(): TimeShiftRecordingSnapshot = synchronized(lock) {
-        TimeShiftRecordingSnapshot(segments.sumOf { it.spec.durationMs }, diskBytes, recording && !closed.get(), notice,
-            segments.firstOrNull()?.startOffsetMs ?: totalDurationMs)
+    /** Lock-free snapshot safe to poll frequently from the UI/Main thread. */
+    fun snapshot(): TimeShiftRecordingSnapshot = snapshotRef.get()
+
+    private fun publishSnapshotLocked() {
+        val isClosed = closed.get()
+        snapshotRef.set(
+            TimeShiftRecordingSnapshot(
+                durationMs = if (isClosed) 0L else windowDurationMs,
+                bytes = if (isClosed) 0L else diskBytes,
+                recording = recording && !isClosed,
+                notice = notice,
+                windowStartOffsetMs = segments.firstOrNull()?.startOffsetMs ?: totalDurationMs,
+            ),
+        )
     }
 
     fun createPlaybackSource(): LocalTimeShiftSource = synchronized(lock) {
@@ -105,6 +144,47 @@ internal class HlsTimeShiftSession private constructor(
     }
 
     private fun start(url: String) {
+        val (initial, resolvedUrl, masterIndependent) = fetchMediaPlaylist(url)
+        upstream = resolvedUrl
+        if (initial.ended) throw UnsupportedTimeShift("This source is not an ongoing live broadcast.")
+        targetDuration = maxOf(initial.targetDuration, initial.segments.maxOf { ((it.durationMs + 999) / 1000).toInt() })
+        providerTargetDuration = initial.targetDuration
+        version = initial.version
+        independentSegments = initial.independentSegments || masterIndependent
+        if (limits.durationMs < targetDuration * 3_000L) {
+            throw UnsupportedTimeShift("The live segments are too long for the recording limit.")
+        }
+        val selected = selectStartupSegments(initial.segments, targetDuration)
+        if (selected.size > limits.segments) throw UnsupportedTimeShift("This source has too many tiny segments for bounded live recording.")
+        synchronized(lock) {
+            nextLocalSequence = selected.first().sequence
+            localDiscontinuity = selected.first().discontinuitySequence
+        }
+        selected.forEach { append(it, forceDiscontinuity = false) }
+        lastAdvanceElapsedMs = nowElapsedMs()
+        server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), LOOPBACK_BACKLOG)
+        scope.launch { serve() }
+        scope.launch { ingest() }
+    }
+
+    private fun selectStartupSegments(all: List<RecordedSegmentSpec>, target: Int): List<RecordedSegmentSpec> {
+        // Keep initial download fast (1-2 segments for typical 4-10s IPTV segments, up to 3s for 1s segments).
+        val startupTargetMs = minOf(STARTUP_TARGET_DURATION_MS, target * 3_000L)
+        var duration = 0L
+        val start = all.indices.reversed().firstOrNull { index ->
+            duration += all[index].durationMs
+            duration >= startupTargetMs
+        } ?: 0
+        return all.drop(start)
+    }
+
+    private data class ResolvedMediaPlaylist(
+        val playlist: TimeShiftPlaylist,
+        val resolvedUrl: String,
+        val masterIndependent: Boolean,
+    )
+
+    private fun fetchMediaPlaylist(url: String): ResolvedMediaPlaylist {
         var manifest = fetchManifest(url)
         var playlistUrl = manifest.second
         var masterIndependent = false
@@ -114,39 +194,29 @@ internal class HlsTimeShiftSession private constructor(
             manifest = fetchManifest(variant)
             playlistUrl = manifest.second
         }
-        upstream = playlistUrl
-        val initial = TimeShiftPlaylistParser.parse(manifest.first, playlistUrl)
-        if (initial.ended) throw UnsupportedTimeShift("This source is not an ongoing live broadcast.")
-        targetDuration = maxOf(initial.targetDuration, initial.segments.maxOf { ((it.durationMs + 999) / 1000).toInt() })
-        providerTargetDuration = initial.targetDuration
-        version = initial.version
-        independentSegments = initial.independentSegments || masterIndependent
-        if (limits.durationMs < targetDuration * 3_000L) {
-            throw UnsupportedTimeShift("The live segments are too long for the recording limit.")
-        }
-        // Begin with the source's normal three-segment holdback, then grow the local history.
-        var duration = 0L
-        val start = initial.segments.indices.reversed().firstOrNull { index ->
-            duration += initial.segments[index].durationMs
-            duration >= targetDuration * 3_000L
-        } ?: 0
-        val selected = initial.segments.drop(start)
-        if (selected.size > limits.segments) throw UnsupportedTimeShift("This source has too many tiny segments for bounded live recording.")
-        selected.forEach(::append)
-        server.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 4)
-        scope.launch { serve() }
-        scope.launch { ingest() }
+        val parsed = TimeShiftPlaylistParser.parse(manifest.first, playlistUrl)
+        return ResolvedMediaPlaylist(parsed, playlistUrl, masterIndependent)
     }
 
     private suspend fun ingest() {
         var failures = 0
+        var stuckResolutions = 0
+        var immediatePoll = false
         while (scope.isActive && !closed.get()) {
-            delay((providerTargetDuration * 500L).coerceIn(500, 8_000))
+            if (immediatePoll) {
+                immediatePoll = false
+            } else {
+                delay((providerTargetDuration * 500L).coerceIn(500, 8_000))
+            }
             try {
-                val manifest = fetchManifest(upstream)
-                val playlist = TimeShiftPlaylistParser.parse(manifest.first, manifest.second)
-                val updatedTarget = maxOf(targetDuration, playlist.targetDuration,
-                    playlist.segments.maxOf { ((it.durationMs + 999) / 1000).toInt() })
+                val resolved = fetchMediaPlaylist(upstream)
+                val playlist = resolved.playlist
+                upstream = resolved.resolvedUrl
+                val updatedTarget = maxOf(
+                    targetDuration,
+                    playlist.targetDuration,
+                    playlist.segments.maxOf { ((it.durationMs + 999) / 1000).toInt() },
+                )
                 if (limits.durationMs < updatedTarget * 3_000L) {
                     throw UnsupportedTimeShift("The live segments are too long for the recording limit.")
                 }
@@ -154,19 +224,63 @@ internal class HlsTimeShiftSession private constructor(
                     targetDuration = updatedTarget
                     providerTargetDuration = playlist.targetDuration
                 }
-                val previous = synchronized(lock) { segments.lastOrNull()?.spec?.sequence }
-                if (previous != null && playlist.segments.last().sequence < previous) {
-                    throw UnsupportedTimeShift("Recording stopped because the live source restarted.")
+                val previous = synchronized(lock) { lastUpstreamSequence }
+                val latestSeq = playlist.segments.last().sequence
+                if (previous != null && latestSeq < previous) {
+                    val backwardDelta = previous - latestSeq
+                    if (backwardDelta <= MAX_EDGE_SKEW_SEGMENTS) {
+                        // Minor CDN edge skew: treat as unchanged and let stuck detection handle persistent skew.
+                        if (playlist.ended) {
+                            stopRecording("The broadcast ended. Its saved history is still available.")
+                            return
+                        }
+                        val stuckThresholdMs = limits.staleManifestTimeoutMs ?: maxOf(MIN_STUCK_MANIFEST_MS, updatedTarget * 3_000L)
+                        if (nowElapsedMs() - lastAdvanceElapsedMs >= stuckThresholdMs) {
+                            stuckResolutions++
+                            upstream = originalUrl
+                            lastAdvanceElapsedMs = nowElapsedMs()
+                            if (stuckResolutions >= MAX_STUCK_RESOLUTIONS) {
+                                stopRecording("Recording stopped because the live playlist stopped updating. Go live to reconnect.")
+                                return
+                            }
+                            immediatePoll = true
+                        }
+                        failures = 0
+                        continue
+                    }
+                    // Genuine upstream source restart: bridge cleanly with a discontinuity.
+                    val restarted = selectStartupSegments(playlist.segments, updatedTarget)
+                    restarted.forEachIndexed { index, spec ->
+                        append(spec, forceDiscontinuity = index == 0)
+                    }
+                    lastAdvanceElapsedMs = nowElapsedMs()
+                    stuckResolutions = 0
+                } else {
+                    val additions = playlist.segments.filter { previous == null || it.sequence > previous }
+                    if (additions.isNotEmpty()) {
+                        val missing = if (previous == null) 0L else additions.first().sequence - previous - 1L
+                        if (missing > MAX_BRIDGEABLE_GAP_SEGMENTS) {
+                            throw UnsupportedTimeShift("Recording stopped because the source expired footage before it could be saved.")
+                        }
+                        additions.forEachIndexed { index, spec ->
+                            append(spec, forceDiscontinuity = index == 0 && missing > 0L)
+                        }
+                        lastAdvanceElapsedMs = nowElapsedMs()
+                        stuckResolutions = 0
+                    } else if (!playlist.ended) {
+                        val stuckThresholdMs = limits.staleManifestTimeoutMs ?: maxOf(MIN_STUCK_MANIFEST_MS, updatedTarget * 3_000L)
+                        if (nowElapsedMs() - lastAdvanceElapsedMs >= stuckThresholdMs) {
+                            stuckResolutions++
+                            upstream = originalUrl
+                            lastAdvanceElapsedMs = nowElapsedMs()
+                            if (stuckResolutions >= MAX_STUCK_RESOLUTIONS) {
+                                stopRecording("Recording stopped because the live playlist stopped updating. Go live to reconnect.")
+                                return
+                            }
+                            immediatePoll = true
+                        }
+                    }
                 }
-                val additions = playlist.segments.filter { previous == null || it.sequence > previous }
-                if (previous != null && additions.firstOrNull()?.sequence?.let { it != previous + 1 } == true) {
-                    throw UnsupportedTimeShift("Recording stopped because the source expired footage before it could be saved.")
-                }
-                val previousDiscontinuity = synchronized(lock) { segments.lastOrNull()?.spec?.discontinuitySequence }
-                if (previousDiscontinuity != null && additions.firstOrNull()?.discontinuitySequence?.let { it - previousDiscontinuity !in 0..4 } == true) {
-                    throw UnsupportedTimeShift("Recording stopped because the live source reset its timeline.")
-                }
-                additions.forEach(::append)
                 synchronized(lock) {
                     expireRetired()
                     if (playlist.ended) {
@@ -174,25 +288,45 @@ internal class HlsTimeShiftSession private constructor(
                         ended = true
                         notice = "The broadcast ended. Its saved history is still available."
                     }
+                    publishSnapshotLocked()
                 }
                 failures = 0
                 if (playlist.ended) return
             } catch (error: Exception) {
                 if (closed.get()) return
-                if (error is UnsupportedTimeShift || ++failures >= 3) {
-                    synchronized(lock) {
-                        recording = false
-                        ended = true
-                        notice = if (error is UnsupportedTimeShift) error.message else "Recording stopped after a network interruption. Go live to reconnect."
-                    }
+                if (error is CancellationException) throw error
+                if (error is UnsupportedTimeShift) {
+                    stopRecording(error.message)
+                    return
+                }
+                runCatching { sessionPool.evictAll() }
+                if (error is TimeShiftHttpException && error.statusCode in FAST_FAIL_HTTP_STATUSES) {
+                    stopRecording("Recording stopped because the live source returned HTTP ${error.statusCode}. Go live to reconnect.")
+                    return
+                }
+                // Re-resolve from the original URL so expired edge tokens or dead edges recover on retry.
+                upstream = originalUrl
+                val maxFailures = if (error is TimeShiftHttpException && error.statusCode == 403) 2 else 3
+                if (++failures >= maxFailures) {
+                    stopRecording("Recording stopped after a network interruption. Go live to reconnect.")
                     return
                 }
                 delay(failures * 1_000L)
+                immediatePoll = true
             }
         }
     }
 
-    private fun append(spec: RecordedSegmentSpec) {
+    private fun stopRecording(message: String?) {
+        synchronized(lock) {
+            recording = false
+            ended = true
+            notice = message
+            publishSnapshotLocked()
+        }
+    }
+
+    private fun append(spec: RecordedSegmentSpec, forceDiscontinuity: Boolean) {
         if (closed.get()) throw IOException("Recording closed.")
         val initialization = spec.initializationUrl?.let { uri ->
             synchronized(lock) { maps[uri]?.also(pinnedMaps::add) } ?: download(uri, ".mp4").also {
@@ -202,40 +336,94 @@ internal class HlsTimeShiftSession private constructor(
                 }
             }
         }
+        var appended = false
         try {
             val resource = if (spec.gap) null else download(spec.url, if (initialization == null) ".ts" else ".m4s")
             synchronized(lock) {
                 if (closed.get()) throw IOException("Recording closed.")
-                segments.addLast(Segment(spec, resource, initialization, totalDurationMs))
+                val prevUpstreamDisc = lastUpstreamDiscontinuity
+                val discDelta = when {
+                    forceDiscontinuity -> 1L
+                    prevUpstreamDisc == null -> 0L
+                    spec.discontinuitySequence == prevUpstreamDisc -> 0L
+                    spec.discontinuitySequence > prevUpstreamDisc ->
+                        (spec.discontinuitySequence - prevUpstreamDisc).coerceAtMost(4L)
+                    else -> 1L
+                }
+                localDiscontinuity += discDelta
+                val assignedSeq = nextLocalSequence++
+                lastUpstreamSequence = spec.sequence
+                lastUpstreamDiscontinuity = spec.discontinuitySequence
+                segments.addLast(
+                    Segment(
+                        spec = spec,
+                        resource = resource,
+                        map = initialization,
+                        startOffsetMs = totalDurationMs,
+                        localSequence = assignedSeq,
+                        localDiscontinuity = localDiscontinuity,
+                    ),
+                )
+                appended = true
                 totalDurationMs += spec.durationMs
-                while (segments.size > 3 && (segments.sumOf { it.spec.durationMs } > limits.durationMs || segments.size > limits.segments)) retireFirst()
+                windowDurationMs += spec.durationMs
+                while (segments.size > 3 && (windowDurationMs > limits.durationMs || segments.size > limits.segments)) retireFirst()
                 expireRetired()
+                publishSnapshotLocked()
             }
         } finally {
-            synchronized(lock) { initialization?.let(pinnedMaps::remove) }
+            synchronized(lock) {
+                initialization?.let {
+                    pinnedMaps.remove(it)
+                    if (!appended) cleanMaps()
+                }
+            }
         }
     }
 
-    private fun fetchManifest(url: String): Pair<String, String> = request(url) { response ->
-        val body = response.body ?: throw IOException("The live source returned an empty response.")
+    private fun fetchManifest(url: String): Pair<String, String> = request(url) { response, call ->
+        val contentType = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT)
+        if (contentType != null && isNonPlaylistMediaType(contentType)) {
+            call.cancel()
+            throw UnsupportedTimeShift("This live source is not HLS. Live recording is unavailable.")
+        }
+        val body = response.body
         if (body.contentLength() > limits.manifestBytes) throw UnsupportedTimeShift("The HLS playlist exceeds the recording size limit.")
-        val output = java.io.ByteArrayOutputStream()
+        val output = ByteArrayOutputStream()
+        var verifiedHeader = false
         body.byteStream().use { input ->
-            val buffer = ByteArray(16 * 1024)
+            val buffer = ByteArray(4 * 1024)
             while (true) {
                 val read = input.read(buffer)
                 if (read < 0) break
                 if (output.size().toLong() + read > limits.manifestBytes) {
+                    call.cancel()
                     throw UnsupportedTimeShift("The HLS playlist exceeds the recording size limit.")
                 }
                 output.write(buffer, 0, read)
+                if (!verifiedHeader) {
+                    when (sniffHlsHeader(output.toByteArray())) {
+                        HeaderSniff.VALID -> verifiedHeader = true
+                        HeaderSniff.INVALID -> {
+                            call.cancel()
+                            throw UnsupportedTimeShift("This live source is not HLS. Live recording is unavailable.")
+                        }
+                        HeaderSniff.NEED_MORE -> if (output.size() >= MAX_HEADER_SNIFF_BYTES) {
+                            call.cancel()
+                            throw UnsupportedTimeShift("This live source is not HLS. Live recording is unavailable.")
+                        }
+                    }
+                }
             }
+        }
+        if (!verifiedHeader) {
+            throw UnsupportedTimeShift("This live source is not HLS. Live recording is unavailable.")
         }
         output.toByteArray().toString(Charsets.UTF_8) to response.request.url.toString()
     }
 
-    private fun download(url: String, suffix: String): Resource = request(url) { response ->
-        val body = response.body ?: throw IOException("The live source returned an empty segment.")
+    private fun download(url: String, suffix: String): Resource = request(url) { response, _ ->
+        val body = response.body
         if (body.contentLength() > limits.segmentBytes) throw UnsupportedTimeShift("A live segment exceeds the recording size limit.")
         val name = synchronized(lock) {
             if (closed.get()) throw IOException("Recording closed.")
@@ -251,14 +439,25 @@ internal class HlsTimeShiftSession private constructor(
             part.outputStream().use { output ->
                 body.byteStream().use { input ->
                     val buffer = ByteArray(64 * 1024)
+                    var bytesSinceUsableSpaceCheck = USABLE_SPACE_CHECK_INTERVAL_BYTES
+                    var lastSnapshotElapsedMs = nowElapsedMs()
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
                         if (written + read > limits.segmentBytes) throw UnsupportedTimeShift("A live segment exceeds the recording size limit.")
+                        val checkUsableSpace = bytesSinceUsableSpaceCheck >= USABLE_SPACE_CHECK_INTERVAL_BYTES
+                        if (checkUsableSpace) bytesSinceUsableSpaceCheck = 0L
+                        bytesSinceUsableSpaceCheck += read
+                        val now = nowElapsedMs()
+                        val shouldPublish = now - lastSnapshotElapsedMs >= SNAPSHOT_PUBLISH_INTERVAL_MS
                         synchronized(lock) {
                             if (closed.get()) throw IOException("Recording closed.")
-                            reserve(read.toLong())
+                            reserve(read.toLong(), checkUsableSpace = checkUsableSpace)
                             diskBytes += read
+                            if (shouldPublish) {
+                                lastSnapshotElapsedMs = now
+                                publishSnapshotLocked()
+                            }
                         }
                         written += read
                         output.write(buffer, 0, read)
@@ -269,39 +468,43 @@ internal class HlsTimeShiftSession private constructor(
             val file = File(directory, name)
             synchronized(lock) {
                 if (closed.get() || !part.renameTo(file)) throw IOException("The live buffer could not be saved.")
+                publishSnapshotLocked()
             }
             Resource(name, file, written)
         } catch (error: Exception) {
             synchronized(lock) {
                 part.delete()
                 diskBytes = (diskBytes - written).coerceAtLeast(0)
+                publishSnapshotLocked()
             }
             throw error
         }
     }
 
-    private fun reserve(bytes: Long) {
+    private fun reserve(bytes: Long, checkUsableSpace: Boolean) {
         expireRetired()
         while (diskBytes + bytes > limits.bytes && deleteRetired(force = true)) { }
         while (diskBytes + bytes > limits.bytes && segments.size > 3) {
             retireFirst()
             while (diskBytes + bytes > limits.bytes && deleteRetired(force = true)) { }
         }
-        if (diskBytes + bytes > limits.bytes || directory.usableSpace < bytes + 16L * 1024 * 1024) {
+        if (diskBytes + bytes > limits.bytes || (checkUsableSpace && directory.usableSpace < bytes + 16L * 1024 * 1024)) {
             throw UnsupportedTimeShift("The temporary live buffer reached its storage limit. Go live to restart recording.")
         }
     }
 
     private fun retireFirst() {
-        retired.addLast(Retired(segments.removeFirst(), System.currentTimeMillis() + maxOf(5_000, targetDuration * 2_000L)))
+        val removed = segments.removeFirst()
+        windowDurationMs = (windowDurationMs - removed.spec.durationMs).coerceAtLeast(0L)
+        retired.addLast(Retired(removed, System.currentTimeMillis() + maxOf(5_000, targetDuration * 2_000L)))
     }
 
     private fun expireRetired() {
         while (deleteRetired(force = false)) { }
-        cleanMaps()
     }
 
     private fun deleteRetired(force: Boolean): Boolean {
+        if (retired.isEmpty()) return false
         val index = retired.indexOfFirst {
             (force || it.expiresAt <= System.currentTimeMillis()) && (readLeases[it.segment.resource?.name] ?: 0) == 0
         }
@@ -330,12 +533,16 @@ internal class HlsTimeShiftSession private constructor(
             append("#EXTM3U\n#EXT-X-VERSION:$version\n#EXT-X-TARGETDURATION:$targetDuration\n")
             if (independentSegments) append("#EXT-X-INDEPENDENT-SEGMENTS\n")
             val first = segments.firstOrNull() ?: return@synchronized ByteArray(0)
-            append("#EXT-X-MEDIA-SEQUENCE:${first.spec.sequence}\n#EXT-X-DISCONTINUITY-SEQUENCE:${first.spec.discontinuitySequence}\n")
-            var discontinuity = first.spec.discontinuitySequence
+            append("#EXT-X-MEDIA-SEQUENCE:${first.localSequence}\n#EXT-X-DISCONTINUITY-SEQUENCE:${first.localDiscontinuity}\n")
+            var discontinuity = first.localDiscontinuity
             var initialization: Resource? = null
             segments.forEach { segment ->
-                repeat((segment.spec.discontinuitySequence - discontinuity).toInt()) { append("#EXT-X-DISCONTINUITY\n") }
-                discontinuity = segment.spec.discontinuitySequence
+                val discCount = (segment.localDiscontinuity - discontinuity).toInt().coerceAtLeast(0)
+                if (discCount > 0) {
+                    repeat(discCount) { append("#EXT-X-DISCONTINUITY\n") }
+                    initialization = null
+                }
+                discontinuity = segment.localDiscontinuity
                 if (segment.map != initialization && segment.map != null) {
                     append("#EXT-X-MAP:URI=\"${segment.map.name}\"\n")
                     initialization = segment.map
@@ -343,7 +550,7 @@ internal class HlsTimeShiftSession private constructor(
                 segment.spec.programDateTime?.let { append("#EXT-X-PROGRAM-DATE-TIME:$it\n") }
                 if (segment.spec.gap) append("#EXT-X-GAP\n")
                 append("#EXTINF:${segment.spec.durationMs / 1000.0},\n")
-                append(segment.resource?.name ?: "gap-${segment.spec.sequence}.ts")
+                append(segment.resource?.name ?: "gap-${segment.localSequence}.ts")
                 append('\n')
             }
             if (ended) append("#EXT-X-ENDLIST\n")
@@ -352,14 +559,31 @@ internal class HlsTimeShiftSession private constructor(
 
     private fun serve() {
         while (!closed.get()) {
-            val socket = try { server.accept() } catch (_: SocketException) { return }
-            sockets.add(socket)
-            try {
-                socket.use { respond(it) }
+            val socket = try {
+                server.accept()
+            } catch (_: SocketException) {
+                if (closed.get() || server.isClosed) return
+                continue
             } catch (_: IOException) {
-                // A native player may cancel a seek or manifest request.
-            } finally {
-                sockets.remove(socket)
+                if (closed.get() || server.isClosed) return
+                continue
+            }
+            if (closed.get()) {
+                runCatching { socket.close() }
+                return
+            }
+            sockets.add(socket)
+            scope.launch(Dispatchers.IO) {
+                try {
+                    connectionSlots.withPermit {
+                        socket.use { respond(it) }
+                    }
+                } catch (_: IOException) {
+                    // A native player may cancel a seek or manifest request.
+                } finally {
+                    sockets.remove(socket)
+                    runCatching { socket.close() }
+                }
             }
         }
     }
@@ -367,7 +591,7 @@ internal class HlsTimeShiftSession private constructor(
     private fun respond(socket: Socket) {
         socket.soTimeout = 3_000
         val input = socket.getInputStream().buffered()
-        val bytes = java.io.ByteArrayOutputStream()
+        val bytes = ByteArrayOutputStream()
         var tail = 0
         while (bytes.size() < 8_192) {
             val next = input.read()
@@ -422,8 +646,13 @@ internal class HlsTimeShiftSession private constructor(
                 return
             }
             val count = end - start + 1
-            reply(socket, if (range == null) 200 else 206, if (range == null) "OK" else "Partial Content", count,
-                extra = if (range == null) "Accept-Ranges: bytes\r\n" else "Accept-Ranges: bytes\r\nContent-Range: bytes $start-$end/$length\r\n")
+            reply(
+                socket,
+                if (range == null) 200 else 206,
+                if (range == null) "OK" else "Partial Content",
+                count,
+                extra = if (range == null) "Accept-Ranges: bytes\r\n" else "Accept-Ranges: bytes\r\nContent-Range: bytes $start-$end/$length\r\n",
+            )
             if (method == "GET") file.inputStream().use { source ->
                 var skipped = 0L
                 while (skipped < start) {
@@ -445,19 +674,34 @@ internal class HlsTimeShiftSession private constructor(
                 val remaining = (readLeases[stored.name] ?: 1) - 1
                 if (remaining <= 0) readLeases.remove(stored.name) else readLeases[stored.name] = remaining
                 expireRetired()
+                if (remaining <= 0 && maps.values.any { it.name == stored.name }) {
+                    cleanMaps()
+                }
+                publishSnapshotLocked()
             }
         }
     }
 
-    private fun reply(socket: Socket, code: Int, reason: String, length: Long,
-        type: String = "application/octet-stream", extra: String = "") {
-        socket.getOutputStream().write(("HTTP/1.1 $code $reason\r\nContent-Length: $length\r\n" +
-            "Content-Type: $type\r\nCache-Control: no-store\r\nConnection: close\r\n$extra\r\n").toByteArray(Charsets.US_ASCII))
+    private fun reply(
+        socket: Socket,
+        code: Int,
+        reason: String,
+        length: Long,
+        type: String = "application/octet-stream",
+        extra: String = "",
+    ) {
+        socket.getOutputStream().write(
+            ("HTTP/1.1 $code $reason\r\nContent-Length: $length\r\n" +
+                "Content-Type: $type\r\nCache-Control: no-store\r\nConnection: close\r\n$extra\r\n").toByteArray(Charsets.US_ASCII),
+        )
     }
 
-    private fun <T> request(url: String, block: (okhttp3.Response) -> T): T {
+    private fun <T> request(url: String, block: (okhttp3.Response, Call) -> T): T {
         if (closed.get()) throw IOException("Recording closed.")
-        val builder = Request.Builder().url(url).header("User-Agent", "BruTV Android/1.0").header("Cache-Control", "no-cache")
+        val builder = Request.Builder()
+            .url(url)
+            .header("User-Agent", CatalogRepository.USER_AGENT)
+            .header("Cache-Control", "no-cache")
         val target = url.toHttpUrl()
         val sameOrigin = target.scheme == sourceOrigin.scheme && target.host == sourceOrigin.host && target.port == sourceOrigin.port
         headers.filter { (name, _) -> sameOrigin || name.equals("User-Agent", true) }
@@ -470,39 +714,127 @@ internal class HlsTimeShiftSession private constructor(
                 throw IOException("Recording closed.")
             }
             return call.execute().use { response ->
-                if (!response.isSuccessful) throw IOException("The live source returned HTTP ${response.code}.")
-                block(response)
+                if (!response.isSuccessful) throw TimeShiftHttpException(response.code)
+                block(response, call)
             }
         } finally {
             calls.remove(call)
         }
     }
 
+    /** Non-blocking close safe for the Android Main thread; tears down network and disk asynchronously. */
+    fun closeAsync(): Job {
+        if (closed.compareAndSet(false, true)) {
+            snapshotRef.set(TimeShiftRecordingSnapshot(0L, 0L, false, snapshotRef.get().notice, snapshotRef.get().windowStartOffsetMs))
+            scope.cancel()
+            cleanupScope.launch { finishClose() }
+        }
+        return closeCompleted
+    }
+
     override fun close() {
+        if (isAndroidMainThread()) {
+            closeAsync()
+            return
+        }
         if (!closed.compareAndSet(false, true)) return
-        calls.forEach(Call::cancel)
-        sockets.forEach { runCatching { it.close() } }
-        runCatching { server.close() }
+        snapshotRef.set(TimeShiftRecordingSnapshot(0L, 0L, false, snapshotRef.get().notice, snapshotRef.get().windowStartOffsetMs))
         scope.cancel()
-        synchronized(lock) {
-            segments.clear()
-            retired.clear()
-            maps.clear()
-            pinnedMaps.clear()
-            readLeases.clear()
-            playerSources.clear()
-            directory.deleteRecursively()
-            diskBytes = 0
-            recording = false
-            activeDirectories.remove(directory.absolutePath)
+        finishClose()
+    }
+
+    private fun finishClose() {
+        try {
+            calls.forEach { runCatching { it.cancel() } }
+            sockets.forEach { runCatching { it.close() } }
+            runCatching { server.close() }
+            runCatching { sessionPool.evictAll() }
+            synchronized(lock) {
+                segments.clear()
+                retired.clear()
+                maps.clear()
+                pinnedMaps.clear()
+                readLeases.clear()
+                playerSources.clear()
+                directory.deleteRecursively()
+                diskBytes = 0
+                windowDurationMs = 0L
+                recording = false
+                publishSnapshotLocked()
+                activeDirectories.remove(directory.absolutePath)
+            }
+        } finally {
+            closeCompleted.complete(Unit)
         }
     }
 
+    private enum class HeaderSniff { VALID, INVALID, NEED_MORE }
+
     companion object {
+        private const val STARTUP_TARGET_DURATION_MS = 6_000L
+        private const val MIN_STUCK_MANIFEST_MS = 20_000L
+        private const val MAX_STUCK_RESOLUTIONS = 2
+        private const val MAX_BRIDGEABLE_GAP_SEGMENTS = 2L
+        private const val MAX_EDGE_SKEW_SEGMENTS = 3L
+        private const val MAX_CONCURRENT_LOOPBACK_CONNECTIONS = 16
+        private const val LOOPBACK_BACKLOG = 16
+        private const val MAX_HEADER_SNIFF_BYTES = 1024
+        private const val USABLE_SPACE_CHECK_INTERVAL_BYTES = 1024L * 1024L
+        private const val SNAPSHOT_PUBLISH_INTERVAL_MS = 250L
+        private val FAST_FAIL_HTTP_STATUSES = setOf(401, 404, 410)
+        private val HLS_MAGIC = "#EXTM3U".toByteArray(Charsets.US_ASCII)
+
         private val activeDirectories = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+        private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val defaultClient = OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(25, TimeUnit.SECONDS).build()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
+            .build()
+
+        private fun nowElapsedMs(): Long = System.nanoTime() / 1_000_000L
+
+        private fun isAndroidMainThread(): Boolean = runCatching {
+            val mainLooper = Looper.getMainLooper()
+            mainLooper != null && Looper.myLooper() === mainLooper
+        }.getOrDefault(false)
+
+        private fun isNonPlaylistMediaType(contentType: String): Boolean =
+            contentType.startsWith("video/") ||
+                contentType.startsWith("image/") ||
+                (contentType.startsWith("audio/") &&
+                    contentType != "audio/mpegurl" &&
+                    contentType != "audio/x-mpegurl")
+
+        private fun sniffHlsHeader(bytes: ByteArray): HeaderSniff {
+            var offset = 0
+            if (bytes.size >= 3 &&
+                bytes[0] == 0xEF.toByte() &&
+                bytes[1] == 0xBB.toByte() &&
+                bytes[2] == 0xBF.toByte()
+            ) {
+                offset = 3
+            } else if (bytes.size < 3 && bytes.isNotEmpty() && bytes[0] == 0xEF.toByte()) {
+                return HeaderSniff.NEED_MORE
+            }
+            while (offset < bytes.size) {
+                val b = bytes[offset].toInt() and 0xFF
+                if (b == ' '.code || b == '\t'.code || b == '\r'.code || b == '\n'.code) {
+                    offset++
+                } else {
+                    break
+                }
+            }
+            if (offset >= bytes.size) return HeaderSniff.NEED_MORE
+            val remaining = bytes.size - offset
+            val checkLength = minOf(remaining, HLS_MAGIC.size)
+            for (i in 0 until checkLength) {
+                if (bytes[offset + i] != HLS_MAGIC[i]) return HeaderSniff.INVALID
+            }
+            return if (remaining >= HLS_MAGIC.size) HeaderSniff.VALID else HeaderSniff.NEED_MORE
+        }
 
         suspend fun open(
             root: File,
@@ -539,7 +871,7 @@ internal class HlsTimeShiftSession private constructor(
                 }
             }
             continuation.invokeOnCancellation {
-                owned.getAndSet(null)?.close()
+                owned.getAndSet(null)?.closeAsync()
                 startup.cancel()
             }
         }

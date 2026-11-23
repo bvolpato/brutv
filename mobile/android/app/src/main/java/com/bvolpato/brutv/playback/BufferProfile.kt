@@ -12,7 +12,7 @@ enum class BufferProfile(
     ),
     BALANCED(
         "balanced", "Balanced", "Fast start with room for normal network jitter.",
-        BufferTuning(4_000, 12_000, 1_000, 2_000, null, 32 * 1024 * 1024),
+        BufferTuning(6_000, 20_000, 1_500, 3_000, null, 32 * 1024 * 1024),
     ),
     STABILITY(
         "high_stability", "High stability", "A deeper buffer for a fluctuating connection.",
@@ -31,4 +31,11 @@ internal data class BufferTuning(
     val rebufferMs: Int,
     val liveOffsetMs: Long?,
     val targetBytes: Int,
-)
+) {
+    fun effectiveTargetBytes(isLowRamDevice: Boolean): Int =
+        if (isLowRamDevice) (targetBytes / 2).coerceAtLeast(LOW_RAM_MIN_TARGET_BYTES) else targetBytes
+
+    companion object {
+        private const val LOW_RAM_MIN_TARGET_BYTES = 12 * 1024 * 1024
+    }
+}

@@ -1,5 +1,7 @@
 package com.bvolpato.brutv.ui
 
+import android.app.ActivityManager
+import android.content.Context
 import android.text.format.DateFormat
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
@@ -103,6 +105,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -144,6 +147,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Size
+import com.bvolpato.brutv.data.CatalogRepository
 import com.bvolpato.brutv.data.MediaEntry
 import com.bvolpato.brutv.data.MediaKind
 import com.bvolpato.brutv.data.Programme
@@ -159,8 +163,11 @@ import com.bvolpato.brutv.signin.TvPairingScreen
 import java.io.File
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 
 private val BruTvColors = darkColorScheme(
     primary = Color(0xFF41E0D0),
@@ -220,12 +227,49 @@ fun BruTvApp(
             getContent = { contentPicker.launch("*/*") },
         )
     }
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context)
-            .memoryCache { coil.memory.MemoryCache.Builder(context).maxSizeBytes(56 * 1024 * 1024).build() }
-            .diskCache { coil.disk.DiskCache.Builder().directory(File(context.cacheDir, "brutv_artwork")).maxSizeBytes(192L * 1024 * 1024).build() }
+    val appContext = context.applicationContext
+    val imageLoader = remember(appContext) {
+        val isLowRam = (appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+            ?.isLowRamDevice == true
+        val artworkDispatcher = Dispatcher().apply {
+            maxRequests = 16
+            maxRequestsPerHost = 4
+        }
+        val artworkClient = OkHttpClient.Builder()
+            .dispatcher(artworkDispatcher)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val withUserAgent = if (request.header("User-Agent") == null) {
+                    request.newBuilder().header("User-Agent", CatalogRepository.USER_AGENT).build()
+                } else {
+                    request
+                }
+                chain.proceed(withUserAgent)
+            }
+            .build()
+        ImageLoader.Builder(appContext)
+            .okHttpClient(artworkClient)
+            .memoryCache {
+                coil.memory.MemoryCache.Builder(appContext)
+                    .maxSizePercent(if (isLowRam) 0.10 else 0.18)
+                    .build()
+            }
+            .diskCache {
+                coil.disk.DiskCache.Builder()
+                    .directory(File(appContext.cacheDir, "brutv_artwork"))
+                    .maxSizeBytes(if (isLowRam) 64L * 1024 * 1024 else 192L * 1024 * 1024)
+                    .build()
+            }
             .crossfade(180)
             .build()
+    }
+    DisposableEffect(imageLoader) {
+        onDispose { imageLoader.shutdown() }
     }
 
     MaterialTheme(colorScheme = BruTvColors) {
@@ -241,11 +285,13 @@ fun BruTvApp(
                     isTv = isTv,
                     onClose = viewModel::closePlayer,
                     onItemChanged = viewModel::onPlayerItemChanged,
-                    onPosition = viewModel::savePosition,
+                    onPosition = { item, position -> viewModel.savePosition(item, position, force = false) },
+                    onCommitPosition = { item, position -> viewModel.savePosition(item, position, force = true) },
                     onToggleFavorite = viewModel::toggleFavorite,
                     isFavorite = viewModel::isFavorite,
                     onPlayerChanged = onPlayerChanged,
                     isInPictureInPictureMode = isInPictureInPictureMode,
+                    maxConnections = state.maxConnections,
                 )
                 return@Surface
             }
@@ -1090,25 +1136,10 @@ private fun CatalogPage(
     val hasCategories = state.activeSection.categories.isNotEmpty() &&
         state.destination in setOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES)
 
-    val categoryItems = remember(state.activeSection.categories, state.activeSection.entries, isPt, state.destination, hasCategories) {
+    val categoryItems = remember(state.activeSection, isPt, state.destination, hasCategories) {
         if (!hasCategories) emptyList()
         else {
-            val entries = state.activeSection.entries
-            val firstIcons = mutableMapOf<String, String>()
-            val counts = mutableMapOf<String, Int>()
-            var firstAllIcon: String? = null
-            for (entry in entries) {
-                if (firstAllIcon == null && entry.artwork.isNotBlank()) {
-                    firstAllIcon = entry.artwork
-                }
-                val catId = entry.categoryId
-                if (catId.isNotBlank()) {
-                    counts[catId] = (counts[catId] ?: 0) + 1
-                    if (!firstIcons.containsKey(catId) && entry.artwork.isNotBlank()) {
-                        firstIcons[catId] = entry.artwork
-                    }
-                }
-            }
+            val section = state.activeSection
             val allName = when (state.destination) {
                 BruTvDestination.LIVE -> if (isPt) "Todos os Canais" else "All Channels"
                 BruTvDestination.MOVIES -> if (isPt) "Todos os Filmes" else "All Movies"
@@ -1118,15 +1149,15 @@ private fun CatalogPage(
             val allItem = CategorySideBarItem(
                 id = null,
                 name = allName,
-                iconUrl = firstAllIcon,
-                count = entries.size,
+                iconUrl = section.firstArtworkUrl,
+                count = section.entries.size,
             )
-            listOf(allItem) + state.activeSection.categories.map { cat ->
+            listOf(allItem) + section.categories.map { cat ->
                 CategorySideBarItem(
                     id = cat.id,
                     name = cat.name,
-                    iconUrl = firstIcons[cat.id],
-                    count = counts[cat.id] ?: 0,
+                    iconUrl = section.categoryIcons[cat.id],
+                    count = section.categoryCounts[cat.id] ?: 0,
                 )
             }
         }
@@ -1258,11 +1289,23 @@ private fun CatalogPage(
             }
 
             if (state.destination == BruTvDestination.FAVORITES || state.destination == BruTvDestination.RECENTS) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = if (isTv) 28.dp else 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     FilterChip(selected = state.destination == BruTvDestination.FAVORITES, onClick = { viewModel.onDestinationSelected(BruTvDestination.FAVORITES) }, label = { Text(if (isPt) "Favoritos" else "Favorites") })
                     FilterChip(selected = state.destination == BruTvDestination.RECENTS, onClick = { viewModel.onDestinationSelected(BruTvDestination.RECENTS) }, label = { Text(if (isPt) "Recentes" else "Recent") })
                 }
-                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     listOf(MediaKind.LIVE to (if (isPt) "Ao Vivo" else "Live"), MediaKind.MOVIE to (if (isPt) "Filmes" else "Movies"), MediaKind.SERIES to (if (isPt) "Séries" else "Series")).forEach { (kind, label) ->
                         FilterChip(selected = state.libraryKind == kind, onClick = { viewModel.selectLibraryKind(kind) }, label = { Text(label) })
                     }
@@ -1270,7 +1313,13 @@ private fun CatalogPage(
             }
 
             if (state.destination in setOf(BruTvDestination.LIVE, BruTvDestination.MOVIES, BruTvDestination.SERIES, BruTvDestination.FAVORITES, BruTvDestination.RECENTS)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = if (isTv) 28.dp else 16.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
                     listOf(null, "4K", "FHD", "HD", "SD").forEach { quality ->
                         FilterChip(selected = state.qualityFilter == quality, onClick = { viewModel.setQualityFilter(quality) }, label = { Text(quality ?: (if (isPt) "Qualquer qualidade" else "Any quality")) })
                     }
@@ -1727,14 +1776,9 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
             "pt" to "Português (Brasil)",
             "en" to "English",
         ).forEach { (langKey, langLabel) ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(CardSurface)
-                    .clickable { viewModel.setLanguage(langKey) }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            SettingsSelectableRow(
+                selected = state.language == langKey,
+                onClick = { viewModel.setLanguage(langKey) },
             ) {
                 RadioButton(selected = state.language == langKey, onClick = { viewModel.setLanguage(langKey) })
                 Text(langLabel, color = Color.White, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
@@ -1743,7 +1787,10 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
 
         Text(if (isPt) "Perfil de buffer" else "Buffer profile", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         BufferProfile.entries.forEach { profile ->
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSurface).clickable { viewModel.setBufferProfile(profile.key) }.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            SettingsSelectableRow(
+                selected = state.bufferProfile == profile.key,
+                onClick = { viewModel.setBufferProfile(profile.key) },
+            ) {
                 RadioButton(selected = state.bufferProfile == profile.key, onClick = { viewModel.setBufferProfile(profile.key) })
                 Column(Modifier.padding(start = 8.dp)) {
                     Text(profile.title, color = Color.White, fontWeight = FontWeight.Medium)
@@ -1751,7 +1798,11 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(CardSurface).clickable { viewModel.setShowStats(!state.showStats) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        SettingsSelectableRow(
+            selected = state.showStats,
+            onClick = { viewModel.setShowStats(!state.showStats) },
+            paddingValues = PaddingValues(14.dp),
+        ) {
             Column(Modifier.weight(1f)) {
                 Text(if (isPt) "Diagnósticos de reprodução" else "Playback diagnostics", color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text(if (isPt) "Exibir resolução, bitrate, buffer e detalhes de rede durante a reprodução." else "Show resolution, bitrate, buffer and recovery details while playing.", color = Muted, style = MaterialTheme.typography.bodySmall)
@@ -1762,6 +1813,37 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
         Text(if (isPt) "O BruTV não possui servidores próprios nem canais embutidos. Suas credenciais são salvas criptografadas neste dispositivo e enviadas diretamente ao provedor configurado." else "BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
         Text("BruTV • Version 1.0.1", color = Muted, style = MaterialTheme.typography.bodySmall)
     }
+}
+
+@Composable
+private fun SettingsSelectableRow(
+    selected: Boolean,
+    onClick: () -> Unit,
+    paddingValues: PaddingValues = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+    content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .clip(shape)
+            .background(if (focused) Color(0xFF1A2F3A) else CardSurface)
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = when {
+                    focused -> Aqua
+                    selected -> Color(0xFF2B7979)
+                    else -> Color.Transparent
+                },
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(paddingValues),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
 }
 
 @Composable

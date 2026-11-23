@@ -11,6 +11,7 @@ import java.io.File
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -68,8 +69,9 @@ class ProfileStore(context: Context) {
                     showStats?.isJsonPrimitive != true || !showStats.asJsonPrimitive.isBoolean) {
                     throw ProfileStoreException("Saved profiles are damaged. The encrypted file was left unchanged.")
                 }
-                gson.fromJson(json, SavedState::class.java)
+                val decoded = gson.fromJson(json, SavedState::class.java)
                     ?: throw ProfileStoreException("Saved profiles are damaged. The encrypted file was left unchanged.")
+                normalizeDecodedSavedState(decoded)
             } finally {
                 plain.fill(0)
             }
@@ -148,3 +150,53 @@ class ProfileStore(context: Context) {
         private val AAD = "com.bvolpato.brutv.profile-store.v1".toByteArray(Charsets.UTF_8)
     }
 }
+
+/**
+ * Gson deserializes via reflection and bypasses Kotlin non-null defaults when reading older schemas
+ * or sparse JSON payloads. Normalize every potentially null field before returning state to callers.
+ */
+internal fun normalizeDecodedSavedState(raw: SavedState): SavedState {
+    val rawProfiles = asNullable(raw.profiles) as? List<*>
+    val safeProfiles = rawProfiles.orEmpty().mapNotNull { item ->
+        val profile = item as? SourceConfig ?: return@mapNotNull null
+        SourceConfig(
+            id = (asNullable(profile.id) as? String).orEmpty().ifBlank { UUID.randomUUID().toString() },
+            name = (asNullable(profile.name) as? String).orEmpty(),
+            type = (asNullable(profile.type) as? SourceType) ?: SourceType.XTREAM,
+            server = (asNullable(profile.server) as? String).orEmpty(),
+            username = (asNullable(profile.username) as? String).orEmpty(),
+            password = (asNullable(profile.password) as? String).orEmpty(),
+            playlistUrl = (asNullable(profile.playlistUrl) as? String).orEmpty(),
+        )
+    }
+    val rawLibraries = asNullable(raw.libraries) as? Map<*, *>
+    val safeLibraries = rawLibraries?.entries.orEmpty().mapNotNull { entry ->
+        val key = entry.key as? String ?: return@mapNotNull null
+        val value = entry.value as? LibraryState ?: return@mapNotNull null
+        val rawFavs = asNullable(value.favoriteIds) as? Iterable<*>
+        val safeFavorites = rawFavs?.mapNotNull { it as? String }?.toSet().orEmpty()
+        val rawRecents = asNullable(value.recentIds) as? Iterable<*>
+        val safeRecents = rawRecents?.mapNotNull { it as? String }.orEmpty()
+        val rawResume = asNullable(value.resumePositions) as? Map<*, *>
+        val safeResume = rawResume?.entries.orEmpty().mapNotNull { resumeEntry ->
+            val entryId = resumeEntry.key as? String ?: return@mapNotNull null
+            val position = (resumeEntry.value as? Number)?.toLong() ?: return@mapNotNull null
+            entryId to position.coerceAtLeast(0L)
+        }.toMap()
+        key to LibraryState(
+            favoriteIds = safeFavorites,
+            recentIds = safeRecents,
+            resumePositions = safeResume,
+        )
+    }.toMap()
+    return SavedState(
+        profiles = safeProfiles,
+        activeSourceId = raw.activeSourceId,
+        libraries = safeLibraries,
+        bufferProfile = (asNullable(raw.bufferProfile) as? String).orEmpty().ifBlank { "balanced" },
+        showStats = raw.showStats,
+        language = (asNullable(raw.language) as? String).orEmpty().ifBlank { "system" },
+    )
+}
+
+private fun asNullable(value: Any?): Any? = value

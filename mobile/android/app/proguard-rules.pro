@@ -1,3 +1,6 @@
+# Preserve generic type signatures for Gson deserialization in minified builds.
+-keepattributes Signature
+
 # These names form the encrypted profile file's versioned JSON schema.
 -keep class com.bvolpato.brutv.data.SourceConfig { *; }
 -keep class com.bvolpato.brutv.data.SourceType { *; }
