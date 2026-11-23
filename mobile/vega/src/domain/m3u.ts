@@ -1,3 +1,5 @@
+import {parseURL} from './login';
+
 export interface PlaylistEntry {
   id: string;
   name: string;
@@ -56,7 +58,7 @@ export function parseM3U(text: string): PlaylistEntry[] {
       fallbackGroup = line.slice(8).trim();
     } else if (!line.startsWith('#')) {
       let pathName = line;
-      try { pathName = new URL(line).pathname.split('/').pop() || line; } catch { /* Retain provider input for catalog inspection. */ }
+      try { pathName = parseURL(line).pathname.split('/').pop() || line; } catch { /* Retain provider input for catalog inspection. */ }
       entries.push({
         id: stableID(line), url: line,
         name: title || attributes['tvg-name'] || pathName,

@@ -3,6 +3,7 @@ export class RecordingFallback {
   private direct = false;
   private requested = false;
   get disabled(): boolean {return this.direct;}
+  get pending(): boolean {return this.requested;}
 
   request(): boolean {
     if (this.direct) return false;

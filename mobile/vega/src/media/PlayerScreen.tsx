@@ -1,6 +1,6 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, BackHandler, StyleSheet, Text, View} from 'react-native';
-import {useKeplerAppStateManager, useTVEventHandler} from '@amazon-devices/react-native-kepler';
+import {HWEvent, TVFocusGuideView, useKeplerAppStateManager, useTVEventHandler} from '@amazon-devices/react-native-kepler';
 import {MediaControlServerComponentAsync} from '@amazon-devices/kepler-media-controls';
 import {KeplerVideoSurfaceView, VideoPlayer} from '@amazon-devices/react-native-w3cmedia';
 import {ContentItem} from '../domain/catalog';
@@ -10,6 +10,25 @@ import {TVButton} from '../TVButton';
 import {localizePlayerMessage, PlayerLanguage, playerText} from './playerCopy';
 import {SystemMediaSession} from './SystemMediaSession';
 
+// Module-scoped teardown chain guarantees full decoder, Shaka, and recorder cleanup
+// of the previous channel before opening the next stream (critical for single-connection providers).
+let previousSessionRelease: Promise<void> = Promise.resolve();
+
+function positionStructuralKey(update: PlaybackPosition | undefined, message: string | undefined): string {
+  if (!update) return `none|${message ?? ''}`;
+  const canRewind = update.end - update.start > 1 ? 1 : 0;
+  return `${update.live ? 1 : 0}|${update.paused ? 1 : 0}|${update.expired ? 1 : 0}|${update.recording ? 1 : 0}|${canRewind}|${update.message ?? ''}|${message ?? ''}`;
+}
+
+function positionDisplayKey(update: PlaybackPosition | undefined): string {
+  if (!update) return 'none';
+  const wholeSecond = Math.floor(update.position);
+  const behind = update.live ? Math.round(Math.max(0, (update.liveTarget ?? update.end) - update.position)) : 0;
+  const recSec = Math.round(update.recordedSeconds || 0);
+  const recMB = Math.round((update.recordedBytes || 0) / 1024 / 1024);
+  return `${wholeSecond}|${behind}|${recSec}|${recMB}`;
+}
+
 export function PlayerScreen({item, language, onClose}: {item: ContentItem; language: PlayerLanguage; onClose: () => void}) {
   const [status, setStatus] = useState<PlaybackStatus>('loading');
   const [attempt, setAttempt] = useState(0);
@@ -17,24 +36,78 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
   const [recordingMessage, setRecordingMessage] = useState<string>();
   const session = useRef<PlaybackSession>();
   const surface = useRef<string>();
-  const released = useRef<Promise<void>>(Promise.resolve());
+  const canSeekRef = useRef(item.kind !== 'live');
+  const controlsFocusedRef = useRef(0);
   const appStateManager = useKeplerAppStateManager();
-  useTVEventHandler(({eventType, eventKeyAction}) => {
-    if (eventType === 'playpause' && eventKeyAction === 1) {
+
+  const onControlFocus = useCallback(() => { controlsFocusedRef.current += 1; }, []);
+  const onControlBlur = useCallback(() => { controlsFocusedRef.current = Math.max(0, controlsFocusedRef.current - 1); }, []);
+
+  const handleTVEvent = useCallback((event: HWEvent) => {
+    if (event.eventKeyAction !== 1 && event.eventKeyAction !== undefined) return;
+    const type = event.eventType;
+    if (type === 'playpause') {
       void session.current?.toggle().catch(() => setStatus('error'));
+    } else if (type === 'play') {
+      void session.current?.play().catch(() => setStatus('error'));
+    } else if (type === 'pause') {
+      void session.current?.pause().catch(() => setStatus('error'));
+    } else if (type === 'stop') {
+      onClose();
+    } else if (type === 'rewind' || type === 'skip_backward') {
+      if (canSeekRef.current) session.current?.seek(-10);
+    } else if (type === 'fastforward' || type === 'fastForward' || type === 'forward' || type === 'skip_forward') {
+      if (canSeekRef.current) session.current?.seek(10);
+    } else if (type === 'left') {
+      if (controlsFocusedRef.current === 0 && canSeekRef.current) session.current?.seek(-10);
+    } else if (type === 'right') {
+      if (controlsFocusedRef.current === 0 && canSeekRef.current) session.current?.seek(10);
     }
-  });
+  }, [onClose]);
+
+  useTVEventHandler(handleTVEvent);
+
   useEffect(() => {
+    let cancelled = false;
     const video = new VideoPlayer();
+    canSeekRef.current = item.kind !== 'live';
     setPosition(undefined); setRecordingMessage(undefined);
     let system: SystemMediaSession | undefined;
     let playbackStatus: PlaybackStatus = 'loading';
     let playbackPosition: PlaybackPosition | undefined;
-    const current = new PlaybackSession(video, onError => vegaAdapter(video, onError, item.kind === 'live'), value => {
-      playbackStatus = value; setStatus(value); system?.update(value, playbackPosition);
-    }, (update, message) => {
-      playbackPosition = update; setPosition(update); setRecordingMessage(message); system?.update(playbackStatus, update);
-    });
+    let lastStructuralKey = '';
+    let lastDisplayKey = '';
+    let lastUiUpdateAt = 0;
+
+    const current = new PlaybackSession(
+      video,
+      onError => vegaAdapter(video, onError, item.kind === 'live'),
+      value => {
+        playbackStatus = value;
+        setStatus(prev => (prev === value ? prev : value));
+        system?.update(value, playbackPosition);
+      },
+      (update, message) => {
+        playbackPosition = update;
+        canSeekRef.current = item.kind !== 'live' || !!(update && update.end - update.start > 1);
+        system?.update(playbackStatus, update);
+
+        const now = Date.now();
+        const structuralKey = positionStructuralKey(update, message);
+        const displayKey = positionDisplayKey(update);
+        const structuralChanged = structuralKey !== lastStructuralKey;
+        const displayChanged = displayKey !== lastDisplayKey && now - lastUiUpdateAt >= 1000;
+        if (structuralChanged || displayChanged) {
+          lastStructuralKey = structuralKey;
+          lastDisplayKey = displayKey;
+          lastUiUpdateAt = now;
+          setPosition(update);
+          setRecordingMessage(prev => (prev === message ? prev : message));
+        }
+      },
+      {live: item.kind === 'live'},
+    );
+
     try {
       const server = MediaControlServerComponentAsync.getOrMakeServer();
       system = new SystemMediaSession(current, item, onClose, server);
@@ -45,15 +118,43 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
     }
     session.current = current;
     if (surface.current) current.surfaceCreated(surface.current);
-    void released.current.then(() => current.start(item.url!));
+
+    const waitForPrevious = previousSessionRelease;
+    void waitForPrevious.then(() => {
+      if (!cancelled) return current.start(item.url!);
+    });
+
     const back = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
+    const keplerSubs: {remove: () => void}[] = [];
+    try {
+      if (typeof appStateManager?.addAppStateListener === 'function') {
+        keplerSubs.push(appStateManager.addAppStateListener('change', state => {
+          if (state !== 'active') onClose();
+        }));
+        keplerSubs.push(appStateManager.addAppStateListener('displayChange', state => {
+          if (state === 'displayDisconnected') onClose();
+        }));
+        keplerSubs.push(appStateManager.addAppStateListener('memoryWarning', () => {
+          onClose();
+        }));
+      }
+    } catch { /* Fallback to AppState below. */ }
     const appState = AppState.addEventListener('change', state => { if (state !== 'active') onClose(); });
+
     return () => {
-      back.remove(); appState.remove(); session.current = undefined;
+      cancelled = true;
+      back.remove();
+      appState.remove();
+      for (const sub of keplerSubs) sub.remove();
+      session.current = undefined;
       system?.close();
-      released.current = current.close().catch(() => { /* The screen has exited; no stale UI updates. */ });
+      previousSessionRelease = waitForPrevious
+        .catch(() => {})
+        .then(() => current.close())
+        .catch(() => { /* The screen has exited; no stale UI updates. */ });
     };
   }, [item.url, item.kind, attempt, onClose, appStateManager]);
+
   const behind = position?.live ? Math.max(0, (position.liveTarget ?? position.end) - position.position) : 0;
   const canRewind = !!position && position.end - position.start > 1;
   const text = playerText(language);
@@ -72,17 +173,17 @@ export function PlayerScreen({item, language, onClose}: {item: ContentItem; lang
           : text.checking)}
         {behind > 3 ? ` ${text.behind(Math.round(behind))}` : ''}
       </Text>}
-      <View style={styles.row}>
-        <TVButton label={text.back} preferred onPress={onClose}/>
-        {status === 'error' ? <TVButton label={text.retry} onPress={() => setAttempt(value => value + 1)}/> : <>
-          <TVButton label={status === 'paused' ? text.play : text.pause} onPress={() => { void session.current?.toggle().catch(() => setStatus('error')); }}/>
+      <TVFocusGuideView autoFocus style={styles.row}>
+        <TVButton label={text.back} preferred onFocus={onControlFocus} onBlur={onControlBlur} onPress={onClose}/>
+        {status === 'error' ? <TVButton label={text.retry} onFocus={onControlFocus} onBlur={onControlBlur} onPress={() => setAttempt(value => value + 1)}/> : <>
+          <TVButton label={status === 'paused' ? text.play : text.pause} onFocus={onControlFocus} onBlur={onControlBlur} onPress={() => { void session.current?.toggle().catch(() => setStatus('error')); }}/>
           {(item.kind !== 'live' || canRewind) && <>
-            <TVButton label={text.back10} onPress={() => session.current?.seek(-10)}/>
-            <TVButton label={text.forward10} onPress={() => session.current?.seek(10)}/>
+            <TVButton label={text.back10} onFocus={onControlFocus} onBlur={onControlBlur} onPress={() => session.current?.seek(-10)}/>
+            <TVButton label={text.forward10} onFocus={onControlFocus} onBlur={onControlBlur} onPress={() => session.current?.seek(10)}/>
           </>}
-          {item.kind === 'live' && behind > 3 && <TVButton label={text.goLive} onPress={() => {void session.current?.goLive().catch(() => setStatus('error'));}}/>}
+          {item.kind === 'live' && behind > 3 && <TVButton label={text.goLive} onFocus={onControlFocus} onBlur={onControlBlur} onPress={() => {void session.current?.goLive().catch(() => setStatus('error'));}}/>}
         </>}
-      </View>
+      </TVFocusGuideView>
     </View>
   </View>;
 }

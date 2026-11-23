@@ -1,11 +1,42 @@
 import React, {memo, useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Animated, BackHandler, FlatList, Image, StyleSheet, Text, TextInput, TouchableOpacity, View} from 'react-native';
-import {browse, Catalog, ContentItem, loadCatalog, loadEpisodes, Section} from './domain/catalog';
-import {LoginSource, parseLogin} from './domain/login';
+import {TVFocusGuideView} from '@amazon-devices/react-native-kepler';
+import {Catalog, ContentItem, loadCatalog, loadEpisodes, Section} from './domain/catalog';
+import {isUnsupportedPlaybackURL, LoginSource, normalizePlaybackURL, parseLogin} from './domain/login';
 import {PlayerScreen} from './media/PlayerScreen';
 import {TVButton} from './TVButton';
 import {emptyPreferences, libraryKey, LibrarySelection, updateLibrary} from './domain/preferences';
 import {loadPreferences, savePreferences} from './PreferencesStore';
+
+type AppErrorKey =
+  | 'loadCatalog'
+  | 'invalidSignIn'
+  | 'loadEpisodes'
+  | 'invalidPlaybackUrl'
+  | 'unsupportedFormat';
+
+const ERROR_MESSAGES: Record<AppErrorKey, {pt: string; en: string}> = {
+  loadCatalog: {
+    pt: 'Não foi possível carregar o provedor. Verifique os dados e tente novamente.',
+    en: 'Could not load the provider. Check the address and account, then try again.',
+  },
+  invalidSignIn: {
+    pt: 'Digite um endereço de servidor HTTP, uma URL M3U ou um link do BruTV.',
+    en: 'Enter an HTTP provider address and account, an M3U URL, or a BruTV sign-in link.',
+  },
+  loadEpisodes: {
+    pt: 'O provedor não pôde carregar os episódios.',
+    en: 'The provider could not load the episodes.',
+  },
+  invalidPlaybackUrl: {
+    pt: 'O provedor forneceu um endereço de reprodução inválido.',
+    en: 'The provider supplied an invalid playback address.',
+  },
+  unsupportedFormat: {
+    pt: 'Este cliente suporta HLS, DASH e MP4. Escolha uma fonte compatível no provedor.',
+    en: 'This Vega starter plays HLS, DASH and MP4. Choose a supported source from your provider.',
+  },
+};
 
 const CategoryTVButton = memo(function CategoryTVButton({
   label,
@@ -123,11 +154,12 @@ export default function App() {
   const [selected, setSelected] = useState<ContentItem>();
   const [player, setPlayer] = useState<ContentItem>();
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [errorKey, setErrorKey] = useState<AppErrorKey>();
   const requestController = useRef<AbortController>();
   const closePlayer = useCallback(() => setPlayer(undefined), []);
 
   const isPt = language === 'pt';
+  const error = errorKey ? ERROR_MESSAGES[errorKey][isPt ? 'pt' : 'en'] : '';
 
   useEffect(() => {
     let active = true;
@@ -151,16 +183,16 @@ export default function App() {
     if (!source) return;
     const controller = new AbortController();
     requestController.current = controller;
-    setLoading(true); setError('');
+    setLoading(true); setErrorKey(undefined);
     void loadCatalog(source, controller.signal).then(value => {
       if (!controller.signal.aborted) { setCatalog(value); setPassword(''); setInput(''); }
     }).catch(() => {
       if (!controller.signal.aborted) {
-        setError(isPt ? 'Não foi possível carregar o provedor. Verifique os dados e tente novamente.' : 'Could not load the provider. Check the address and account, then try again.');
+        setErrorKey('loadCatalog');
       }
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [source, isPt]);
+  }, [source]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -173,21 +205,41 @@ export default function App() {
   }, [selected, episodes, player]);
 
   const items = episodes || catalog?.items || [];
-  const filtered = useMemo(() => {
-    const sectionItems = browse(items, section, query, group);
-    return filter === 'favorites' ? sectionItems.filter(item => favorites.has(item.id))
-      : filter === 'recent' ? recent.flatMap(id => sectionItems.find(item => item.id === id) || []) : sectionItems;
-  }, [items, section, query, group, filter, favorites, recent]);
 
-  const groups = useMemo(() => [...new Set(items.filter(item => item.kind === section).map(item => item.group))].sort(), [items, section]);
+  const indexedSectionItems = useMemo(() => {
+    const result: {item: ContentItem; lowerName: string}[] = [];
+    for (const item of items) {
+      if (item.kind === section) result.push({item, lowerName: item.name.toLocaleLowerCase()});
+    }
+    return result;
+  }, [items, section]);
+
+  const filtered = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    const matched: ContentItem[] = [];
+    for (const entry of indexedSectionItems) {
+      if (group && entry.item.group !== group) continue;
+      if (term && !entry.lowerName.includes(term)) continue;
+      if (filter === 'favorites' && !favorites.has(entry.item.id)) continue;
+      matched.push(entry.item);
+    }
+    if (filter !== 'recent') return matched;
+    const byId = new Map<string, ContentItem>();
+    for (const item of matched) byId.set(item.id, item);
+    const ordered: ContentItem[] = [];
+    for (const id of recent) {
+      const hit = byId.get(id);
+      if (hit) ordered.push(hit);
+    }
+    return ordered;
+  }, [indexedSectionItems, query, group, filter, favorites, recent]);
 
   const categoryData = useMemo(() => {
-    const sectionItems = items.filter(item => item.kind === section);
     const countMap = new Map<string, number>();
     const iconMap = new Map<string, string>();
     let firstAllIcon: string | undefined;
 
-    for (const item of sectionItems) {
+    for (const {item} of indexedSectionItems) {
       if (!firstAllIcon && item.logo) {
         firstAllIcon = item.logo;
       }
@@ -200,6 +252,7 @@ export default function App() {
       }
     }
 
+    const groups = [...countMap.keys()].sort();
     const allLabel = isPt
       ? (section === 'live' ? 'Todos os Canais' : section === 'movie' ? 'Todos os Filmes' : 'Todas as Séries')
       : (section === 'live' ? 'All Channels' : section === 'movie' ? 'All Movies' : 'All Series');
@@ -208,7 +261,7 @@ export default function App() {
       label: allLabel,
       value: undefined as string | undefined,
       icon: firstAllIcon,
-      count: sectionItems.length,
+      count: indexedSectionItems.length,
     };
 
     const catItems = groups.map(g => ({
@@ -219,227 +272,246 @@ export default function App() {
     }));
 
     return [allItem, ...catItems];
-  }, [items, section, groups, isPt]);
+  }, [indexedSectionItems, section, isPt]);
 
   const signIn = () => {
     try {
-      const next = input.trim() ? parseLogin(input) : parseLogin(`brutv://login?server=${encodeURIComponent(server)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
+      const next = input.trim()
+        ? parseLogin(input)
+        : parseLogin(`brutv://login?server=${encodeURIComponent(server)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`);
+      setErrorKey(undefined);
       setSource(next);
     } catch {
-      setError(isPt ? 'Digite um endereço de servidor HTTP, uma URL M3U ou um link do BruTV.' : 'Enter an HTTP provider address and account, an M3U URL, or a BruTV sign-in link.');
+      setErrorKey('invalidSignIn');
     }
   };
 
-  const signOut = () => {
+  const signOut = useCallback(() => {
     requestController.current?.abort();
     setSource(undefined); setCatalog(undefined); setEpisodes(undefined); setSelected(undefined); setPlayer(undefined);
-    setPassword(''); setUsername(''); setServer(''); setInput(''); setQuery(''); setGroup(undefined); setError('');
+    setPassword(''); setUsername(''); setServer(''); setInput(''); setQuery(''); setGroup(undefined); setErrorKey(undefined);
     setLoading(false);
-  };
+  }, []);
+
+  const cancelLoading = useCallback(() => {
+    requestController.current?.abort();
+    setLoading(false);
+    if (!catalog) {
+      signOut();
+    }
+  }, [catalog, signOut]);
 
   const openItem = async (item: ContentItem) => {
     if (item.url) { setSelected(item); return; }
     if (!catalog?.seriesSource) return;
     requestController.current?.abort();
     const controller = new AbortController(); requestController.current = controller;
-    setLoading(true); setError('');
+    setLoading(true); setErrorKey(undefined);
     try {
       const value = await loadEpisodes(catalog.seriesSource, item.id.split(':')[1], controller.signal);
       if (!controller.signal.aborted) { setEpisodes(value); setGroup(undefined); setQuery(''); }
     } catch {
-      if (!controller.signal.aborted) setError(isPt ? 'O provedor não pôde carregar os episódios.' : 'The provider could not load the episodes.');
+      if (!controller.signal.aborted) setErrorKey('loadEpisodes');
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
   };
 
   const startPlayback = (item: ContentItem) => {
-    let path: string;
-    try { path = item.url ? new URL(item.url).pathname.toLowerCase() : ''; }
-    catch {
-      setError(isPt ? 'O provedor forneceu um endereço de reprodução inválido.' : 'The provider supplied an invalid playback address.');
+    if (!item.url) {
+      setErrorKey('invalidPlaybackUrl');
       return;
     }
-    if (path.endsWith('.ts') || path.endsWith('.mkv')) {
-      setError(isPt ? 'Este cliente suporta HLS, DASH e MP4. Escolha uma fonte compatível no provedor.' : 'This Vega starter plays HLS, DASH and MP4. Choose a supported source from your provider.');
+    let normalizedURL: string;
+    try {
+      normalizedURL = normalizePlaybackURL(item.url);
+    } catch {
+      setErrorKey('invalidPlaybackUrl');
       return;
     }
+    if (isUnsupportedPlaybackURL(normalizedURL)) {
+      setErrorKey('unsupportedFormat');
+      return;
+    }
+    setErrorKey(undefined);
     saveLibrary(previous => ({...previous, recent: [item.id, ...previous.recent.filter(id => id !== item.id)].slice(0, 50)}));
-    setPlayer(item);
+    setPlayer(normalizedURL === item.url ? item : {...item, url: normalizedURL});
   };
 
   if (player) return <PlayerScreen key={player.id} item={player} language={language} onClose={closePlayer}/>;
 
   return <View style={styles.screen}>
-    <View style={styles.header}>
-      <Text style={styles.brand}>BruTV</Text>
-      <Text style={styles.subtitle}>{isPt ? 'IPTV simples e direto ao ponto' : 'IPTV that just works'}</Text>
-      <View style={styles.headerSpacer} />
-      <TVButton
-        label={isPt ? '🇧🇷 Português' : '🇺🇸 English'}
-        onPress={() => {if (preferencesReady) setPreferences(previous => ({...previous, language: previous.language === 'pt' ? 'en' : 'pt'}));}}
-      />
-    </View>
+    {!showSplash && <>
+      <View style={styles.header}>
+        <Text style={styles.brand}>BruTV</Text>
+        <Text style={styles.subtitle}>{isPt ? 'IPTV simples e direto ao ponto' : 'IPTV that just works'}</Text>
+        <View style={styles.headerSpacer} />
+        <TVButton
+          label={isPt ? '🇧🇷 Português' : '🇺🇸 English'}
+          onPress={() => {if (preferencesReady) setPreferences(previous => ({...previous, language: previous.language === 'pt' ? 'en' : 'pt'}));}}
+        />
+      </View>
 
-    {!catalog ? <View style={styles.form}>
-      <Text style={styles.title}>{isPt ? 'Sua TV. Seu provedor.' : 'Your TV. Your provider.'}</Text>
-      <Text style={styles.help}>
-        {isPt ? 'Insira sua conta, ou cole uma URL M3U ou o link gerado pelo QR code.' : 'Enter your account, or paste an M3U URL or the sign-in link encoded in an iPhone QR code.'}
-      </Text>
-      <TextInput
-        style={styles.input}
-        value={input}
-        onChangeText={setInput}
-        placeholder={isPt ? 'URL M3U ou link brutv://login' : 'M3U URL or brutv://login link'}
-        placeholderTextColor="#8c9bb0"
-        autoCapitalize="none"
-        accessibilityLabel="Playlist or BruTV sign-in link"
-      />
-      <TextInput
-        style={styles.input}
-        value={server}
-        onChangeText={setServer}
-        placeholder={isPt ? 'https://seu-provedor.exemplo' : 'https://your-provider.example'}
-        placeholderTextColor="#8c9bb0"
-        autoCapitalize="none"
-        accessibilityLabel="Provider address"
-      />
-      <View style={styles.row}>
+      {!catalog ? <View style={styles.form}>
+        <Text style={styles.title}>{isPt ? 'Sua TV. Seu provedor.' : 'Your TV. Your provider.'}</Text>
+        <Text style={styles.help}>
+          {isPt ? 'Insira sua conta, ou cole uma URL M3U ou o link gerado pelo QR code.' : 'Enter your account, or paste an M3U URL or the sign-in link encoded in an iPhone QR code.'}
+        </Text>
         <TextInput
-          style={[styles.input, styles.half]}
-          value={username}
-          onChangeText={setUsername}
-          placeholder={isPt ? 'Usuário' : 'Username'}
+          style={styles.input}
+          value={input}
+          onChangeText={setInput}
+          placeholder={isPt ? 'URL M3U ou link brutv://login' : 'M3U URL or brutv://login link'}
           placeholderTextColor="#8c9bb0"
           autoCapitalize="none"
-          accessibilityLabel="Username"
+          accessibilityLabel="Playlist or BruTV sign-in link"
         />
         <TextInput
-          style={[styles.input, styles.half]}
-          value={password}
-          onChangeText={setPassword}
-          placeholder={isPt ? 'Senha' : 'Password'}
+          style={styles.input}
+          value={server}
+          onChangeText={setServer}
+          placeholder={isPt ? 'https://seu-provedor.exemplo' : 'https://your-provider.example'}
           placeholderTextColor="#8c9bb0"
-          secureTextEntry
-          accessibilityLabel="Password"
+          autoCapitalize="none"
+          accessibilityLabel="Provider address"
         />
-      </View>
-      <Text style={styles.help}>{isPt ? 'Suas credenciais ficam apenas na memória deste dispositivo.' : 'Your sign-in stays in memory and is not saved on this TV.'}</Text>
-      {!loading && preferencesReady && <TVButton label={isPt ? 'Entrar' : 'Sign in'} onPress={signIn}/>}
-    </View> : <>
-      <View style={styles.row}>
-        {(['live', 'movie', 'series'] as Section[]).map(value => (
-          <TVButton
-            key={value}
-            label={value === 'live' ? (isPt ? 'TV ao Vivo' : 'Live TV') : value === 'movie' ? (isPt ? 'Filmes' : 'Movies') : (isPt ? 'Séries' : 'Series')}
-            preferred={value === 'live'}
-            selected={section === value}
-            onPress={() => { setSection(value); setEpisodes(undefined); setSelected(undefined); setGroup(undefined); }}
+        <View style={styles.row}>
+          <TextInput
+            style={[styles.input, styles.half]}
+            value={username}
+            onChangeText={setUsername}
+            placeholder={isPt ? 'Usuário' : 'Username'}
+            placeholderTextColor="#8c9bb0"
+            autoCapitalize="none"
+            accessibilityLabel="Username"
           />
-        ))}
-        <TVButton label={isPt ? 'Sair' : 'Sign out'} onPress={signOut}/>
-      </View>
-
-      <TextInput
-        style={styles.input}
-        value={query}
-        onChangeText={setQuery}
-        placeholder={isPt ? 'Buscar no catálogo' : 'Search your library'}
-        placeholderTextColor="#8c9bb0"
-        accessibilityLabel="Search your library"
-      />
-
-      <View style={styles.row}>
-        {(['all', 'favorites', 'recent'] as const).map(value => (
-          <TVButton
-            key={value}
-            label={value === 'all' ? (isPt ? 'Todos' : 'All content') : value === 'favorites' ? (isPt ? 'Favoritos' : 'Favorites') : (isPt ? 'Assistidos recentemente' : 'Recently watched')}
-            selected={filter === value}
-            onPress={() => setFilter(value)}
-          />
-        ))}
-        {episodes && <TVButton label={isPt ? 'Voltar às séries' : 'Back to series'} onPress={() => { setEpisodes(undefined); setGroup(undefined); }}/>}
-      </View>
-
-      {/* Main Content Area with Left Category Column */}
-      <View style={styles.contentContainer}>
-        {/* Left Category Sidebar */}
-        <View style={styles.sidebar}>
-          <View style={styles.sidebarHeader}>
-            <Text style={styles.sidebarTitle}>{isPt ? 'CATEGORIAS' : 'CATEGORIES'}</Text>
-            <View style={styles.sidebarTotalBadge}>
-              <Text style={styles.sidebarTotalText}>{categoryData.length}</Text>
-            </View>
-          </View>
-          <FlatList
-            data={categoryData}
-            keyExtractor={item => item.value === undefined ? 'all' : `group:${item.value}`}
-            initialNumToRender={14}
-            maxToRenderPerBatch={14}
-            showsVerticalScrollIndicator={false}
-            renderItem={({item}) => (
-              <CategoryTVButton
-                label={item.label}
-                icon={item.icon}
-                count={item.count}
-                selected={item.value === group}
-                onPress={() => { setGroup(item.value); setSelected(undefined); }}
-              />
-            )}
+          <TextInput
+            style={[styles.input, styles.half]}
+            value={password}
+            onChangeText={setPassword}
+            placeholder={isPt ? 'Senha' : 'Password'}
+            placeholderTextColor="#8c9bb0"
+            secureTextEntry
+            accessibilityLabel="Password"
           />
         </View>
+        <Text style={styles.help}>{isPt ? 'Suas credenciais ficam apenas na memória deste dispositivo.' : 'Your sign-in stays in memory and is not saved on this TV.'}</Text>
+        {!loading && preferencesReady && <TVButton label={isPt ? 'Entrar' : 'Sign in'} preferred onPress={signIn}/>}
+      </View> : <>
+        <TVFocusGuideView autoFocus style={styles.row}>
+          {(['live', 'movie', 'series'] as Section[]).map(value => (
+            <TVButton
+              key={value}
+              label={value === 'live' ? (isPt ? 'TV ao Vivo' : 'Live TV') : value === 'movie' ? (isPt ? 'Filmes' : 'Movies') : (isPt ? 'Séries' : 'Series')}
+              preferred={!selected && value === 'live'}
+              selected={section === value}
+              onPress={() => { setSection(value); setEpisodes(undefined); setSelected(undefined); setGroup(undefined); setErrorKey(undefined); }}
+            />
+          ))}
+          <TVButton label={isPt ? 'Sair' : 'Sign out'} onPress={signOut}/>
+        </TVFocusGuideView>
 
-        {/* Right Content / Detail Area */}
-        <View style={styles.mainArea}>
-          {selected ? (
-            <View style={styles.detail}>
-              <Text style={styles.title}>{selected.name}</Text>
-              <Text style={styles.help}>{selected.group}</Text>
-              <View style={styles.row}>
-                <TVButton label={isPt ? 'Assistir' : 'Play'} preferred onPress={() => startPlayback(selected)}/>
-                <TVButton
-                  label={favorites.has(selected.id) ? (isPt ? 'Remover favorito' : 'Remove favorite') : (isPt ? 'Adicionar favorito' : 'Add favorite')}
-                  onPress={() => saveLibrary(previous => ({...previous, favorites: previous.favorites.includes(selected.id)
-                    ? previous.favorites.filter(id => id !== selected.id) : [...previous.favorites, selected.id]}))}
-                />
-                <TVButton label={isPt ? 'Voltar ao catálogo' : 'Back to content'} onPress={() => setSelected(undefined)}/>
+        <TextInput
+          style={styles.input}
+          value={query}
+          onChangeText={setQuery}
+          placeholder={isPt ? 'Buscar no catálogo' : 'Search your library'}
+          placeholderTextColor="#8c9bb0"
+          accessibilityLabel="Search your library"
+        />
+
+        <TVFocusGuideView autoFocus style={styles.row}>
+          {(['all', 'favorites', 'recent'] as const).map(value => (
+            <TVButton
+              key={value}
+              label={value === 'all' ? (isPt ? 'Todos' : 'All content') : value === 'favorites' ? (isPt ? 'Favoritos' : 'Favorites') : (isPt ? 'Assistidos recentemente' : 'Recently watched')}
+              selected={filter === value}
+              onPress={() => setFilter(value)}
+            />
+          ))}
+          {episodes && <TVButton label={isPt ? 'Voltar às séries' : 'Back to series'} onPress={() => { setEpisodes(undefined); setGroup(undefined); }}/>}
+        </TVFocusGuideView>
+
+        {/* Main Content Area with Left Category Column */}
+        <View style={styles.contentContainer}>
+          {/* Left Category Sidebar */}
+          <TVFocusGuideView autoFocus style={styles.sidebar}>
+            <View style={styles.sidebarHeader}>
+              <Text style={styles.sidebarTitle}>{isPt ? 'CATEGORIAS' : 'CATEGORIES'}</Text>
+              <View style={styles.sidebarTotalBadge}>
+                <Text style={styles.sidebarTotalText}>{categoryData.length}</Text>
               </View>
             </View>
-          ) : (
             <FlatList
-              data={filtered}
-              numColumns={3}
-              keyExtractor={item => item.id}
-              initialNumToRender={12}
-              maxToRenderPerBatch={12}
-              windowSize={5}
-              ListEmptyComponent={
-                <Text style={styles.help}>
-                  {isPt ? 'Nenhum conteúdo encontrado. Escolha outra categoria ou faça uma busca.' : 'No matching content. Try another category or search.'}
-                </Text>
-              }
+              data={categoryData}
+              keyExtractor={item => item.value === undefined ? 'all' : `group:${item.value}`}
+              initialNumToRender={14}
+              maxToRenderPerBatch={14}
+              showsVerticalScrollIndicator={false}
               renderItem={({item}) => (
-                <View style={styles.card}>
-                  <ContentTVButton item={item} onPress={() => { void openItem(item); }}/>
-                </View>
+                <CategoryTVButton
+                  label={item.label}
+                  icon={item.icon}
+                  count={item.count}
+                  selected={item.value === group}
+                  onPress={() => { setGroup(item.value); setSelected(undefined); }}
+                />
               )}
             />
-          )}
-        </View>
-      </View>
-    </>}
+          </TVFocusGuideView>
 
-    {loading && (
-      <View style={styles.row}>
-        <ActivityIndicator color="#5eead4"/>
-        <Text style={styles.help}>{isPt ? 'Carregando catálogo…' : 'Loading your library…'}</Text>
-        <TVButton label={isPt ? 'Cancelar' : 'Cancel'} onPress={signOut}/>
-      </View>
-    )}
-    {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-    {storageError && <Text accessibilityRole="alert" style={styles.error}>{isPt
-      ? 'Não foi possível salvar ou restaurar sua biblioteca. Você ainda pode assistir nesta sessão.'
-      : 'Your saved library could not be restored or updated. You can still watch in this session.'}</Text>}
+          {/* Right Content / Detail Area */}
+          <TVFocusGuideView autoFocus style={styles.mainArea}>
+            {selected ? (
+              <View style={styles.detail}>
+                <Text style={styles.title}>{selected.name}</Text>
+                <Text style={styles.help}>{selected.group}</Text>
+                <TVFocusGuideView autoFocus style={styles.row}>
+                  <TVButton label={isPt ? 'Assistir' : 'Play'} preferred onPress={() => startPlayback(selected)}/>
+                  <TVButton
+                    label={favorites.has(selected.id) ? (isPt ? 'Remover favorito' : 'Remove favorite') : (isPt ? 'Adicionar favorito' : 'Add favorite')}
+                    onPress={() => saveLibrary(previous => ({...previous, favorites: previous.favorites.includes(selected.id)
+                      ? previous.favorites.filter(id => id !== selected.id) : [...previous.favorites, selected.id]}))}
+                  />
+                  <TVButton label={isPt ? 'Voltar ao catálogo' : 'Back to content'} onPress={() => setSelected(undefined)}/>
+                </TVFocusGuideView>
+              </View>
+            ) : (
+              <FlatList
+                data={filtered}
+                numColumns={3}
+                keyExtractor={item => item.id}
+                initialNumToRender={12}
+                maxToRenderPerBatch={12}
+                windowSize={5}
+                ListEmptyComponent={
+                  <Text style={styles.help}>
+                    {isPt ? 'Nenhum conteúdo encontrado. Escolha outra categoria ou faça uma busca.' : 'No matching content. Try another category or search.'}
+                  </Text>
+                }
+                renderItem={({item}) => (
+                  <View style={styles.card}>
+                    <ContentTVButton item={item} onPress={() => { void openItem(item); }}/>
+                  </View>
+                )}
+              />
+            )}
+          </TVFocusGuideView>
+        </View>
+      </>}
+
+      {loading && (
+        <View style={styles.row}>
+          <ActivityIndicator color="#5eead4"/>
+          <Text style={styles.help}>{isPt ? 'Carregando catálogo…' : 'Loading your library…'}</Text>
+          <TVButton label={isPt ? 'Cancelar' : 'Cancel'} onPress={cancelLoading}/>
+        </View>
+      )}
+      {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+      {storageError && <Text accessibilityRole="alert" style={styles.error}>{isPt
+        ? 'Não foi possível salvar ou restaurar sua biblioteca. Você ainda pode assistir nesta sessão.'
+        : 'Your saved library could not be restored or updated. You can still watch in this session.'}</Text>}
+    </>}
 
     {showSplash && (
       <Animated.View style={[styles.splashContainer, { opacity: splashOpacity, transform: [{ scale: splashScale }] }]}>

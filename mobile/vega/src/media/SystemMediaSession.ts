@@ -19,15 +19,29 @@ function time(value: number): ITimeValue {
   return {seconds: Math.floor(valid), nanoseconds: Math.floor((valid % 1) * 1e9)};
 }
 
+interface PublishedSnapshot {
+  status: PlaybackStatus;
+  canSeek: boolean;
+  live?: boolean;
+  start?: number;
+  end?: number;
+  position?: number;
+  publishedAtMs: number;
+}
+
+const MATERIAL_CHANGE_SECONDS = 2;
+
 export class SystemMediaSession {
   private active = true;
   private status: PlaybackStatus = 'loading';
   private position?: PlaybackPosition;
   private publishing = true;
+  private lastPublished?: PublishedSnapshot;
   readonly handler: IMediaControlHandlerAsync;
 
   constructor(private session: PlaybackSession, private item: ContentItem, private onClose: () => void,
-    private server: Pick<IMediaControlServerAsync, 'updateMediaSessionStates'>) {
+    private server: Pick<IMediaControlServerAsync, 'updateMediaSessionStates'>,
+    private now: () => number = Date.now) {
     const check = (id?: IMediaSessionId) => {
       if (!this.active || (id && id.id !== 0)) reject('InvalidStateError', 'The playback session is no longer available.');
     };
@@ -71,16 +85,48 @@ export class SystemMediaSession {
     };
   }
 
+  private shouldPublish(status: PlaybackStatus, position: PlaybackPosition | undefined, nowMs: number): boolean {
+    const prev = this.lastPublished;
+    const canSeek = !!(position && position.end > position.start);
+    if (!prev) return true;
+    if (prev.status !== status || prev.canSeek !== canSeek || prev.live !== position?.live) return true;
+    if ((position === undefined) !== (prev.start === undefined)) return true;
+    if (position !== undefined && prev.start !== undefined && prev.end !== undefined) {
+      if (Math.abs(position.start - prev.start) >= MATERIAL_CHANGE_SECONDS
+        || Math.abs(position.end - prev.end) >= MATERIAL_CHANGE_SECONDS) {
+        return true;
+      }
+      if (prev.position !== undefined) {
+        const elapsed = Math.max(0, (nowMs - prev.publishedAtMs) / 1000);
+        const expected = prev.status === 'playing' ? prev.position + elapsed : prev.position;
+        if (Math.abs(position.position - expected) >= MATERIAL_CHANGE_SECONDS) return true;
+      }
+    }
+    return false;
+  }
+
   update(status: PlaybackStatus, position?: PlaybackPosition): void {
     if (!this.active) return;
     this.status = status;
     this.position = position;
+    const nowMs = this.now();
+    if (!this.shouldPublish(status, position, nowMs)) return;
+    this.lastPublished = {
+      status,
+      canSeek: !!(position && position.end > position.start),
+      live: position?.live,
+      start: position?.start,
+      end: position?.end,
+      position: position?.position,
+      publishedAtMs: nowMs,
+    };
     this.publish([this.state()]);
   }
 
   close(): void {
     if (!this.active) return;
     this.active = false;
+    this.lastPublished = undefined;
     this.publish([]);
   }
 
@@ -105,7 +151,7 @@ export class SystemMediaSession {
       playbackState: {
         playbackStatus: names[this.status] as MediaSessionState['playbackState']['playbackStatus'],
         playbackSpeed: this.status === 'playing' ? 1 : 0,
-        ...(position ? {position: {position: time(position.position), updatedAtTime: time(Date.now() / 1000)}} : {}),
+        ...(position ? {position: {position: time(position.position), updatedAtTime: time(this.now() / 1000)}} : {}),
       },
       mediaInfo: {
         id: {contentId: this.item.id, catalogName: 'brutv'}, hasVideo: true,

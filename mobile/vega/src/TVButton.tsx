@@ -1,12 +1,14 @@
 import React, {memo, useState} from 'react';
 import {StyleSheet, Text, TouchableOpacity} from 'react-native';
 
-export const TVButton = memo(function TVButton({label, onPress, preferred = false, selected = false}: {
-  label: string; onPress: () => void; preferred?: boolean; selected?: boolean;
+export const TVButton = memo(function TVButton({label, onPress, preferred = false, selected = false, onFocus, onBlur}: {
+  label: string; onPress: () => void; preferred?: boolean; selected?: boolean; onFocus?: () => void; onBlur?: () => void;
 }) {
   const [focused, setFocused] = useState(false);
   return <TouchableOpacity accessibilityRole="button" accessibilityLabel={label}
-    hasTVPreferredFocus={preferred} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+    hasTVPreferredFocus={preferred}
+    onFocus={() => { setFocused(true); onFocus?.(); }}
+    onBlur={() => { setFocused(false); onBlur?.(); }}
     onPress={onPress} activeOpacity={1} style={[styles.button, selected && styles.selected, focused && styles.focused]}>
     <Text numberOfLines={2} style={styles.label}>{label}</Text>
   </TouchableOpacity>;
