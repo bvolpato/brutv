@@ -23,6 +23,7 @@ enum LiveTimeshiftError: Error, LocalizedError, Equatable {
     case tooLarge
     case network(Int)
     case startupTimeout
+    case stalePlaylist
     case bufferLimit
     case stopped
 
@@ -33,6 +34,7 @@ enum LiveTimeshiftError: Error, LocalizedError, Equatable {
         case .tooLarge: return "A provider response exceeded the temporary-buffer limit."
         case .network: return "The provider could not supply the live buffer."
         case .startupTimeout: return "The temporary live buffer took too long to start."
+        case .stalePlaylist: return "The live stream stopped publishing new segments."
         case .bufferLimit: return "The stream is too large for the temporary-buffer limit."
         case .stopped: return "The live buffer was stopped."
         }
@@ -62,8 +64,13 @@ enum LiveHLSManifest: Sendable {
 enum LiveHLSParser {
     static func parse(_ data: Data, baseURL: URL, limit: Int = 1024 * 1024, segmentLimit: Int = 2000) throws -> LiveHLSManifest {
         guard data.count <= limit else { throw LiveTimeshiftError.tooLarge }
-        guard let text = String(data: data, encoding: .utf8) else { throw LiveTimeshiftError.invalidPlaylist }
-        let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard var text = String(data: data, encoding: .utf8) else { throw LiveTimeshiftError.invalidPlaylist }
+        if text.hasPrefix("\u{FEFF}") {
+            text.removeFirst()
+        }
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         guard lines.first == "#EXTM3U" else { throw LiveTimeshiftError.invalidPlaylist }
         var variants: [(URL, Int)] = []
         var variantAttributes: [String: String]?
@@ -75,7 +82,7 @@ enum LiveHLSParser {
         var gap = false
         var segments: [RecordedHLSSegment] = []
         var ended = false
-        for line in lines.dropFirst() where !line.isEmpty {
+        for line in lines.dropFirst() {
             if line.hasPrefix("#EXT-X-KEY:") {
                 let attrs = try attributes(String(line.dropFirst("#EXT-X-KEY:".count)))
                 guard attrs["METHOD"] == "NONE" else {
@@ -97,17 +104,20 @@ enum LiveHLSParser {
             } else if line.hasPrefix("#EXT-X-STREAM-INF:") {
                 variantAttributes = try attributes(String(line.dropFirst("#EXT-X-STREAM-INF:".count)))
             } else if line.hasPrefix("#EXT-X-TARGETDURATION:") {
-                guard let value = Double(line.dropFirst("#EXT-X-TARGETDURATION:".count)), value.isFinite, value >= 1, value <= 120, value.rounded() == value else {
+                let rawTarget = line.dropFirst("#EXT-X-TARGETDURATION:".count).trimmingCharacters(in: .whitespaces)
+                guard let value = Double(rawTarget), value.isFinite, value > 0, value <= 120 else {
                     throw LiveTimeshiftError.invalidPlaylist
                 }
-                target = value
+                target = max(1, ceil(value))
             } else if line.hasPrefix("#EXT-X-MEDIA-SEQUENCE:") {
-                guard segments.isEmpty, let value = Int64(line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count)), value >= 0 else {
+                let rawSeq = line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count).trimmingCharacters(in: .whitespaces)
+                guard segments.isEmpty, let value = Int64(rawSeq), value >= 0 else {
                     throw LiveTimeshiftError.invalidPlaylist
                 }
                 sequence = value
             } else if line.hasPrefix("#EXT-X-DISCONTINUITY-SEQUENCE:") {
-                guard segments.isEmpty, let value = Int64(line.dropFirst("#EXT-X-DISCONTINUITY-SEQUENCE:".count)), value >= 0 else {
+                let rawDisc = line.dropFirst("#EXT-X-DISCONTINUITY-SEQUENCE:".count).trimmingCharacters(in: .whitespaces)
+                guard segments.isEmpty, let value = Int64(rawDisc), value >= 0 else {
                     throw LiveTimeshiftError.invalidPlaylist
                 }
                 discontinuity = value
@@ -115,12 +125,13 @@ enum LiveHLSParser {
                 guard discontinuity < Int64.max else { throw LiveTimeshiftError.invalidPlaylist }
                 discontinuity += 1
             } else if line.hasPrefix("#EXTINF:") {
-                guard let raw = line.dropFirst("#EXTINF:".count).split(separator: ",", maxSplits: 1).first,
+                guard let raw = line.dropFirst("#EXTINF:".count).split(separator: ",", maxSplits: 1).first?
+                    .trimmingCharacters(in: .whitespaces),
                       let value = Double(raw),
                       value.isFinite, value >= 0.25, value <= 120 else { throw LiveTimeshiftError.invalidPlaylist }
                 duration = value
             } else if line.hasPrefix("#EXT-X-PROGRAM-DATE-TIME:") {
-                date = String(line.dropFirst("#EXT-X-PROGRAM-DATE-TIME:".count))
+                date = String(line.dropFirst("#EXT-X-PROGRAM-DATE-TIME:".count)).trimmingCharacters(in: .whitespaces)
             } else if line == "#EXT-X-GAP" {
                 gap = true
             } else if line == "#EXT-X-ENDLIST" {
@@ -150,11 +161,14 @@ enum LiveHLSParser {
             return .variant(chosen.0)
         }
         guard target > 0, !segments.isEmpty, duration == nil else { throw LiveTimeshiftError.invalidPlaylist }
-        guard segments.allSatisfy({ $0.duration.rounded() <= target }) else { throw LiveTimeshiftError.invalidPlaylist }
+        // Tolerate slight segment duration overshoot over declared targetDuration by adjusting
+        // effective targetDuration (within the 120s safety ceiling) instead of rejecting the stream.
+        let maxSegmentDuration = segments.map(\.duration).max() ?? target
+        let effectiveTarget = min(120, max(target, ceil(maxSegmentDuration)))
         guard !ended else {
             throw LiveTimeshiftError.unsupported("This is an on-demand playlist; live rewind buffering is not needed.")
         }
-        return .media(LiveHLSPlaylist(targetDuration: target, segments: segments, ended: ended))
+        return .media(LiveHLSPlaylist(targetDuration: effectiveTarget, segments: segments, ended: ended))
     }
 
     private static func resolve(_ value: String, relativeTo base: URL) throws -> URL {
@@ -406,6 +420,7 @@ final class BoundedHLSRequest: NSObject, URLSessionDataDelegate, @unchecked Send
         self.session = session
         var value = URLRequest(url: url)
         value.setValue("IPTVSmartersPro/1.1.1", forHTTPHeaderField: "User-Agent")
+        value.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         let task = session.dataTask(with: value)
         self.task = task
         task.resume()
@@ -460,31 +475,245 @@ final class BoundedHLSRequest: NSObject, URLSessionDataDelegate, @unchecked Send
     }
 }
 
+/// Reuses one ephemeral URLSession with a single delegate and OperationQueue across all
+/// manifest polls and segment downloads for a `LiveTimeshiftRecorder`, preserving TCP/TLS
+/// keep-alive connections behind Cloudflare and reverse proxies.
+final class BoundedHLSSession: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private final class TaskState {
+        let maximumBytes: Int
+        var continuation: CheckedContinuation<(Data, URL), Error>?
+        weak var task: URLSessionDataTask?
+        var data = Data()
+        var responseURL: URL?
+        var failure: Error?
+        var cancelled = false
+
+        init(maximumBytes: Int) {
+            self.maximumBytes = maximumBytes
+        }
+    }
+
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var states: [Int: TaskState] = [:]
+    private var invalidated = false
+
+    override init() {
+        super.init()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 45
+        configuration.httpMaximumConnectionsPerHost = 2
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+        self.session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
+    }
+
+    func fetch(_ url: URL, maximumBytes: Int) async throws -> (Data, URL) {
+        let state = TaskState(maximumBytes: maximumBytes)
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if invalidated || state.cancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: invalidated ? LiveTimeshiftError.stopped : CancellationError())
+                    return
+                }
+                guard let session = self.session else {
+                    lock.unlock()
+                    continuation.resume(throwing: LiveTimeshiftError.stopped)
+                    return
+                }
+                state.continuation = continuation
+                var request = URLRequest(url: url)
+                request.setValue("IPTVSmartersPro/1.1.1", forHTTPHeaderField: "User-Agent")
+                request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+                let task = session.dataTask(with: request)
+                state.task = task
+                states[task.taskIdentifier] = state
+                lock.unlock()
+                task.resume()
+            }
+        }, onCancel: { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            state.cancelled = true
+            let task = state.task
+            self.lock.unlock()
+            task?.cancel()
+        })
+    }
+
+    func invalidate() {
+        lock.lock()
+        invalidated = true
+        let session = self.session
+        self.session = nil
+        let pending = Array(states.values)
+        states.removeAll()
+        var continuations: [CheckedContinuation<(Data, URL), Error>] = []
+        for state in pending {
+            if let continuation = state.continuation {
+                state.continuation = nil
+                continuations.append(continuation)
+            }
+        }
+        lock.unlock()
+        for continuation in continuations {
+            continuation.resume(throwing: LiveTimeshiftError.stopped)
+        }
+        session?.invalidateAndCancel()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        guard let state = states[dataTask.taskIdentifier] else {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if !(200...299).contains(status) {
+            state.failure = LiveTimeshiftError.network(status)
+            lock.unlock()
+            completionHandler(.cancel)
+        } else if response.expectedContentLength > state.maximumBytes {
+            state.failure = LiveTimeshiftError.tooLarge
+            lock.unlock()
+            completionHandler(.cancel)
+        } else {
+            state.responseURL = response.url
+            lock.unlock()
+            completionHandler(.allow)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        guard let state = states[dataTask.taskIdentifier] else {
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        guard state.data.count <= state.maximumBytes - data.count else {
+            state.failure = LiveTimeshiftError.tooLarge
+            lock.unlock()
+            dataTask.cancel()
+            return
+        }
+        state.data.append(data)
+        lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let state = states.removeValue(forKey: task.taskIdentifier)
+        let continuation = state?.continuation
+        state?.continuation = nil
+        let failure = state?.failure
+        let data = state?.data ?? Data()
+        let responseURL = state?.responseURL
+        lock.unlock()
+        guard let continuation else { return }
+        if let error = failure ?? error {
+            continuation.resume(throwing: error)
+        } else if let responseURL {
+            continuation.resume(returning: (data, responseURL))
+        } else {
+            continuation.resume(throwing: LiveTimeshiftError.invalidPlaylist)
+        }
+    }
+}
+
+private final class ActiveTimeshiftRegistry: @unchecked Sendable {
+    static let shared = ActiveTimeshiftRegistry()
+    private let lock = NSLock()
+    private var names: Set<String> = []
+
+    func register(_ name: String) {
+        lock.lock()
+        names.insert(name)
+        lock.unlock()
+    }
+
+    func unregister(_ name: String) {
+        lock.lock()
+        names.remove(name)
+        lock.unlock()
+    }
+
+    func snapshot() -> Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return names
+    }
+}
+
 actor LiveTimeshiftRecorder {
     static let temporaryRoot = FileManager.default.temporaryDirectory.appendingPathComponent("BruTV-live-timeshift", isDirectory: true)
     private let limits: LiveTimeshiftLimits
     private let ring: LiveTimeshiftRing
+    private let hlsSession: BoundedHLSSession?
+    private let registeredDirectoryName: String?
     private let fetch: @Sendable (URL, Int) async throws -> (Data, URL)
     private let clock: @Sendable () -> TimeInterval
     private var latestSequence: Int64?
     private var latestURL: URL?
+    private var lastNewSegmentAt: TimeInterval?
     private var stopped = false
     private var previousPollTime: TimeInterval?
     private var captureNotice: String?
 
     init(limits: LiveTimeshiftLimits = LiveTimeshiftLimits(), directory: URL? = nil,
-         fetch: @escaping @Sendable (URL, Int) async throws -> (Data, URL) = {
-             try await BoundedHLSRequest.fetch($0, maximumBytes: $1)
-         }, clock: @escaping @Sendable () -> TimeInterval = { Date.timeIntervalSinceReferenceDate }) throws {
+         fetch: (@Sendable (URL, Int) async throws -> (Data, URL))? = nil,
+         clock: @escaping @Sendable () -> TimeInterval = { Date.timeIntervalSinceReferenceDate }) throws {
         self.limits = limits
-        self.fetch = fetch
         self.clock = clock
-        let directory = directory ?? Self.temporaryRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        self.ring = try LiveTimeshiftRing(directory: directory, limits: limits)
+        if let fetch {
+            self.hlsSession = nil
+            self.fetch = fetch
+        } else {
+            let sharedSession = BoundedHLSSession()
+            self.hlsSession = sharedSession
+            self.fetch = { try await sharedSession.fetch($0, maximumBytes: $1) }
+        }
+        let targetDirectory: URL
+        if let directory {
+            targetDirectory = directory
+            self.registeredDirectoryName = nil
+        } else {
+            let name = UUID().uuidString
+            ActiveTimeshiftRegistry.shared.register(name)
+            self.registeredDirectoryName = name
+            targetDirectory = Self.temporaryRoot.appendingPathComponent(name, isDirectory: true)
+        }
+        do {
+            self.ring = try LiveTimeshiftRing(directory: targetDirectory, limits: limits)
+        } catch {
+            if let registeredDirectoryName {
+                ActiveTimeshiftRegistry.shared.unregister(registeredDirectoryName)
+            }
+            self.hlsSession?.invalidate()
+            throw error
+        }
+    }
+
+    deinit {
+        hlsSession?.invalidate()
     }
 
     static func removeStaleSessions() {
-        try? FileManager.default.removeItem(at: temporaryRoot)
+        let active = ActiveTimeshiftRegistry.shared.snapshot()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: temporaryRoot,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for entry in entries where !active.contains(entry.lastPathComponent) {
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
     func capture(_ url: URL, timeout: TimeInterval) async throws -> Double {
@@ -502,55 +731,83 @@ actor LiveTimeshiftRecorder {
 
     func capture(_ url: URL) async throws -> Double {
         guard !stopped else { throw LiveTimeshiftError.stopped }
-        var source = latestURL ?? url
-        var playlist: LiveHLSPlaylist?
-        for _ in 0..<4 {
-            let (data, resolvedURL) = try await fetch(source, limits.manifestBytes)
-            try Task.checkCancellation()
-            guard !stopped else { throw LiveTimeshiftError.stopped }
-            switch try LiveHLSParser.parse(data, baseURL: resolvedURL, limit: limits.manifestBytes, segmentLimit: limits.segmentCount) {
-            case .variant(let next): source = next
-            case .media(let media): playlist = media
+        do {
+            var source = latestURL ?? url
+            var playlist: LiveHLSPlaylist?
+            for _ in 0..<4 {
+                let (data, resolvedURL) = try await fetch(source, limits.manifestBytes)
+                try Task.checkCancellation()
+                guard !stopped else { throw LiveTimeshiftError.stopped }
+                switch try LiveHLSParser.parse(data, baseURL: resolvedURL, limit: limits.manifestBytes, segmentLimit: limits.segmentCount) {
+                case .variant(let next): source = next
+                case .media(let media): playlist = media
+                }
+                if playlist != nil { break }
             }
-            if playlist != nil { break }
-        }
-        guard let playlist else { throw LiveTimeshiftError.invalidPlaylist }
-        latestURL = source
-        let now = clock()
-        if let previousPollTime, now - previousPollTime > max(30, playlist.targetDuration * 5) {
-            captureNotice = "Capture paused while the app was inactive. Any missing live content is unavailable."
-        }
-        previousPollTime = now
-        if let currentLatest = latestSequence, let last = playlist.segments.last, last.sequence < currentLatest {
-            latestSequence = nil
-            captureNotice = "Capture resumed after a stream gap; unavailable content was not recorded."
-        }
-        var candidates = playlist.segments.filter { segment in latestSequence.map { segment.sequence > $0 } ?? true }
-        if latestSequence == nil {
-            var recent: [RecordedHLSSegment] = []
-            var duration: Double = 0
-            for segment in candidates.suffix(64).reversed() {
-                recent.append(segment)
-                duration += segment.duration
-                if duration >= playlist.targetDuration * 3 { break }
+            guard let playlist else { throw LiveTimeshiftError.invalidPlaylist }
+            latestURL = source
+            let now = clock()
+            if let previousPollTime, now - previousPollTime > max(30, playlist.targetDuration * 5) {
+                captureNotice = "Capture paused while the app was inactive. Any missing live content is unavailable."
             }
-            if candidates.count > 64, duration < playlist.targetDuration * 3 {
-                throw LiveTimeshiftError.unsupported("This provider requires an oversized startup window. Playing directly without rewind.")
+            previousPollTime = now
+            if let currentLatest = latestSequence, let last = playlist.segments.last, last.sequence < currentLatest {
+                latestSequence = nil
+                captureNotice = "Capture resumed after a stream gap; unavailable content was not recorded."
             }
-            candidates = Array(recent.reversed())
+            var candidates = playlist.segments.filter { segment in latestSequence.map { segment.sequence > $0 } ?? true }
+            if latestSequence == nil {
+                // Cap initial blocking startup window so long-segment Xtream streams (e.g. 6-10s)
+                // do not time out downloading 30s of media before starting playback.
+                let startupWindow = min(8.0, playlist.targetDuration * 3)
+                var recent: [RecordedHLSSegment] = []
+                var duration: Double = 0
+                for segment in candidates.suffix(64).reversed() {
+                    recent.append(segment)
+                    duration += segment.duration
+                    if duration >= startupWindow { break }
+                }
+                if candidates.count > 64, duration < startupWindow {
+                    throw LiveTimeshiftError.unsupported("This provider requires an oversized startup window. Playing directly without rewind.")
+                }
+                candidates = Array(recent.reversed())
+            }
+            if candidates.isEmpty {
+                let staleThreshold = max(20.0, playlist.targetDuration * 3)
+                if let since = lastNewSegmentAt {
+                    if now - since >= staleThreshold {
+                        latestURL = nil
+                        throw LiveTimeshiftError.stalePlaylist
+                    }
+                } else {
+                    lastNewSegmentAt = now
+                }
+            } else {
+                for segment in candidates {
+                    try Task.checkCancellation()
+                    guard !stopped else { throw LiveTimeshiftError.stopped }
+                    if segment.gap {
+                        latestSequence = segment.sequence
+                        lastNewSegmentAt = clock()
+                        continue
+                    }
+                    let (data, _) = try await fetch(segment.url, limits.segmentBytes)
+                    try Task.checkCancellation()
+                    guard !stopped else { throw LiveTimeshiftError.stopped }
+                    let segmentNow = clock()
+                    try ring.append(segment, data: data, target: playlist.targetDuration, now: segmentNow)
+                    latestSequence = segment.sequence
+                    lastNewSegmentAt = segmentNow
+                }
+            }
+            ring.reap(now: clock())
+            return max(1, playlist.targetDuration / 2)
+        } catch {
+            // Clear cached redirect/variant URL so the next retry re-resolves the original entry URL
+            // instead of hammering an expired edge token URL.
+            latestURL = nil
+            throw error
         }
-        for segment in candidates {
-            try Task.checkCancellation()
-            guard !stopped else { throw LiveTimeshiftError.stopped }
-            if segment.gap { latestSequence = segment.sequence; continue }
-            let (data, _) = try await fetch(segment.url, limits.segmentBytes)
-            try Task.checkCancellation()
-            guard !stopped else { throw LiveTimeshiftError.stopped }
-            try ring.append(segment, data: data, target: playlist.targetDuration, now: clock())
-            latestSequence = segment.sequence
-        }
-        ring.reap(now: Date.timeIntervalSinceReferenceDate)
-        return max(1, playlist.targetDuration / 2)
     }
 
     func snapshot() -> LiveTimeshiftSnapshot {
@@ -585,7 +842,11 @@ actor LiveTimeshiftRecorder {
 
     func stop() {
         stopped = true
+        hlsSession?.invalidate()
         ring.stop()
+        if let registeredDirectoryName {
+            ActiveTimeshiftRegistry.shared.unregister(registeredDirectoryName)
+        }
     }
 
     private var relayFailure: Error?
@@ -601,12 +862,15 @@ actor LiveTimeshiftRecorder {
     /// `transportStreamFailure()` returns the reason after it gives up.
     func captureTransportStream(
         _ url: URL,
+        segmentStallTimeout: TimeInterval = 15,
+        reconnectBackoff: TimeInterval = 1.0,
         open: @Sendable (URL) -> AsyncThrowingStream<Data, Error> = { TransportStreamRequest.stream($0) }
     ) async {
         var failures = 0
         while !stopped, !Task.isCancelled {
             var segmenter = MPEGTSSegmenter()
             var bytes = 0
+            var lastSegmentTime = clock()
             #if canImport(os)
             relayLog.info("relay connecting, attempt \(failures + 1, privacy: .public)")
             #endif
@@ -614,12 +878,19 @@ actor LiveTimeshiftRecorder {
                 for try await chunk in open(url) {
                     guard !stopped, !Task.isCancelled else { return }
                     bytes += chunk.count
-                    for segment in segmenter.append(chunk) {
+                    let emitted = segmenter.append(chunk)
+                    for segment in emitted {
+                        let now = clock()
+                        if segment.discontinuity, relaySequence > 0 {
+                            relayDiscontinuity += 1
+                        }
                         let recorded = RecordedHLSSegment(sequence: relaySequence, discontinuity: relayDiscontinuity,
                                                           duration: segment.duration, url: url,
                                                           programDateTime: nil, gap: false)
                         do {
-                            try ring.append(recorded, data: segment.data, target: max(2, ceil(segment.duration)), now: clock())
+                            // Keep #EXT-X-TARGETDURATION stable across typical 2-4s provider GOPs
+                            // instead of mutating upward on every minor GOP fluctuation.
+                            try ring.append(recorded, data: segment.data, target: max(4, ceil(segment.duration)), now: now)
                         } catch {
                             #if canImport(os)
                             relayLog.error("relay buffer rejected a segment: \(String(describing: error), privacy: .public)")
@@ -630,12 +901,16 @@ actor LiveTimeshiftRecorder {
                         #if canImport(os)
                         relayLog.debug("relay segment \(self.relaySequence, privacy: .public): \(segment.duration, privacy: .public)s, \(segment.data.count, privacy: .public) bytes")
                         #endif
+                        lastSegmentTime = now
                         relaySequence += 1
                         failures = 0
                     }
                     if bytes > 4 * 1024 * 1024, !segmenter.hasProgram {
                         relayFailure = LiveTimeshiftError.unsupported("The provider's .ts stream is not MPEG-TS video.")
                         return
+                    }
+                    if emitted.isEmpty, bytes > 0, clock() - lastSegmentTime > segmentStallTimeout {
+                        throw LiveTimeshiftError.startupTimeout
                     }
                 }
                 throw LiveTimeshiftError.network(0)
@@ -644,15 +919,27 @@ actor LiveTimeshiftRecorder {
                 #if canImport(os)
                 relayLog.error("relay response ended after \(bytes, privacy: .public) bytes: \(String(describing: error), privacy: .public)")
                 #endif
+                if case LiveTimeshiftError.network(let status) = error, status == 401 || status == 404 {
+                    relayFailure = error
+                    return
+                }
                 failures += 1
-                if failures >= 3 {
+                let maxFailures: Int
+                if case LiveTimeshiftError.network(let status) = error, status == 403 {
+                    maxFailures = 2
+                } else {
+                    maxFailures = 3
+                }
+                if failures >= maxFailures {
                     relayFailure = error
                     return
                 }
             }
             // A new response restarts the timeline, so mark a discontinuity.
             relayDiscontinuity += 1
-            try? await Task.sleep(nanoseconds: UInt64(failures) * 1_000_000_000)
+            if reconnectBackoff > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(Double(failures) * reconnectBackoff * 1_000_000_000))
+            }
         }
     }
 

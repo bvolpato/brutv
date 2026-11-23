@@ -31,17 +31,26 @@ public struct UserInfo: Codable, Equatable, Sendable {
         self.password = try container.decodeIfPresent(String.self, forKey: .password)
         self.message = try container.decodeIfPresent(String.self, forKey: .message)
         
-        // Handle auth as Int or String or Bool
+        // Handle auth as Int, Bool, or String
         if let intAuth = try? container.decode(Int.self, forKey: .auth) {
             self.auth = intAuth
-        } else if let stringAuth = try? container.decode(String.self, forKey: .auth), let intVal = Int(stringAuth) {
-            self.auth = intVal
+        } else if let boolAuth = try? container.decode(Bool.self, forKey: .auth) {
+            self.auth = boolAuth ? 1 : 0
+        } else if let stringAuth = try? container.decode(String.self, forKey: .auth) {
+            let trimmed = stringAuth.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let intVal = Int(trimmed) {
+                self.auth = intVal
+            } else if trimmed.lowercased() == "true" {
+                self.auth = 1
+            } else {
+                self.auth = 0
+            }
         } else {
             self.auth = 0
         }
-        
+
         self.status = try container.decodeIfPresent(String.self, forKey: .status) ?? "Active"
-        
+
         if let stringExp = try? container.decode(String.self, forKey: .expDate) {
             self.expDate = stringExp
         } else if let intExp = try? container.decode(Int.self, forKey: .expDate) {
@@ -49,11 +58,27 @@ public struct UserInfo: Codable, Equatable, Sendable {
         } else {
             self.expDate = nil
         }
-        
-        self.isTrial = try? container.decodeIfPresent(String.self, forKey: .isTrial)
-        self.activeCons = try? container.decodeIfPresent(String.self, forKey: .activeCons)
-        self.maxConnections = try? container.decodeIfPresent(String.self, forKey: .maxConnections)
+
+        self.isTrial = Self.decodeFlexibleString(from: container, forKey: .isTrial)
+        self.activeCons = Self.decodeFlexibleString(from: container, forKey: .activeCons)
+        self.maxConnections = Self.decodeFlexibleString(from: container, forKey: .maxConnections)
         self.allowedOutputFormats = try? container.decodeIfPresent([String].self, forKey: .allowedOutputFormats)
+    }
+
+    private static func decodeFlexibleString(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> String? {
+        if let stringValue = try? container.decode(String.self, forKey: key) {
+            return stringValue
+        }
+        if let intValue = try? container.decode(Int.self, forKey: key) {
+            return String(intValue)
+        }
+        if let boolValue = try? container.decode(Bool.self, forKey: key) {
+            return boolValue ? "1" : "0"
+        }
+        return nil
     }
 
     public init(
@@ -96,6 +121,13 @@ public struct UserInfo: Codable, Equatable, Sendable {
             return false
         }
         return Date().timeIntervalSince1970 > timestamp
+    }
+
+    public var maxConnectionsCount: Int? {
+        guard let maxConnections else { return nil }
+        let trimmed = maxConnections.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed), value > 0 else { return nil }
+        return value
     }
 }
 

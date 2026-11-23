@@ -6,6 +6,8 @@ public struct SeriesView: View {
     @State private var categories: [SeriesCategory] = []
     @State private var selectedCategoryID: String = "all"
     @State private var seriesList: [SeriesItem] = []
+    @State private var filteredSeries: [SeriesItem] = []
+    @State private var menuItems: [CategoryMenuItem] = []
     @State private var searchText: String = ""
     @State private var sortOrder: CatalogSortOrder = .defaultOrder
     @State private var isLoading: Bool = false
@@ -20,7 +22,7 @@ public struct SeriesView: View {
 
     public init() {}
 
-    private var filteredSeries: [SeriesItem] {
+    private func recomputeFilteredSeries() {
         let base: [SeriesItem]
         if searchText.isEmpty {
             base = seriesList
@@ -30,11 +32,11 @@ public struct SeriesView: View {
 
         switch sortOrder {
         case .defaultOrder:
-            return base
+            filteredSeries = base
         case .topRated:
-            return base.sorted { parseRating($0.rating) > parseRating($1.rating) }
+            filteredSeries = base.sorted { parseRating($0.rating) > parseRating($1.rating) }
         case .alphabetical:
-            return base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            filteredSeries = base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }
     }
 
@@ -51,7 +53,7 @@ public struct SeriesView: View {
         return categories.first(where: { $0.id == selectedCategoryID })?.name.localized ?? selectedCategoryID
     }
 
-    private var menuItems: [CategoryMenuItem] {
+    private func recomputeMenuItems() {
         var items: [CategoryMenuItem] = []
 
         let allIcon = categoryIcons["all"] ?? allLoadedSeries.first(where: { $0.coverURL != nil })?.coverURL
@@ -80,7 +82,7 @@ public struct SeriesView: View {
             )
         }
 
-        return items
+        menuItems = items
     }
 
     public var body: some View {
@@ -109,7 +111,11 @@ public struct SeriesView: View {
         .sheet(item: $selectedSeries) { series in
             SeriesDetailView(series: series, selectedSeries: $selectedSeries)
         }
+        .onChange(of: searchText) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: sortOrder) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -152,7 +158,11 @@ public struct SeriesView: View {
         .sheet(item: $selectedSeries) { series in
             SeriesDetailView(series: series, selectedSeries: $selectedSeries)
         }
+        .onChange(of: searchText) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: sortOrder) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
+            recomputeMenuItems()
             if categories.isEmpty {
                 await loadCategories()
             }
@@ -396,6 +406,7 @@ public struct SeriesView: View {
                 if self.selectedCategoryID.isEmpty {
                     self.selectedCategoryID = "all"
                 }
+                self.recomputeMenuItems()
                 loadSeries(categoryID: self.selectedCategoryID)
             }
         } catch {
@@ -404,6 +415,7 @@ public struct SeriesView: View {
                 if self.selectedCategoryID.isEmpty {
                     self.selectedCategoryID = "all"
                 }
+                self.recomputeMenuItems()
                 loadSeries(categoryID: self.selectedCategoryID)
             }
         }
@@ -444,6 +456,8 @@ public struct SeriesView: View {
                     }
                     self.categoryIcons = icons
                     self.categoryCounts = counts
+                    self.recomputeFilteredSeries()
+                    self.recomputeMenuItems()
                 }
             } catch {
                 await MainActor.run {
@@ -463,9 +477,9 @@ public struct SeriesView: View {
 public struct SeriesDetailView: View {
     public let series: SeriesItem
     @Binding public var selectedSeries: SeriesItem?
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
+    @State private var playingSeriesEpisodeID: Int? = PlaybackManager.shared.currentVOD?.streamType == "series" ? PlaybackManager.shared.currentVOD?.id : nil
     @State private var details: SeriesDetails?
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
@@ -559,6 +573,9 @@ public struct SeriesDetailView: View {
                     .accessibilityLabel("Close".localized)
                 }
             }
+        }
+        .onReceive(PlaybackManager.shared.$currentVOD.map { $0?.streamType == "series" ? $0?.id : nil }.removeDuplicates()) {
+            playingSeriesEpisodeID = $0
         }
         .task {
             await loadDetails()
@@ -719,7 +736,7 @@ public struct SeriesDetailView: View {
     }
 
     private func episodeRow(_ episode: SeriesEpisode) -> some View {
-        let isPlaying = playback.currentVOD?.id == episode.id && playback.currentVOD?.streamType == "series"
+        let isPlaying = playingSeriesEpisodeID == episode.id
         return Button {
             playEpisode(episode)
         } label: {
@@ -812,7 +829,7 @@ public struct SeriesDetailView: View {
         let seriesTitle = series.name
         selectedSeries = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            playback.playEpisode(episode: episode, seriesName: seriesTitle, seasonEpisodes: episodes)
+            PlaybackManager.shared.playEpisode(episode: episode, seriesName: seriesTitle, seasonEpisodes: episodes)
         }
     }
 

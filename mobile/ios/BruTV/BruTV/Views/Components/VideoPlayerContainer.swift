@@ -80,8 +80,12 @@ public final class PictureInPictureModel: NSObject, ObservableObject, AVPictureI
     private var possibleObservation: NSKeyValueObservation?
 
     public static var isSupported: Bool {
-        PlaybackPolicy.declaresBackgroundAudio(in: Bundle.main.infoDictionary)
+        #if os(tvOS)
+        return AVPictureInPictureController.isPictureInPictureSupported()
+        #else
+        return PlaybackPolicy.declaresBackgroundAudio(in: Bundle.main.infoDictionary)
             && AVPictureInPictureController.isPictureInPictureSupported()
+        #endif
     }
 
     func attach(_ layer: AVPlayerLayer) {

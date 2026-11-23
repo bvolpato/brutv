@@ -28,6 +28,13 @@ enum TransportStreamRelayPolicy {
 struct TransportStreamSegment: Equatable, Sendable {
     let data: Data
     let duration: Double
+    let discontinuity: Bool
+
+    init(data: Data, duration: Double, discontinuity: Bool = false) {
+        self.data = data
+        self.duration = duration
+        self.discontinuity = discontinuity
+    }
 }
 
 /// Cuts a continuous MPEG-TS stream into HLS segments.
@@ -39,10 +46,26 @@ struct TransportStreamSegment: Equatable, Sendable {
 struct MPEGTSSegmenter {
     static let packetSize = 188
     private static let ptsWrap: Int64 = 1 << 33
+    private static let ptsHalfWrap: Int64 = 1 << 32
+    static let defaultMaximumSegmentBytes = 24 * 1024 * 1024
+    private static let maxPendingVideoPackets = 16
+    private static let maxPendingTotalPackets = 96
+
+    private struct PendingVideoPES {
+        let pts: Int64
+        /// Duration to emit for the in-progress segment if this PES is a keyframe (nil if no segment is open).
+        let cutDuration: Double?
+        var packets: [[UInt8]]
+        var videoPacketsScanned: Int
+        /// Up to the last 3 bytes of the previous video ES payload to catch start codes across packet boundaries.
+        var tail: [UInt8]
+    }
 
     let targetDuration: Double
     /// Past this duration, cut at any PES start even without a detected keyframe.
     let maximumDuration: Double
+    /// Hard memory ceiling for an in-progress segment to prevent OOM on undecodable streams.
+    let maximumSegmentBytes: Int
 
     private var pending = Data()
     private var pat: [UInt8]?
@@ -53,14 +76,29 @@ struct MPEGTSSegmenter {
     private var videoStreamType: UInt8 = 0
     private var current: [UInt8] = []
     private var currentStartPTS: Int64?
+    private var currentMaxPTS: Int64?
+    private var pendingPES: PendingVideoPES?
+    private var pendingDiscontinuity = false
+    private var hasEmittedSegment = false
 
-    init(targetDuration: Double = 2, maximumDuration: Double = 12) {
+    init(
+        targetDuration: Double = 2,
+        maximumDuration: Double = 12,
+        maximumSegmentBytes: Int = MPEGTSSegmenter.defaultMaximumSegmentBytes
+    ) {
         self.targetDuration = targetDuration
         self.maximumDuration = max(maximumDuration, targetDuration)
+        self.maximumSegmentBytes = max(Self.packetSize * 4, maximumSegmentBytes)
     }
 
     /// True after the PMT names a stream that BruTV can time.
     var hasProgram: Bool { timingPID != nil }
+
+    /// Signed 33-bit PTS difference (`end - start`) in 90 kHz ticks, in `[-(1 << 32), (1 << 32) - 1]`.
+    static func signedPTSDelta(from start: Int64, to end: Int64) -> Int64 {
+        let raw = (end - start) & (ptsWrap - 1)
+        return raw >= ptsHalfWrap ? raw - ptsWrap : raw
+    }
 
     mutating func append(_ data: Data) -> [TransportStreamSegment] {
         pending.append(data)
@@ -98,41 +136,171 @@ struct MPEGTSSegmenter {
         var emitted: TransportStreamSegment?
 
         if pid == 0, unitStart, hasPayload {
-            parsePAT(p, payload: payload)
-            pat = p
-        } else if pid == pmtPID, unitStart, hasPayload {
-            parsePMT(p, payload: payload)
-            pmt = p
-        } else if pid == timingPID, unitStart, hasPayload, let pts = Self.presentationTime(p, payload: payload) {
-            if videoStreamType == 0x1B { Self.moveAccessUnitDelimiterFirst(&p, payload: payload) }
-            let keyframe = !timingIsVideo || randomAccess || containsKeyframe(p, payload: payload)
-            if let start = currentStartPTS {
-                let duration = Double((pts - start + Self.ptsWrap) % Self.ptsWrap) / 90_000
-                if duration > 60 {
-                    // The timeline jumped. Start again at the next keyframe.
-                    current = []
-                    currentStartPTS = nil
-                    if keyframe { startSegment(at: pts) }
-                } else if (keyframe && duration >= targetDuration) || duration >= maximumDuration {
-                    if duration >= 0.25 {
-                        emitted = TransportStreamSegment(data: Data(current), duration: duration)
-                    }
-                    startSegment(at: pts)
-                }
-            } else if keyframe {
-                startSegment(at: pts)
+            if parsePAT(p, payload: payload) {
+                pat = p
             }
+        } else if pid == pmtPID, unitStart, hasPayload {
+            if parsePMT(p, payload: payload) {
+                pmt = p
+            }
+        } else if pid == timingPID, unitStart, hasPayload {
+            flushPendingPES()
+            if let pts = Self.presentationTime(p, payload: payload) {
+                if timingIsVideo && videoStreamType == 0x1B {
+                    Self.moveAccessUnitDelimiterFirst(&p, payload: payload)
+                }
+                let immediateKeyframe = !timingIsVideo || randomAccess || containsKeyframe(p, payload: payload)
+                let esStart = payload + 9 <= Self.packetSize ? payload + 9 + Int(p[payload + 8]) : Self.packetSize
+                if let start = currentStartPTS {
+                    let deltaTicks = Self.signedPTSDelta(from: start, to: pts)
+                    let deltaSeconds = Double(deltaTicks) / 90_000
+                    if abs(deltaSeconds) > 60 {
+                        // True timeline jump (forward or backward > 60s). Start again at the next keyframe.
+                        resetCurrent()
+                        if hasEmittedSegment {
+                            pendingDiscontinuity = true
+                        }
+                        if immediateKeyframe {
+                            startSegment(at: pts)
+                        } else if timingIsVideo, pat != nil, pmt != nil {
+                            pendingPES = PendingVideoPES(
+                                pts: pts,
+                                cutDuration: nil,
+                                packets: [p],
+                                videoPacketsScanned: 1,
+                                tail: Self.tailBytes(p, from: esStart)
+                            )
+                            return nil
+                        }
+                    } else {
+                        // Open-GOP B-frame reordering can yield small negative deltas relative to start.
+                        // Preserve the segment and track maxPTS in the current segment for duration.
+                        let previousMaxPTS = currentMaxPTS ?? start
+                        let maxDeltaTicks = max(deltaTicks, Self.signedPTSDelta(from: start, to: previousMaxPTS))
+                        let duration = Double(max(0, maxDeltaTicks)) / 90_000
+                        if (immediateKeyframe && duration >= targetDuration) || duration >= maximumDuration {
+                            if duration >= 0.25 {
+                                emitted = emitCurrentSegment(duration: duration)
+                            }
+                            startSegment(at: pts)
+                        } else if timingIsVideo, !immediateKeyframe, duration >= targetDuration {
+                            // Hold this PES briefly while scanning continuation packets for SPS/IDR
+                            // (e.g. when a large SEI/AUD precedes the keyframe NAL unit).
+                            pendingPES = PendingVideoPES(
+                                pts: pts,
+                                cutDuration: duration,
+                                packets: [p],
+                                videoPacketsScanned: 1,
+                                tail: Self.tailBytes(p, from: esStart)
+                            )
+                            return nil
+                        } else if Self.signedPTSDelta(from: previousMaxPTS, to: pts) > 0 {
+                            currentMaxPTS = pts
+                        }
+                    }
+                } else if immediateKeyframe {
+                    startSegment(at: pts)
+                } else if timingIsVideo, pat != nil, pmt != nil {
+                    pendingPES = PendingVideoPES(
+                        pts: pts,
+                        cutDuration: nil,
+                        packets: [p],
+                        videoPacketsScanned: 1,
+                        tail: Self.tailBytes(p, from: esStart)
+                    )
+                    return nil
+                }
+            }
+        } else if pid == timingPID, !unitStart, hasPayload, var pending = pendingPES {
+            if containsKeyframeBytes(p[payload..<Self.packetSize], prefix: pending.tail) {
+                pendingPES = nil
+                if let cutDuration = pending.cutDuration, currentStartPTS != nil, cutDuration >= 0.25 {
+                    emitted = emitCurrentSegment(duration: cutDuration)
+                }
+                startSegment(at: pending.pts)
+                if currentStartPTS != nil {
+                    for buffered in pending.packets {
+                        appendPacketToCurrent(buffered)
+                    }
+                    appendPacketToCurrent(p)
+                }
+                return emitted
+            }
+            pending.packets.append(p)
+            pending.videoPacketsScanned += 1
+            pending.tail = Self.tailBytes(p, from: payload, previousTail: pending.tail)
+            pendingPES = pending
+            if pending.videoPacketsScanned >= Self.maxPendingVideoPackets
+                || pending.packets.count >= Self.maxPendingTotalPackets {
+                flushPendingPES()
+            }
+            return nil
         }
 
-        if currentStartPTS != nil { current.append(contentsOf: p) }
+        if var pending = pendingPES {
+            pending.packets.append(p)
+            pendingPES = pending
+            if pending.packets.count >= Self.maxPendingTotalPackets {
+                flushPendingPES()
+            }
+            return nil
+        }
+
+        if currentStartPTS != nil {
+            appendPacketToCurrent(p)
+        }
         return emitted
+    }
+
+    private mutating func resetCurrent() {
+        current = []
+        currentStartPTS = nil
+        currentMaxPTS = nil
+        pendingPES = nil
+    }
+
+    private mutating func flushPendingPES() {
+        guard let pending = pendingPES else { return }
+        pendingPES = nil
+        guard currentStartPTS != nil else { return }
+        if let previousMaxPTS = currentMaxPTS,
+           Self.signedPTSDelta(from: previousMaxPTS, to: pending.pts) > 0 {
+            currentMaxPTS = pending.pts
+        }
+        for packet in pending.packets {
+            appendPacketToCurrent(packet)
+            if currentStartPTS == nil { return }
+        }
+    }
+
+    private mutating func emitCurrentSegment(duration: Double) -> TransportStreamSegment {
+        let segment = TransportStreamSegment(
+            data: Data(current),
+            duration: duration,
+            discontinuity: pendingDiscontinuity
+        )
+        pendingDiscontinuity = false
+        hasEmittedSegment = true
+        return segment
+    }
+
+    private mutating func appendPacketToCurrent(_ packet: [UInt8]) {
+        if current.count + packet.count > maximumSegmentBytes {
+            resetCurrent()
+            if hasEmittedSegment {
+                pendingDiscontinuity = true
+            }
+            return
+        }
+        current.append(contentsOf: packet)
     }
 
     private mutating func startSegment(at pts: Int64) {
         guard let pat, let pmt else { return }
         current = pat + pmt
-        current.reserveCapacity(1024 * 1024)
+        current.reserveCapacity(min(1024 * 1024, maximumSegmentBytes))
         currentStartPTS = pts
+        currentMaxPTS = pts
     }
 
     /// Start of the section after the pointer field, or nil when it does not fit.
@@ -141,28 +309,38 @@ struct MPEGTSSegmenter {
         return start + 3 < packetSize ? start : nil
     }
 
-    private mutating func parsePAT(_ p: [UInt8], payload: Int) {
-        guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x00 else { return }
+    private mutating func parsePAT(_ p: [UInt8], payload: Int) -> Bool {
+        guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x00 else { return false }
         let sectionLength = Int(p[s + 1] & 0x0F) << 8 | Int(p[s + 2])
+        guard sectionLength >= 9 else { return false }
         let end = min(s + 3 + sectionLength - 4, Self.packetSize)
         var index = s + 8
         while index + 4 <= end {
             let program = Int(p[index]) << 8 | Int(p[index + 1])
             let pid = Int(p[index + 2] & 0x1F) << 8 | Int(p[index + 3])
-            if program != 0 {
+            if program != 0, pid != 0 {
+                if let existing = pmtPID, existing != pid {
+                    pmt = nil
+                    resetCurrent()
+                    pendingDiscontinuity = true
+                }
                 pmtPID = pid
-                return
+                return true
             }
             index += 4
         }
+        return false
     }
 
-    private mutating func parsePMT(_ p: [UInt8], payload: Int) {
-        guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x02, s + 12 <= Self.packetSize else { return }
+    private mutating func parsePMT(_ p: [UInt8], payload: Int) -> Bool {
+        guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x02, s + 12 <= Self.packetSize else { return false }
         let sectionLength = Int(p[s + 1] & 0x0F) << 8 | Int(p[s + 2])
+        guard sectionLength >= 13 else { return false }
         let programInfoLength = Int(p[s + 10] & 0x0F) << 8 | Int(p[s + 11])
         let end = min(s + 3 + sectionLength - 4, Self.packetSize)
         var index = s + 12 + programInfoLength
+        guard index <= end else { return false }
+        var video: (pid: Int, type: UInt8)?
         var audio: Int?
         while index + 5 <= end {
             let type = p[index]
@@ -170,21 +348,37 @@ struct MPEGTSSegmenter {
             let infoLength = Int(p[index + 3] & 0x0F) << 8 | Int(p[index + 4])
             switch type {
             case 0x01, 0x02, 0x10, 0x1B, 0x24:
-                timingPID = pid
-                timingIsVideo = true
-                videoStreamType = type
-                return
-            case 0x03, 0x04, 0x0F, 0x11, 0x81:
+                if video == nil { video = (pid, type) }
+            case 0x03, 0x04, 0x0F, 0x11, 0x81, 0x87:
                 if audio == nil { audio = pid }
             default:
                 break
             }
             index += 5 + infoLength
         }
-        if let audio {
-            timingPID = audio
-            timingIsVideo = false
+        let resolvedTimingPID: Int
+        let resolvedIsVideo: Bool
+        let resolvedVideoType: UInt8
+        if let video {
+            resolvedTimingPID = video.pid
+            resolvedIsVideo = true
+            resolvedVideoType = video.type
+        } else if let audio {
+            resolvedTimingPID = audio
+            resolvedIsVideo = false
+            resolvedVideoType = 0
+        } else {
+            return false
         }
+        if let existingPID = timingPID,
+           existingPID != resolvedTimingPID || timingIsVideo != resolvedIsVideo || videoStreamType != resolvedVideoType {
+            resetCurrent()
+            pendingDiscontinuity = true
+        }
+        timingPID = resolvedTimingPID
+        timingIsVideo = resolvedIsVideo
+        videoStreamType = resolvedVideoType
+        return true
     }
 
     static func presentationTime(_ p: [UInt8], payload q: Int) -> Int64? {
@@ -229,10 +423,17 @@ struct MPEGTSSegmenter {
     /// Looks for a keyframe start in the first packet of a video PES.
     private func containsKeyframe(_ p: [UInt8], payload q: Int) -> Bool {
         guard q + 9 <= Self.packetSize else { return false }
-        var index = q + 9 + Int(p[q + 8])
-        while index + 3 < Self.packetSize {
-            if p[index] == 0, p[index + 1] == 0, p[index + 2] == 1 {
-                let header = p[index + 3]
+        let esStart = q + 9 + Int(p[q + 8])
+        guard esStart < Self.packetSize else { return false }
+        return containsKeyframeBytes(p[esStart..<Self.packetSize], prefix: [])
+    }
+
+    private func containsKeyframeBytes(_ slice: ArraySlice<UInt8>, prefix: [UInt8]) -> Bool {
+        let bytes = prefix.isEmpty ? Array(slice) : prefix + slice
+        var index = 0
+        while index + 3 < bytes.count {
+            if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
+                let header = bytes[index + 3]
                 switch videoStreamType {
                 case 0x1B: // H.264: IDR slice or sequence parameter set
                     let type = header & 0x1F
@@ -250,29 +451,60 @@ struct MPEGTSSegmenter {
         }
         return false
     }
+
+    private static func tailBytes(_ p: [UInt8], from start: Int, previousTail: [UInt8] = []) -> [UInt8] {
+        guard start < packetSize else { return previousTail }
+        let slice = p[start..<packetSize]
+        if slice.count >= 3 {
+            return Array(slice.suffix(3))
+        }
+        return Array((previousTail + slice).suffix(3))
+    }
 }
 
 /// Streams one HTTP response as chunks. URLSession times out when no data arrives for
 /// `idleTimeout` seconds, but the response itself can run for hours.
 final class TransportStreamRequest: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    static let maxBufferedChunks = 256
+
+    private let lock = NSLock()
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var failure: Error?
+    private var cancelled = false
 
     static func stream(_ url: URL, idleTimeout: TimeInterval = 15) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(maxBufferedChunks)) { continuation in
             let request = TransportStreamRequest(continuation: continuation)
             continuation.onTermination = { _ in request.cancel() }
             request.start(url, idleTimeout: idleTimeout)
         }
     }
 
-    private init(continuation: AsyncThrowingStream<Data, Error>.Continuation) {
+    init(continuation: AsyncThrowingStream<Data, Error>.Continuation) {
         self.continuation = continuation
     }
 
-    private func start(_ url: URL, idleTimeout: TimeInterval) {
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    var hasActiveTask: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return task != nil || session != nil
+    }
+
+    func start(_ url: URL, idleTimeout: TimeInterval = 15) {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            continuation.finish()
+            return
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -283,35 +515,65 @@ final class TransportStreamRequest: NSObject, URLSessionDataDelegate, @unchecked
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
         var request = URLRequest(url: url)
         request.setValue("IPTVSmartersPro/1.1.1", forHTTPHeaderField: "User-Agent")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         let task = session.dataTask(with: request)
         self.session = session
         self.task = task
+        lock.unlock()
         task.resume()
     }
 
-    private func cancel() {
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = self.task
+        let session = self.session
+        self.task = nil
+        self.session = nil
+        lock.unlock()
         task?.cancel()
         session?.invalidateAndCancel()
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        let isCancelled = self.cancelled
+        if isCancelled {
+            lock.unlock()
+            completionHandler(.cancel)
+            return
+        }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if (200...299).contains(status) {
+            lock.unlock()
             completionHandler(.allow)
         } else {
             failure = LiveTimeshiftError.network(status)
+            lock.unlock()
             completionHandler(.cancel)
         }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let isCancelled = self.cancelled
+        lock.unlock()
+        guard !isCancelled else {
+            dataTask.cancel()
+            return
+        }
         continuation.yield(data)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let storedFailure = self.failure
+        self.task = nil
+        self.session = nil
+        lock.unlock()
         session.finishTasksAndInvalidate()
-        if let error = failure ?? error {
+        if let error = storedFailure ?? error {
             continuation.finish(throwing: error)
         } else {
             continuation.finish()

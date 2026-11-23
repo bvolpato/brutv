@@ -153,17 +153,22 @@ final class LiveTimeshiftTests: XCTestCase {
 private actor MovingHLSFixture {
     var head: Int64 = 2
     var window: Int64 = 3
+    var segmentDuration: Int = 2
     var segmentRequests: [Int64] = []
 
-    init(head: Int64 = 2, window: Int64 = 3) { self.head = head; self.window = window }
+    init(head: Int64 = 2, window: Int64 = 3, segmentDuration: Int = 2) {
+        self.head = head
+        self.window = window
+        self.segmentDuration = segmentDuration
+    }
 
     func resetHead(to newHead: Int64) { head = newHead }
 
     func fetch(_ url: URL, maximumBytes: Int) throws -> (Data, URL) {
         if url.pathExtension == "m3u8" {
             let first = max(0, head - window + 1)
-            var text = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:\(first)\n"
-            for sequence in first...head { text += "#EXTINF:2,\n\(sequence).ts\n" }
+            var text = "#EXTM3U\n#EXT-X-TARGETDURATION:\(segmentDuration)\n#EXT-X-MEDIA-SEQUENCE:\(first)\n"
+            for sequence in first...head { text += "#EXTINF:\(segmentDuration),\n\(sequence).ts\n" }
             head += 1
             return (Data(text.utf8), url)
         }
@@ -347,5 +352,200 @@ extension LiveTimeshiftTests {
         let manifest = String(data: try await recorder.playlist(), encoding: .utf8)!
         XCTAssertTrue(manifest.contains("#EXT-X-DISCONTINUITY"))
         await recorder.stop()
+    }
+
+    func testParserAcceptsUTF8BOMFractionalTargetDurationAndSlightOvershoot() throws {
+        let bomPlaylist = "\u{FEFF}#EXTM3U\r\n"
+            + "#EXT-X-TARGETDURATION: 6.4\r\n"
+            + "#EXT-X-MEDIA-SEQUENCE: 10\r\n"
+            + "#EXTINF: 7.350,\r\n"
+            + "10.ts\r\n"
+            + "#EXTINF:6.100,\r\n"
+            + "11.ts\r\n"
+        let parsed = try parse(bomPlaylist)
+        XCTAssertEqual(parsed.targetDuration, 8) // ceil(7.350) = 8 > ceil(6.4) = 7
+        XCTAssertEqual(parsed.segments.map(\.sequence), [10, 11])
+        XCTAssertEqual(parsed.segments[0].duration, 7.35, accuracy: 0.001)
+
+        // Upper bound (>120s) and tiny (<0.25s) must still be rejected.
+        XCTAssertThrowsError(try parse("#EXTM3U\n#EXT-X-TARGETDURATION:121\n#EXTINF:2,\n1.ts\n"))
+        XCTAssertThrowsError(try parse("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:121,\n1.ts\n"))
+        XCTAssertThrowsError(try parse("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:0.1,\n1.ts\n"))
+    }
+
+    func testRecorderClearsLatestURLOnErrorAndReResolvesOriginalEntry() async throws {
+        let original = URL(string: "https://provider.example/live/u/p/42.m3u8")!
+        let edge1 = URL(string: "https://edge1.example/token1/variant.m3u8")!
+        let edge2 = URL(string: "https://edge2.example/token2/variant.m3u8")!
+        let state = RedirectFixture(original: original, edge1: edge1, edge2: edge2)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let recorder = try LiveTimeshiftRecorder(directory: directory, fetch: { url, _ in
+            try await state.fetch(url)
+        })
+
+        // Poll 1: original master redirects to edge1 variant, succeeds.
+        _ = try await recorder.capture(original)
+        // Poll 2: cached edge1 returns HTTP 403 (expired edge token) -> throws and MUST clear latestURL!
+        do {
+            _ = try await recorder.capture(original)
+            XCTFail("Expected HTTP 403 error from expired edge URL")
+        } catch let error as LiveTimeshiftError {
+            XCTAssertEqual(error, .network(403))
+        }
+        // Poll 3: MUST re-resolve from `original` (receiving fresh edge2), NOT hammer expired edge1!
+        _ = try await recorder.capture(original)
+        let requestedManifests = await state.manifestRequests
+        XCTAssertEqual(requestedManifests, [original, edge1, edge1, original, edge2])
+        await recorder.stop()
+    }
+
+    func testRecorderDetectsFrozenMediaSequenceAndReResolvesOriginalURL() async throws {
+        let original = URL(string: "https://provider.example/live/u/p/frozen.m3u8")!
+        let edge = URL(string: "https://edge.example/live/frozen-variant.m3u8")!
+        let clock = TestableClock(now: 100)
+        let state = StalePlaylistFixture(original: original, edge: edge)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let recorder = try LiveTimeshiftRecorder(
+            directory: directory,
+            fetch: { url, _ in try await state.fetch(url) },
+            clock: { clock.now }
+        )
+
+        // First poll populates segments 10, 11 (targetDuration = 4 -> stale threshold = max(20, 12) = 20s).
+        _ = try await recorder.capture(original)
+        clock.advance(by: 10)
+        // Unchanged media sequence at +10s is still within stale threshold.
+        _ = try await recorder.capture(original)
+        clock.advance(by: 11)
+        // At +21s with unchanged media sequence, recorder must clear latestURL and throw `.stalePlaylist`.
+        do {
+            _ = try await recorder.capture(original)
+            XCTFail("Expected stalePlaylist after unchanged media sequence past threshold")
+        } catch let error as LiveTimeshiftError {
+            XCTAssertEqual(error, .stalePlaylist)
+        }
+        // Consecutive poll while still frozen must keep throwing `.stalePlaylist` (no 0/1 oscillation)
+        // and re-resolve from `original`.
+        clock.advance(by: 2)
+        do {
+            _ = try await recorder.capture(original)
+            XCTFail("Expected consecutive stalePlaylist while playlist remains frozen")
+        } catch let error as LiveTimeshiftError {
+            XCTAssertEqual(error, .stalePlaylist)
+        }
+        // Next poll after unfreezing must succeed from `original`, not stale `edge`.
+        await state.unfreeze()
+        clock.advance(by: 2)
+        _ = try await recorder.capture(original)
+        let manifests = await state.manifestRequests
+        XCTAssertEqual(manifests, [original, edge, edge, edge, original, edge, original, edge])
+        await recorder.stop()
+    }
+
+    func testRecorderCapsInitialStartupWindowForLongSegments() async throws {
+        let source = MovingHLSFixture(head: 50, window: 6, segmentDuration: 10)
+        let recorder = try LiveTimeshiftRecorder(fetch: { try await source.fetch($0, maximumBytes: $1) })
+        _ = try await recorder.capture(URL(string: "https://provider.example/live.m3u8")!)
+        let requests = await source.segmentRequests
+        // With 10s segments, initial blocking capture must download just 1 segment (10s >= 8s cap), not 3 (30s).
+        XCTAssertEqual(requests, [50])
+        await recorder.stop()
+    }
+
+    func testRemoveStaleSessionsPreservesActiveRecorderDirectory() async throws {
+        let stale = LiveTimeshiftRecorder.temporaryRoot.appendingPathComponent("stale-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        let recorder = try LiveTimeshiftRecorder(fetch: { _, _ in throw LiveTimeshiftError.stopped })
+        LiveTimeshiftRecorder.removeStaleSessions()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+        // Active recorder can still stop cleanly without losing its directory prematurely.
+        await recorder.stop()
+    }
+}
+
+private final class TestableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: TimeInterval
+
+    init(now: TimeInterval) { self.current = now }
+
+    var now: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func advance(by delta: TimeInterval) {
+        lock.lock()
+        current += delta
+        lock.unlock()
+    }
+}
+
+private actor RedirectFixture {
+    let original: URL
+    let edge1: URL
+    let edge2: URL
+    var manifestRequests: [URL] = []
+    private var originalHits = 0
+    private var edge1Hits = 0
+
+    init(original: URL, edge1: URL, edge2: URL) {
+        self.original = original
+        self.edge1 = edge1
+        self.edge2 = edge2
+    }
+
+    func fetch(_ url: URL) throws -> (Data, URL) {
+        if url.pathExtension == "m3u8" {
+            manifestRequests.append(url)
+            if url == original {
+                originalHits += 1
+                let variant = originalHits == 1 ? edge1 : edge2
+                let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\n\(variant.absoluteString)\n"
+                return (Data(master.utf8), url)
+            }
+            if url == edge1 {
+                edge1Hits += 1
+                if edge1Hits >= 2 {
+                    throw LiveTimeshiftError.network(403)
+                }
+                let media = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:2,\n1.ts\n"
+                return (Data(media.utf8), url)
+            }
+            let media = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:2\n#EXTINF:2,\n2.ts\n"
+            return (Data(media.utf8), url)
+        }
+        return (Data(repeating: 7, count: 10), url)
+    }
+}
+
+private actor StalePlaylistFixture {
+    let original: URL
+    let edge: URL
+    var manifestRequests: [URL] = []
+    private var head: Int64 = 11
+
+    init(original: URL, edge: URL) {
+        self.original = original
+        self.edge = edge
+    }
+
+    func unfreeze() { head = 12 }
+
+    func fetch(_ url: URL) throws -> (Data, URL) {
+        if url.pathExtension == "m3u8" {
+            manifestRequests.append(url)
+            if url == original {
+                let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\n\(edge.absoluteString)\n"
+                return (Data(master.utf8), url)
+            }
+            let media = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:\(head - 1)\n"
+                + "#EXTINF:4,\n\(head - 1).ts\n#EXTINF:4,\n\(head).ts\n"
+            return (Data(media.utf8), url)
+        }
+        return (Data(repeating: 9, count: 10), url)
     }
 }

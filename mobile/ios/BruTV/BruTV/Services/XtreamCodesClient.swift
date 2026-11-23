@@ -78,7 +78,21 @@ public final class XtreamCodesClient: @unchecked Sendable {
         return _password
     }
 
+    public static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 60
+        configuration.httpMaximumConnectionsPerHost = 4
+        return URLSession(configuration: configuration)
+    }
+
+    private static let defaultSession = makeDefaultSession()
+    private static let maxTransientRetries = 2
+
     private let session: URLSession
+    private let retrySleep: @Sendable (Int, TimeInterval?) async throws -> Void
     private var cachedLiveCategories: [LiveCategory]?
     private var cachedLiveStreams: [String: [LiveStream]] = [:] // category_id -> streams
     private var cachedAllLiveStreams: [LiveStream]?
@@ -107,17 +121,60 @@ public final class XtreamCodesClient: @unchecked Sendable {
         serverURLString: String = "",
         username: String = "",
         password: String = "",
-        session: URLSession = .shared
+        session: URLSession? = nil
     ) {
         self._serverURLString = serverURLString
         self._username = username
         self._password = password
-        self.session = session
+        self.session = session ?? Self.defaultSession
+        self.retrySleep = { try await Self.defaultRetrySleep(attempt: $0, overrideDelay: $1) }
+    }
+
+    init(
+        serverURLString: String = "",
+        username: String = "",
+        password: String = "",
+        session: URLSession? = nil,
+        retrySleep: @escaping @Sendable (Int) async throws -> Void
+    ) {
+        self._serverURLString = serverURLString
+        self._username = username
+        self._password = password
+        self.session = session ?? Self.defaultSession
+        self.retrySleep = { attempt, _ in try await retrySleep(attempt) }
+    }
+
+    init(
+        serverURLString: String = "",
+        username: String = "",
+        password: String = "",
+        session: URLSession? = nil,
+        retrySleepWithDelay: @escaping @Sendable (Int, TimeInterval?) async throws -> Void
+    ) {
+        self._serverURLString = serverURLString
+        self._username = username
+        self._password = password
+        self.session = session ?? Self.defaultSession
+        self.retrySleep = retrySleepWithDelay
+    }
+
+    private static func defaultRetrySleep(attempt: Int, overrideDelay: TimeInterval? = nil) async throws {
+        let delay: TimeInterval
+        if let overrideDelay {
+            delay = max(0, overrideDelay)
+        } else {
+            // Bounded exponential backoff with +/- 25% jitter (attempt 1: ~0.5s, attempt 2: ~1.0s).
+            let base = 0.5 * pow(2.0, Double(max(0, attempt - 1)))
+            let jitter = Double.random(in: 0.75...1.25)
+            delay = min(3.0, base * jitter)
+        }
+        guard delay > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
     }
 
     /// Creates a profile-editing client with no source credentials but the same transport session.
     func makeIndependentClient() -> XtreamCodesClient {
-        XtreamCodesClient(session: session)
+        XtreamCodesClient(session: session, retrySleepWithDelay: retrySleep)
     }
 
     /// Replaces this client's active source and cache with a candidate source as one locked update.
@@ -257,9 +314,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
             throw XtreamError.invalidURL
         }
 
-        let (data, response) = try await session.data(for: createRequest(url: url, timeout: 60.0))
-        try Task.checkCancellation()
-        try validateHTTPResponse(response)
+        let data = try await performRequestWithRetry(createRequest(url: url, timeout: 60.0))
 
         let entries: [M3UEntry]
         do {
@@ -376,6 +431,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
     private func createRequest(url: URL, timeout: TimeInterval = 15.0) -> URLRequest {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("IPTVSmartersPro/1.1.1", forHTTPHeaderField: "User-Agent")
         return request
     }
@@ -386,6 +442,82 @@ public final class XtreamCodesClient: @unchecked Sendable {
         }
     }
 
+    static func isRetryableHTTPStatus(_ statusCode: Int) -> Bool {
+        statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    static func parseRetryAfter(
+        _ headerValue: String?,
+        now: Date = Date(),
+        maxDelay: TimeInterval = 10.0
+    ) -> TimeInterval? {
+        guard let raw = headerValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+        let clampedMax = max(0, maxDelay)
+        if let seconds = Int(raw) {
+            guard seconds >= 0 else { return nil }
+            return min(clampedMax, TimeInterval(seconds))
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = formatter.date(from: raw) {
+            return max(0, min(clampedMax, date.timeIntervalSince(now)))
+        }
+        return nil
+    }
+
+    static func isRetryableNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut,
+             .networkConnectionLost,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .notConnectedToInternet,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func performRequestWithRetry(_ request: URLRequest) async throws -> Data {
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            do {
+                let (data, response) = try await session.data(for: request)
+                try Task.checkCancellation()
+                if let httpResponse = response as? HTTPURLResponse, !(200..<300).contains(httpResponse.statusCode) {
+                    if attempt < Self.maxTransientRetries, Self.isRetryableHTTPStatus(httpResponse.statusCode) {
+                        attempt += 1
+                        let retryAfter = Self.parseRetryAfter(httpResponse.value(forHTTPHeaderField: "Retry-After"))
+                        try await retrySleep(attempt, retryAfter)
+                        continue
+                    }
+                    throw XtreamError.serverError(httpResponse.statusCode)
+                }
+                return data
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as XtreamError {
+                throw error
+            } catch {
+                if attempt < Self.maxTransientRetries, Self.isRetryableNetworkError(error) {
+                    attempt += 1
+                    try await retrySleep(attempt, nil)
+                    continue
+                }
+                throw error
+            }
+        }
+    }
+
     private func requestData(
         for source: SourceSnapshot,
         action: String? = nil,
@@ -393,10 +525,7 @@ public final class XtreamCodesClient: @unchecked Sendable {
         timeout: TimeInterval = 15.0
     ) async throws -> Data {
         let url = try apiEndpointURL(source: source, action: action, queryParams: queryParams)
-        let (data, response) = try await session.data(for: createRequest(url: url, timeout: timeout))
-        try Task.checkCancellation()
-        try validateHTTPResponse(response)
-        return data
+        return try await performRequestWithRetry(createRequest(url: url, timeout: timeout))
     }
 
     public func authenticate() async throws -> AuthResponse {

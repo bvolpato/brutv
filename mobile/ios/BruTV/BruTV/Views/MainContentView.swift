@@ -31,12 +31,14 @@ public enum NavigationSection: String, CaseIterable, Identifiable {
 }
 
 public struct MainContentView: View {
-    @ObservedObject private var playback = PlaybackManager.shared
     @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    @State private var activeStreamID: Int? = PlaybackManager.shared.currentStream?.id
+    @State private var activeVODKey: String? = PlaybackManager.shared.currentVOD.map { "\($0.streamType):\($0.id)" }
+    @State private var suppressNextFullScreen = false
     @State private var selectedSection: NavigationSection? = {
         let args = ProcessInfo.processInfo.arguments
         if let idx = args.firstIndex(of: "--section"), idx + 1 < args.count {
@@ -47,7 +49,7 @@ public struct MainContentView: View {
         }
         return .home
     }()
-    @State private var isPlayerFullScreen: Bool = false
+    @State private var isPlayerFullScreen: Bool = PlaybackManager.shared.currentStream != nil || PlaybackManager.shared.currentVOD != nil
 
     private var tabSelection: Binding<NavigationSection> {
         Binding(
@@ -66,6 +68,34 @@ public struct MainContentView: View {
         }
     }
 
+    private func handleStreamChange(_ newID: Int?) {
+        let oldID = activeStreamID
+        activeStreamID = newID
+        let shouldSuppress = suppressNextFullScreen
+        suppressNextFullScreen = false
+        if newID != nil {
+            if newID != oldID, !shouldSuppress {
+                isPlayerFullScreen = true
+            }
+        } else if activeVODKey == nil {
+            isPlayerFullScreen = false
+        }
+    }
+
+    private func handleVODChange(_ newKey: String?) {
+        let oldKey = activeVODKey
+        activeVODKey = newKey
+        let shouldSuppress = suppressNextFullScreen
+        suppressNextFullScreen = false
+        if newKey != nil {
+            if newKey != oldKey, !shouldSuppress {
+                isPlayerFullScreen = true
+            }
+        } else if activeStreamID == nil {
+            isPlayerFullScreen = false
+        }
+    }
+
     public var body: some View {
         #if os(tvOS)
         tvosLayout
@@ -73,19 +103,11 @@ public struct MainContentView: View {
             .fullScreenCover(isPresented: $isPlayerFullScreen) {
                 PlayerView(isPresented: $isPlayerFullScreen)
             }
-            .onChange(of: playback.currentStream) { _, stream in
-                if stream != nil {
-                    isPlayerFullScreen = true
-                } else if playback.currentVOD == nil {
-                    isPlayerFullScreen = false
-                }
+            .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { newID in
+                handleStreamChange(newID)
             }
-            .onChange(of: playback.currentVOD) { _, vod in
-                if vod != nil {
-                    isPlayerFullScreen = true
-                } else if playback.currentStream == nil {
-                    isPlayerFullScreen = false
-                }
+            .onReceive(PlaybackManager.shared.$currentVOD.map { $0.map { "\($0.streamType):\($0.id)" } }.removeDuplicates()) { newKey in
+                handleVODChange(newKey)
             }
         #else
         ZStack(alignment: .bottom) {
@@ -93,7 +115,7 @@ public struct MainContentView: View {
 
             if #unavailable(iOS 26.1) {
                 if showsMiniPlayer {
-                    miniPlayerBar
+                    MiniPlayerBarView(isPlayerFullScreen: $isPlayerFullScreen, suppressNextFullScreen: $suppressNextFullScreen)
                         .padding(.bottom, horizontalSizeClass == .regular ? 16 : 56)
                         .padding(.horizontal, 16)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -104,25 +126,17 @@ public struct MainContentView: View {
         .fullScreenCover(isPresented: $isPlayerFullScreen) {
             PlayerView(isPresented: $isPlayerFullScreen)
         }
-        .onChange(of: playback.currentStream) { _, stream in
-            if stream != nil {
-                isPlayerFullScreen = true
-            } else if playback.currentVOD == nil {
-                isPlayerFullScreen = false
-            }
+        .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { newID in
+            handleStreamChange(newID)
         }
-        .onChange(of: playback.currentVOD) { _, vod in
-            if vod != nil {
-                isPlayerFullScreen = true
-            } else if playback.currentStream == nil {
-                isPlayerFullScreen = false
-            }
+        .onReceive(PlaybackManager.shared.$currentVOD.map { $0.map { "\($0.streamType):\($0.id)" } }.removeDuplicates()) { newKey in
+            handleVODChange(newKey)
         }
         #endif
     }
 
     private var showsMiniPlayer: Bool {
-        !isPlayerFullScreen && (playback.currentStream != nil || playback.currentVOD != nil)
+        !isPlayerFullScreen && (activeStreamID != nil || activeVODKey != nil)
     }
 
     #if !os(tvOS)
@@ -133,7 +147,7 @@ public struct MainContentView: View {
                 .tabViewStyle(.sidebarAdaptable)
                 .tabBarMinimizeBehavior(.never)
                 .tabViewBottomAccessory(isEnabled: showsMiniPlayer) {
-                    miniPlayerBar
+                    MiniPlayerBarView(isPlayerFullScreen: $isPlayerFullScreen, suppressNextFullScreen: $suppressNextFullScreen)
                 }
         } else if #available(iOS 18.0, *) {
             iphoneLayout
@@ -319,6 +333,17 @@ public struct MainContentView: View {
         .tint(.cyan)
     }
 
+}
+
+/// Isolated mini-player bar so 1Hz telemetry / playhead publishes from `PlaybackManager`
+/// only re-render this small bar instead of invalidating the entire `MainContentView` tree.
+private struct MiniPlayerBarView: View {
+    @Binding var isPlayerFullScreen: Bool
+    @Binding var suppressNextFullScreen: Bool
+    @ObservedObject private var playback = PlaybackManager.shared
+    @ObservedObject private var localization = LocalizationManager.shared
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     /// A 16:9 live picture of what is playing. The placeholder (channel logo) shows
     /// until the first video frame arrives, and for audio-only streams.
     private func miniPlayerThumbnail<Placeholder: View>(@ViewBuilder placeholder: () -> Placeholder) -> some View {
@@ -347,8 +372,20 @@ public struct MainContentView: View {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
-    // Mini Player bar
-    private var miniPlayerBar: some View {
+    private func zapChannel(_ action: () -> Void) {
+        let previousID = playback.currentStream?.id
+        suppressNextFullScreen = true
+        action()
+        if playback.currentStream?.id == previousID {
+            suppressNextFullScreen = false
+        } else {
+            DispatchQueue.main.async {
+                suppressNextFullScreen = false
+            }
+        }
+    }
+
+    var body: some View {
         HStack(spacing: 10) {
             Button {
                 isPlayerFullScreen = true
@@ -421,7 +458,7 @@ public struct MainContentView: View {
 
             if horizontalSizeClass == .regular && playback.currentStream != nil && playback.activePlaylist.count > 1 {
                 Button {
-                    playback.previousChannel()
+                    zapChannel { playback.previousChannel() }
                 } label: {
                     Image(systemName: "backward.end.fill")
                         .font(.system(size: 13, weight: .semibold))
@@ -444,7 +481,7 @@ public struct MainContentView: View {
 
             if horizontalSizeClass == .regular && playback.currentStream != nil && playback.activePlaylist.count > 1 {
                 Button {
-                    playback.nextChannel()
+                    zapChannel { playback.nextChannel() }
                 } label: {
                     Image(systemName: "forward.end.fill")
                         .font(.system(size: 13, weight: .semibold))
