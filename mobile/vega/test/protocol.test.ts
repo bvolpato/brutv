@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {apiURL, loginLink, parseLogin, streamURL} from '../src/domain/login';
+import {
+  apiURL,
+  httpURL,
+  isUnsupportedPlaybackURL,
+  loginLink,
+  normalizePlaybackURL,
+  parseLogin,
+  parseURL,
+  resolveURL,
+  streamURL,
+} from '../src/domain/login';
 import {parseM3U, stableID} from '../src/domain/m3u';
 import {browse} from '../src/domain/catalog';
 
@@ -36,7 +46,16 @@ test('get.php recognizes only the exact case-insensitive final path component', 
 });
 
 test('rejects malformed links and device-local or unsupported URLs', () => {
-  for (const link of ['brutv://other?m3u=https://provider.example/list.m3u', 'brutv://login?server=https://provider.example&username=u', 'brutv://login?m3u=file:///data/list.m3u', 'https://', 'https://user:pass@provider.example/list.m3u', 'brutv://login?server=https://provider.example&username=%GG&password=p']) {
+  for (const link of [
+    'brutv://other?m3u=https://provider.example/list.m3u',
+    'brutv://login?server=https://provider.example&username=u',
+    'brutv://login?m3u=file:///data/list.m3u',
+    'https://',
+    'https://user:pass@provider.example/list.m3u',
+    'https://user@provider.example/list.m3u',
+    'https://@provider.example/list.m3u',
+    'brutv://login?server=https://provider.example&username=%GG&password=p',
+  ]) {
     assert.throws(() => parseLogin(link));
   }
 });
@@ -45,6 +64,81 @@ test('API and playback URL paths percent-encode account characters', () => {
   const source = {kind: 'xtream' as const, server: 'https://provider.example/panel/', username: 'qa/one+', password: 'p&?'};
   assert.equal(apiURL(source, 'get_series_info', '9'), 'https://provider.example/panel/player_api.php?username=qa%2Fone%2B&password=p%26%3F&action=get_series_info&series_id=9');
   assert.equal(streamURL(source, 'live', '42', 'm3u8'), 'https://provider.example/panel/live/qa%2Fone%2B/p%26%3F/42.m3u8');
+});
+
+test('pure-TS RFC 3986 URL parser handles custom schemes, ports, IPv6, and @ in path or query', () => {
+  const deepLink = parseURL('brutv://login?server=https://provider.example:8080&username=user@domain&password=p');
+  assert.equal(deepLink.protocol, 'brutv:');
+  assert.equal(deepLink.hostname, 'login');
+  assert.equal(deepLink.search, '?server=https://provider.example:8080&username=user@domain&password=p');
+
+  const withPortAndAt = httpURL('https://host.example:8080/live/user@domain/pass/42.m3u8?email=a@b.example');
+  assert.equal(withPortAndAt.hostname, 'host.example');
+  assert.equal(withPortAndAt.port, '8080');
+  assert.equal(withPortAndAt.origin, 'https://host.example:8080');
+  assert.equal(withPortAndAt.username, '');
+  assert.equal(withPortAndAt.password, '');
+  assert.equal(withPortAndAt.pathname, '/live/user@domain/pass/42.m3u8');
+  assert.equal(withPortAndAt.search, '?email=a@b.example');
+
+  const ipv6 = httpURL('https://[::1]:8443/live/1.m3u8');
+  assert.equal(ipv6.hostname, '[::1]');
+  assert.equal(ipv6.port, '8443');
+  assert.equal(ipv6.origin, 'https://[::1]:8443');
+
+  assert.equal(httpURL('https://host.example:443/a').origin, 'https://host.example');
+  assert.equal(httpURL('http://host.example:80/a').origin, 'http://host.example');
+
+  const apiWithPort = apiURL({kind: 'xtream', server: 'http://host.example:8080/panel/', username: 'u@d', password: 'p:1'}, 'get_live_streams');
+  assert.equal(apiWithPort, 'http://host.example:8080/panel/player_api.php?username=u%40d&password=p%3A1&action=get_live_streams');
+});
+
+test('RFC 3986 relative URI resolution strips manifest filename and query and resolves dot segments', () => {
+  const base = 'https://host.example:8080/live/u/p/42.m3u8?token=abc';
+  assert.equal(resolveURL('seg1.ts', base), 'https://host.example:8080/live/u/p/seg1.ts');
+  assert.equal(resolveURL('./sub/seg1.ts?k=1', base), 'https://host.example:8080/live/u/p/sub/seg1.ts?k=1');
+  assert.equal(resolveURL('/abs/seg1.ts', base), 'https://host.example:8080/abs/seg1.ts');
+  assert.equal(resolveURL('../seg1.ts', base), 'https://host.example:8080/live/u/seg1.ts');
+  assert.equal(resolveURL('../../../../seg1.ts', base), 'https://host.example:8080/seg1.ts');
+  assert.equal(resolveURL('//cdn.example/live/seg1.ts?x=2', base), 'https://cdn.example/live/seg1.ts?x=2');
+  assert.equal(resolveURL('?token=next', base), 'https://host.example:8080/live/u/p/42.m3u8?token=next');
+  assert.equal(resolveURL('https://edge.example:9090/s/seg1.ts', base), 'https://edge.example:9090/s/seg1.ts');
+
+  const atBase = 'https://host.example:8080/live/user@domain/pass/42.m3u8?email=a@b.example';
+  assert.equal(resolveURL('seg2.ts', atBase), 'https://host.example:8080/live/user@domain/pass/seg2.ts');
+});
+
+test('Xtream live .ts URLs normalize to .m3u8 preserving query while non-Xtream .ts and .mkv stay rejected', () => {
+  assert.equal(
+    normalizePlaybackURL('https://provider.example:8080/live/user/pass/42.ts'),
+    'https://provider.example:8080/live/user/pass/42.m3u8',
+  );
+  assert.equal(
+    normalizePlaybackURL('https://provider.example/panel/live/user/pass/42.TS?token=abc&s=1'),
+    'https://provider.example/panel/live/user/pass/42.m3u8?token=abc&s=1',
+  );
+  assert.equal(
+    normalizePlaybackURL('https://provider.example:8080/user/pass/12345.ts?token=xyz'),
+    'https://provider.example:8080/user/pass/12345.m3u8?token=xyz',
+  );
+  assert.equal(isUnsupportedPlaybackURL(normalizePlaybackURL('https://provider.example:8080/user/pass/12345.ts?token=xyz')), false);
+
+  const rawTs = normalizePlaybackURL('https://provider.example/channel.ts');
+  assert.equal(rawTs, 'https://provider.example/channel.ts');
+  assert.equal(isUnsupportedPlaybackURL(rawTs), true);
+
+  const movieTs = normalizePlaybackURL('https://provider.example/movie/user/pass/42.ts');
+  assert.equal(movieTs, 'https://provider.example/movie/user/pass/42.ts');
+  assert.equal(isUnsupportedPlaybackURL(movieTs), true);
+
+  for (const root of ['movie', 'series', 'timeshift', 'vod', 'hls', 'streams', 'static', 'assets']) {
+    const nonLiveThreeSeg = `https://provider.example/${root}/sub/42.ts`;
+    assert.equal(normalizePlaybackURL(nonLiveThreeSeg), nonLiveThreeSeg);
+  }
+
+  const mkv = normalizePlaybackURL('https://provider.example/movie/user/pass/42.mkv?sig=1');
+  assert.equal(isUnsupportedPlaybackURL(mkv), true);
+  assert.equal(isUnsupportedPlaybackURL('https://provider.example/movie/user/pass/42.mp4'), false);
 });
 
 test('M3U handles CRLF, quoted commas, case-insensitive attributes and first group', () => {

@@ -46,7 +46,9 @@ test('closing while initialize is pending releases the player without loading ol
   let loads = 0;
   const session = new PlaybackSession(media, () => ({load: async () => { loads++; }, destroy: async () => {}}), () => {});
   const start = session.start('https://example.test/old.m3u8');
-  await session.close(); initialized(); await start;
+  await session.close();
+  assert.equal(media.releases, 1);
+  initialized(); await start;
   assert.equal(loads, 0);
   assert.equal(media.plays, 0);
   assert.equal(media.releases, 1);
@@ -222,5 +224,421 @@ test('a critical recorded-media failure falls back once while keeping a paused v
   await new Promise(resolve => setTimeout(resolve, 1100));
   assert.equal(recordedLoads, 1); assert.equal(directLoads, 1); assert.equal(closed, 1);
   assert.equal(media.plays, plays); assert.equal(media.paused, true); assert.equal(media.currentTime, 40);
+  await session.close();
+});
+
+test('initial start failure recovers through bounded retry with surface attached and position updates active', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  let positionReports = 0;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({
+      load: async () => {
+        loads++;
+        if (loads === 1) throw new Error('transient start failure');
+      },
+      destroy: async () => {},
+      timeline: () => ({start: 0, end: 100, live: false}),
+    }),
+    state => states.push(state),
+    () => { positionReports++; },
+    {retryDelaysMs: [10, 20, 40, 80, 150], watchdogIntervalMs: 15},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/video.m3u8');
+  assert.equal(loads, 1);
+  assert.equal(media.handles.length, 0);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(loads, 2);
+  assert.deepEqual(media.handles, ['screen']);
+  assert.equal(media.plays, 1);
+  assert.ok(positionReports >= 1);
+  assert.ok(!states.includes('error'));
+  await session.close();
+});
+
+test('stalled event and buffering watchdog trigger recovery without resetting timer on repeated stalls', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  let clock = 1000;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}, timeline: () => ({start: 0, end: 100, live: true, liveTarget: 95})}),
+    state => states.push(state),
+    () => {},
+    {live: true, bufferingTimeoutMs: 18_000, retryDelaysMs: [10, 20, 40, 80, 150], watchdogIntervalMs: 10, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+  media.emit('playing');
+  media.emit('stalled');
+  assert.equal(states[states.length - 1], 'buffering');
+  clock += 10_000;
+  media.emit('waiting');
+  clock += 8_500;
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(loads, 2);
+  await session.close();
+});
+
+test('frozen playhead watchdog recovers live and VOD streams while respecting paused state', async () => {
+  const media = new FakeMedia();
+  media.duration = Infinity;
+  let loads = 0;
+  let clock = 0;
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}, timeline: () => ({start: 0, end: 100, live: true, liveTarget: 95})}),
+    () => {},
+    () => {},
+    {live: true, liveStallTimeoutMs: 10_000, vodStallTimeoutMs: 15_000, retryDelaysMs: [10, 20], watchdogIntervalMs: 10, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+  media.currentTime = 50;
+  media.emit('playing');
+  // Freeze playhead while playing.
+  clock += 10_500;
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(loads, 2);
+
+  // Pause must not trigger watchdog recovery even after long idle.
+  await session.pause();
+  clock += 60_000;
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(loads, 2);
+  await session.close();
+});
+
+test('live ended event triggers recovery whereas VOD ended stays ended', async () => {
+  const liveMedia = new FakeMedia();
+  liveMedia.duration = Infinity;
+  let liveLoads = 0;
+  const liveStates: PlaybackStatus[] = [];
+  const liveSession = new PlaybackSession(
+    liveMedia,
+    () => ({load: async () => { liveLoads++; }, destroy: async () => {}, timeline: () => ({start: 0, end: 100, live: true, liveTarget: 95})}),
+    state => liveStates.push(state),
+    () => {},
+    {live: true, retryDelaysMs: [10]},
+  );
+  liveSession.surfaceCreated('screen');
+  await liveSession.start('https://example.test/live.m3u8');
+  liveMedia.emit('ended');
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(liveLoads, 2);
+  assert.ok(!liveStates.includes('ended'));
+  await liveSession.close();
+
+  const vodMedia = new FakeMedia();
+  const vodStates: PlaybackStatus[] = [];
+  const vodSession = new PlaybackSession(
+    vodMedia,
+    () => ({load: async () => {}, destroy: async () => {}, timeline: () => ({start: 0, end: 100, live: false})}),
+    state => vodStates.push(state),
+    () => {},
+    {live: false, retryDelaysMs: [10]},
+  );
+  vodSession.surfaceCreated('screen');
+  await vodSession.start('https://example.test/movie.mp4');
+  vodMedia.emit('ended');
+  assert.equal(vodStates[vodStates.length - 1], 'ended');
+  await vodSession.close();
+});
+
+test('retry budget enforces 5 attempts and resets only after sustained advancing playback', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  let clock = 0;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}}),
+    state => states.push(state),
+    () => {},
+    {retryDelaysMs: [5, 5, 5, 5, 5], healthyPlaybackMs: 30_000, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+  assert.equal(loads, 1);
+
+  // 5 errors with fleeting playing events (< 30s) must NOT reset retry budget.
+  for (let i = 0; i < 5; i++) {
+    media.emit('error');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    media.emit('playing');
+    media.currentTime += 1;
+    clock += 1000;
+    media.emit('timeupdate');
+  }
+  assert.equal(loads, 6);
+  // 6th error exhausts the 5-retry budget -> terminal error.
+  media.emit('error');
+  assert.equal(states[states.length - 1], 'error');
+  await session.close();
+
+  // Sustained >= 30s advancing playback DOES reset retry budget.
+  const media2 = new FakeMedia();
+  let loads2 = 0;
+  let clock2 = 0;
+  const states2: PlaybackStatus[] = [];
+  const session2 = new PlaybackSession(
+    media2,
+    () => ({load: async () => { loads2++; }, destroy: async () => {}}),
+    state => states2.push(state),
+    () => {},
+    {retryDelaysMs: [5, 5, 5, 5, 5], healthyPlaybackMs: 30_000, now: () => clock2},
+  );
+  session2.surfaceCreated('screen');
+  await session2.start('https://example.test/live.m3u8');
+  for (let i = 0; i < 4; i++) {
+    media2.emit('error');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(loads2, 5);
+  media2.emit('playing');
+  clock2 += 31_000;
+  media2.currentTime += 31;
+  media2.emit('timeupdate');
+  // Budget was reset; 2 more errors must still recover without reaching 'error'.
+  for (let i = 0; i < 2; i++) {
+    media2.emit('error');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(loads2, 7);
+  assert.ok(!states2.includes('error'));
+  await session2.close();
+});
+
+test('SystemMediaSession skips redundant IPC updates during smooth playback and publishes material changes', async () => {
+  const media = new FakeMedia();
+  const session = new PlaybackSession(media, () => ({load: async () => {}, destroy: async () => {}}), () => {});
+  await session.start('https://example.test/movie.mp4');
+  let clock = 10_000;
+  let publishes = 0;
+  const controls = new SystemMediaSession(
+    session,
+    {id: 'movie:1', kind: 'movie', name: 'Movie', group: ''},
+    () => {},
+    {updateMediaSessionStates: () => { publishes++; }},
+    () => clock,
+  );
+  // Simulate 4Hz smooth playback for 5 seconds -> only initial publish should fire.
+  for (let i = 0; i < 20; i++) {
+    controls.update('playing', {start: 0, end: 100, live: false, position: 10 + i * 0.25, paused: false, expired: false});
+    clock += 250;
+  }
+  assert.equal(publishes, 1);
+  // Seek jump (+20s) publishes immediately.
+  controls.update('playing', {start: 0, end: 100, live: false, position: 35, paused: false, expired: false});
+  assert.equal(publishes, 2);
+  // Status transition publishes immediately.
+  controls.update('paused', {start: 0, end: 100, live: false, position: 35, paused: true, expired: false});
+  assert.equal(publishes, 3);
+  controls.close();
+  await session.close();
+});
+
+test('backward live playhead discontinuity rebases watchdog without triggering false stall', async () => {
+  const media = new FakeMedia();
+  let clock = 0;
+  let loads = 0;
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}}),
+    () => {},
+    () => {},
+    {live: true, liveStallTimeoutMs: 10_000, watchdogIntervalMs: 10, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+  media.emit('playing');
+  media.currentTime = 100;
+  media.emit('timeupdate');
+  // Discontinuity moves timeline backward to 5s.
+  clock += 2_000;
+  media.currentTime = 5;
+  media.emit('timeupdate');
+  // Subsequent forward progress from 5s -> 15s must not trigger a stall.
+  for (let i = 1; i <= 12; i++) {
+    clock += 1_000;
+    media.currentTime = 5 + i;
+    media.emit('timeupdate');
+    await new Promise(resolve => setTimeout(resolve, 15));
+  }
+  assert.equal(loads, 1);
+  await session.close();
+});
+
+test('retry unloads before backoff and on terminal error while ignoring stale in-flight loads', async () => {
+  const media = new FakeMedia();
+  const events: string[] = [];
+  let releaseFirstLoad!: () => void;
+  let loads = 0;
+  let clock = 0;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({
+      load: async () => {
+        loads++;
+        events.push(`load:${loads}`);
+        if (loads === 1) {
+          await new Promise<void>(resolve => { releaseFirstLoad = resolve; });
+          return;
+        }
+        throw new Error('upstream down');
+      },
+      unload: async () => { events.push('unload'); },
+      destroy: async () => {},
+    }),
+    state => states.push(state),
+    () => {},
+    {bufferingTimeoutMs: 24_000, retryDelaysMs: [30], watchdogIntervalMs: 10, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  const started = session.start('https://example.test/live.m3u8');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(events, ['load:1']);
+
+  // Trigger buffering timeout -> retry must call unload() immediately BEFORE the 30ms backoff elapses.
+  clock += 24_500;
+  await new Promise(resolve => setTimeout(resolve, 18));
+  assert.deepEqual(events, ['load:1', 'unload']);
+  assert.equal(media.paused, true);
+
+  // Stale first load resolving during backoff must be ignored (must not call media.play()).
+  releaseFirstLoad();
+  await started;
+  assert.equal(media.plays, 0);
+
+  // After backoff, retry #1 runs load:2, fails, exhausts budget, calls unload() again, and enters terminal error.
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.deepEqual(events, ['load:1', 'unload', 'load:2', 'unload']);
+  assert.equal(states[states.length - 1], 'error');
+  assert.equal(media.plays, 0);
+  await session.close();
+});
+
+test('pausing during retry backoff and pressing play later triggers an immediate reload', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  let unloads = 0;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({
+      load: async () => { loads++; },
+      unload: async () => { unloads++; },
+      destroy: async () => {},
+      timeline: () => ({start: 0, end: 100, live: false}),
+    }),
+    state => states.push(state),
+    () => {},
+    {retryDelaysMs: [5000]},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/movie.mp4');
+  media.currentTime = 42;
+  assert.equal(loads, 1);
+  assert.equal(media.plays, 1);
+
+  media.emit('error');
+  assert.equal(unloads, 1);
+  assert.equal(states[states.length - 1], 'buffering');
+
+  // Pause cancels the 5s retry timer while adapter remains unloaded.
+  await session.pause();
+  assert.equal(states[states.length - 1], 'paused');
+  assert.equal(loads, 1);
+
+  // Subsequent play must reload immediately instead of calling media.play() on an unloaded adapter.
+  await session.play();
+  assert.equal(loads, 2);
+  assert.equal(media.plays, 2);
+  assert.equal(media.currentTime, 42);
+  assert.equal(media.paused, false);
+  await session.close();
+});
+
+test('cumulative healthy playback resets retry budget across brief micro-rebuffers', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  let clock = 0;
+  const states: PlaybackStatus[] = [];
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}}),
+    state => states.push(state),
+    () => {},
+    {retryDelaysMs: [5, 5, 5], healthyPlaybackMs: 30_000, now: () => clock},
+  );
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+
+  // Use 2 of 3 retries.
+  for (let i = 0; i < 2; i++) {
+    media.emit('error');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(loads, 3);
+
+  // Play 31s total split by brief waiting/stalled micro-rebuffers (12s + 10s + 9s).
+  media.emit('playing');
+  for (let i = 0; i < 12; i++) {
+    clock += 1000; media.currentTime += 1; media.emit('timeupdate');
+  }
+  media.emit('waiting');
+  clock += 2000;
+  media.emit('playing');
+  for (let i = 0; i < 10; i++) {
+    clock += 1000; media.currentTime += 1; media.emit('timeupdate');
+  }
+  media.emit('stalled');
+  clock += 1500;
+  media.emit('playing');
+  for (let i = 0; i < 9; i++) {
+    clock += 1000; media.currentTime += 1; media.emit('timeupdate');
+  }
+
+  // Retry budget was reset across micro-rebuffers; 2 more errors must recover without hitting 'error'.
+  for (let i = 0; i < 2; i++) {
+    media.emit('error');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(loads, 5);
+  assert.ok(!states.includes('error'));
+  await session.close();
+});
+
+test('retry does not resume playback while surface is destroyed and resumes when surface returns', async () => {
+  const media = new FakeMedia();
+  let loads = 0;
+  const session = new PlaybackSession(
+    media,
+    () => ({load: async () => { loads++; }, destroy: async () => {}}),
+    () => {},
+    () => {},
+    {retryDelaysMs: [15]},
+  );
+  session.surfaceCreated('screen1');
+  await session.start('https://example.test/live.m3u8');
+  assert.equal(media.plays, 1);
+
+  media.emit('error');
+  session.surfaceDestroyed('screen1');
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(loads, 2);
+  assert.equal(media.plays, 1);
+  assert.equal(media.paused, true);
+
+  session.surfaceCreated('screen2');
+  assert.deepEqual(media.handles, ['screen2']);
+  assert.equal(media.plays, 2);
+  assert.equal(media.paused, false);
   await session.close();
 });

@@ -124,9 +124,11 @@ test('a failed storage eviction stops recording before writing beyond the cap', 
   } finally {blocked = false; await recorder.close();}
 });
 
-test('recording refuses unknown, oversized and compressed downloads before allocating the body', async () => {
-  for (const headers of [new Headers(), new Headers({'content-length': String(DVR_LIMITS.manifestBytes + 1)}),
-    new Headers({'content-length': '10', 'content-encoding': 'gzip'})]) {
+test('recording refuses oversized and compressed downloads before allocating the body and bounds chunked responses', async () => {
+  for (const headers of [
+    new Headers({'content-length': String(DVR_LIMITS.manifestBytes + 1)}),
+    new Headers({'content-length': '10', 'content-encoding': 'gzip'}),
+  ]) {
     let reads = 0;
     const recorder = new HlsRecorder(new FakeStore(), 'https://provider.test/live.m3u8', 'bounded', async () =>
       ({ok: true, headers, arrayBuffer: async () => {reads++; return new ArrayBuffer(10);}} as Response));
@@ -134,6 +136,28 @@ test('recording refuses unknown, oversized and compressed downloads before alloc
     await recorder.close();
     assert.equal(reads, 0);
   }
+
+  // Chunked response (no Content-Length) within cap succeeds.
+  const store = new FakeStore();
+  const chunkedRecorder = new HlsRecorder(store, 'https://provider.test/live.m3u8', 'chunkedok', async input => {
+    const url = String(input);
+    const bytes = url.includes('.m3u8') ? new TextEncoder().encode(playlist(10, 2)) : new Uint8Array([9, 8, 7]);
+    return {ok: true, url, headers: new Headers(), arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)} as Response;
+  });
+  try {
+    await chunkedRecorder.start();
+    assert.equal(chunkedRecorder.info.recording, true);
+    assert.equal(store.files.size, 2);
+  } finally {await chunkedRecorder.close();}
+
+  // Oversized chunked response is rejected without writing to disk.
+  const overflowStore = new FakeStore();
+  const overflowRecorder = new HlsRecorder(overflowStore, 'https://provider.test/live.m3u8', 'chunkedbig', async () =>
+    ({ok: true, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(128)} as Response),
+    {...DVR_LIMITS, manifestBytes: 64});
+  await assert.rejects(overflowRecorder.start(), RecordingUnavailable);
+  await overflowRecorder.close();
+  assert.equal(overflowStore.files.size, 0);
 });
 
 test('closing during a disk write waits, removes the late file, and prevents rescheduling', async () => {
@@ -194,7 +218,114 @@ test('binary disk encoding round-trips byte values and rejects corrupted encodin
     const bytes = Uint8Array.from({length}, (_, index) => index % 256);
     assert.deepEqual(decodeBytes(encodeBytes(bytes)), bytes);
   }
-  assert.throws(() => decodeBytes('malformed='), RecordingUnavailable);
+  for (const bad of ['malformed=', 'AA=A', 'A=AA', '====', 'AAA!', 'AAA\u0100', 'AA==AAAA']) {
+    assert.throws(() => decodeBytes(bad), RecordingUnavailable);
+  }
+});
+
+test('HLS playlist resolves relative, absolute-path, parent, and port+@ segment URLs via RFC 3986', () => {
+  const text = '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:4,\nseg1.ts\n#EXTINF:4,\n/abs/seg2.ts\n#EXTINF:4,\n../seg3.ts\n';
+  const parsed = parseMediaPlaylist(text, 'https://host.example:8080/live/user@domain/p/42.m3u8?token=abc');
+  assert.deepEqual(parsed.segments.map(s => s.url), [
+    'https://host.example:8080/live/user@domain/p/seg1.ts',
+    'https://host.example:8080/abs/seg2.ts',
+    'https://host.example:8080/live/user@domain/seg3.ts',
+  ]);
+});
+
+test('startup downloads only the latest 3 segments of a deeper live playlist', async () => {
+  const store = new FakeStore();
+  const downloaded: string[] = [];
+  const recorder = new HlsRecorder(store, 'https://provider.test/live.m3u8', 'faststart', async input => {
+    const url = String(input);
+    if (url.endsWith('.ts')) downloaded.push(url);
+    return response(url.includes('.m3u8') ? playlist(10, 6) : new Uint8Array([1, 2, 3]), url);
+  });
+  try {
+    await recorder.start();
+    assert.deepEqual(downloaded, [
+      'https://provider.test/segment-13.ts',
+      'https://provider.test/segment-14.ts',
+      'https://provider.test/segment-15.ts',
+    ]);
+  } finally {await recorder.close();}
+});
+
+test('expired 302 edge URL resets to originalURL and re-resolves a fresh edge', async () => {
+  const store = new FakeStore();
+  let generation = 1;
+  let edge1Expired = false;
+  const requests: string[] = [];
+  const recorder = new HlsRecorder(store, 'https://entry.example/live.m3u8', 'edge', async input => {
+    const url = String(input);
+    requests.push(url);
+    if (url === 'https://entry.example/live.m3u8') {
+      return new Response('', {status: 302, headers: {Location: `https://edge${generation}.example/stream.m3u8`}});
+    }
+    if (url === 'https://edge1.example/stream.m3u8') {
+      if (edge1Expired) return new Response('', {status: 403});
+      return response(playlist(10, 2), url);
+    }
+    if (url === 'https://edge2.example/stream.m3u8') {
+      return response(playlist(11, 2), url);
+    }
+    return response(new Uint8Array([4, 5, 6]), url);
+  });
+  try {
+    await recorder.start();
+    assert.equal(recorder.info.recording, true);
+    edge1Expired = true;
+    generation = 2;
+    // First refresh hits expired edge1 (403) and resets mediaURL to originalURL.
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, true);
+    assert.match(recorder.info.message!, /Reconnecting/);
+    // Next refresh re-requests entry.example, redirects to edge2, and recovers.
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, true);
+    assert.equal(recorder.info.message, undefined);
+    assert.ok(requests.includes('https://edge2.example/stream.m3u8'));
+  } finally {await recorder.close();}
+});
+
+test('frozen live playlist with unchanging media sequence resets mediaURL and escalates failure', async () => {
+  const store = new FakeStore();
+  let clock = 1000;
+  let entryHits = 0;
+  const recorder = new HlsRecorder(
+    store,
+    'https://entry.example/live.m3u8',
+    'stale',
+    async input => {
+      const url = String(input);
+      if (url === 'https://entry.example/live.m3u8') {
+        entryHits++;
+        return new Response('', {status: 302, headers: {Location: 'https://edge.example/live.m3u8'}});
+      }
+      return response(url.includes('.m3u8') ? playlist(10, 2) : new Uint8Array([1, 2]), url);
+    },
+    DVR_LIMITS,
+    () => {},
+    () => clock,
+  );
+  try {
+    await recorder.start();
+    assert.equal(entryHits, 1);
+    // Still within stale window: stays healthy.
+    clock += 5_000;
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, true);
+    assert.equal(recorder.info.message, undefined);
+    // Past stale window (>= 20s) without advancing sequence: escalates and resets to originalURL.
+    clock += 20_000;
+    await recorder.refresh();
+    assert.match(recorder.info.message!, /Reconnecting/);
+    await recorder.refresh();
+    assert.equal(entryHits, 2);
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, false);
+    assert.match(recorder.info.message!, /repeated provider errors/);
+  } finally {await recorder.close();}
 });
 
 test('startup removes only owned temporary recording files', async () => {
@@ -238,4 +369,60 @@ test('paused playback continues recording actual temporary disk files and can re
   } finally {await session.close(); await recorder.close();}
   assert.deepEqual(await readdir(directory), []);
   await rm(directory, {recursive: true});
+});
+
+test('playlist parser accepts fractional target duration and short ad-splice EXTINF durations', () => {
+  const text = '#EXTM3U\n#EXT-X-TARGETDURATION:4.5\n#EXT-X-MEDIA-SEQUENCE:7\n#EXTINF:0.12,\nsplice.ts\n#EXTINF:4.4,\nmain.ts\n';
+  const parsed = parseMediaPlaylist(text, 'https://provider.test/live.m3u8');
+  assert.equal(parsed.target, 5);
+  assert.equal(parsed.segments.length, 2);
+  assert.equal(parsed.segments[0].duration, 0.12);
+  assert.equal(parsed.segments[1].duration, 4.4);
+});
+
+test('masterVariant strips UTF-8 BOM and skips blank or comment lines before variant URI', () => {
+  const master = '\uFEFF#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2500000\n\n# variant comment\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\n#EXT-X-INDEPENDENT-SEGMENTS\nhigh/index.m3u8\n';
+  assert.equal(masterVariant(master, 'https://provider.test/master.m3u8'), 'https://provider.test/high/index.m3u8');
+
+  const broken = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2500000\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\nhigh/index.m3u8\n';
+  assert.throws(() => masterVariant(broken, 'https://provider.test/master.m3u8'), RecordingUnavailable);
+});
+
+test('recorder tolerates small CDN edge sequence skew, sends no-cache header, and caps startup download duration', async () => {
+  const store = new FakeStore();
+  let manifest = '#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:20\n#EXTINF:8,\nseg-20.ts\n#EXTINF:8,\nseg-21.ts\n#EXTINF:8,\nseg-22.ts\n';
+  const downloadedSegments: string[] = [];
+  const cacheControlHeaders: (string | undefined)[] = [];
+  const recorder = new HlsRecorder(store, 'https://provider.test/live.m3u8', 'skew', async (input, init) => {
+    const url = String(input);
+    const headers = init?.headers as Record<string, string> | undefined;
+    cacheControlHeaders.push(headers?.['Cache-Control']);
+    if (url.endsWith('.ts')) downloadedSegments.push(url);
+    return response(url.includes('.m3u8') ? manifest : new Uint8Array([1, 2, 3]), url);
+  });
+  try {
+    await recorder.start();
+    // 8s segments exceed 6s startup cap, so only the latest 1 segment is fetched at startup.
+    assert.deepEqual(downloadedSegments, ['https://provider.test/seg-22.ts']);
+    assert.ok(cacheControlHeaders.length >= 2);
+    assert.ok(cacheControlHeaders.every(value => value === 'no-cache'));
+
+    // Edge responds 2 segments behind (last sequence 20 vs 22): must stay healthy without throwing.
+    manifest = '#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:18\n#EXTINF:8,\nseg-18.ts\n#EXTINF:8,\nseg-19.ts\n#EXTINF:8,\nseg-20.ts\n';
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, true);
+    assert.equal(recorder.info.message, undefined);
+
+    // Next refresh catches up and ingests new segment 23.
+    manifest = '#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:21\n#EXTINF:8,\nseg-21.ts\n#EXTINF:8,\nseg-22.ts\n#EXTINF:8,\nseg-23.ts\n';
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, true);
+    assert.deepEqual(downloadedSegments, ['https://provider.test/seg-22.ts', 'https://provider.test/seg-23.ts']);
+
+    // Large timeline restart (> 3 segments behind) still fails closed.
+    manifest = '#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:8,\nseg-1.ts\n#EXTINF:8,\nseg-2.ts\n';
+    await recorder.refresh();
+    assert.equal(recorder.info.recording, false);
+    assert.match(recorder.info.message!, /restarted its live timeline/);
+  } finally {await recorder.close();}
 });
