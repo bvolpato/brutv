@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 set(CMAKE_SYSTEM_NAME FreeBSD)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

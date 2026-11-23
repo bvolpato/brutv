@@ -1,8 +1,25 @@
 # BruTV for PlayStation 5
 
-The new `mobile/ps5` application is GPL-3.0-or-later. Its license does not change
-any other BruTV platform. It includes no Sony SDK, console keys, proprietary
-runtime module, channel subscription, or private IPTV credentials.
+All original BruTV source code, headers, tests, and build scripts in `mobile/ps5`
+(`src/`, `include/`, `tests/`, `CMakeLists.txt`, `build.sh`, `test.sh`,
+`cmake/PS5.cmake`, `cmake/PS5Dependencies.cmake`, `cmake/app-symbols.map`, and
+the BruTV shell scripts in `tools/`) are licensed under the repository's
+[MIT License](../../LICENSE).
+
+The only GPL-3.0-or-later parts in `mobile/ps5` are:
+
+1. The three files adapted from BlackBearReloaded's GPL-3.0-or-later
+   repositories: `cmake/ps5-pie.ld`, `tools/console_compat.c`, and
+   `tools/native-tooling.patch`.
+2. Any compiled and packaged PS5 title binary (`eboot.bin` / `PPSA99241.zip`),
+   which links against GPL-3.0-or-later upstream components (`ps5-opengl`,
+   `ps5-native-app-boilerplate`, and PacBrew's GPL-enabled FFmpeg + `x264`
+   build). The GPL-3.0 license text for those parts is retained in
+   `mobile/ps5/LICENSE`.
+
+None of this changes the MIT license of BruTV's original source code on any
+platform. `mobile/ps5` includes no Sony SDK, console keys, proprietary runtime
+module, channel subscription, or private IPTV credentials.
 
 ## Native application tooling and runtime
 

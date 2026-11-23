@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 set -euo pipefail
 [[ $# == 0 ]] || { echo 'usage: build-ps5.sh' >&2; exit 2; }
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)

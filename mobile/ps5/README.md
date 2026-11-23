@@ -177,7 +177,20 @@ Inspired by [PS5LM](https://github.com/cobanov/PS5LM). Its public native-title p
 the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk), and
 [PacBrew](https://github.com/ps5-payload-dev/pacbrew-repo) make this port possible.
 
-This standalone port and its linked GPL dependencies are distributed under
-GPL-3.0-or-later. See [LICENSE](LICENSE),
+All original BruTV source code, headers, tests, and build scripts in `mobile/ps5`
+are licensed under the [MIT License](../../LICENSE).
+
+The only GPL-3.0-or-later parts are:
+
+- The three BlackBearReloaded-adapted native compatibility files:
+  [cmake/ps5-pie.ld](cmake/ps5-pie.ld),
+  [tools/console_compat.c](tools/console_compat.c), and
+  [tools/native-tooling.patch](tools/native-tooling.patch).
+- The linked and packaged PS5 title binary (`eboot.bin` / `PPSA99241.zip`),
+  which links against GPL-3.0-or-later upstream dependencies (`ps5-opengl`,
+  `ps5-native-app-boilerplate`, and PacBrew's GPL-enabled FFmpeg/x264 build).
+
+See [LICENSE](LICENSE) (the GPL-3.0 text for those parts),
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the bundled font and stb
-notices. This does not change the licensing of the other BruTV platforms.
+notices. This does not change the MIT licensing of BruTV's original code on any
+platform.
