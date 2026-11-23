@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace brutv {
@@ -142,6 +143,7 @@ struct App::Impl {
         std::map<MediaKind, std::string> failures;
         std::string sourceId;
         std::string sourceIdentity;
+        std::string preferredLiveFormat;
         std::uint64_t sourceGeneration = 0;
         bool authenticated = false;
         bool authenticationFailed = false;
@@ -191,12 +193,29 @@ struct App::Impl {
     std::set<MediaKind> catalogLoadingKinds;
     std::set<MediaKind> catalogFailed;
     bool sourceAuthenticated = false;
+    std::string sourceLiveFormat;
     std::future<CatalogJobResult> catalogFuture;
     bool catalogJobRunning = false;
     std::future<EpisodeResult> episodesFuture;
     bool episodesJobRunning = false;
     std::future<EpgResult> epgFuture;
     bool epgJobRunning = false;
+    std::string epgInFlightItemId;
+    std::uint64_t epgInFlightGeneration = 0;
+    std::uint64_t catalogDataVersion = 1;
+    mutable bool categoriesCacheValid = false;
+    mutable Tab cachedCategoriesTab = Tab::Live;
+    mutable std::uint64_t cachedCategoriesVersion = 0;
+    mutable std::vector<std::string> cachedCategories;
+    mutable bool visibleCacheValid = false;
+    mutable Tab cachedVisibleTab = Tab::Live;
+    mutable int cachedVisibleCategory = -1;
+    mutable std::string cachedVisibleSearch;
+    mutable std::string cachedVisibleSourceId;
+    mutable std::uint64_t cachedVisibleVersion = 0;
+    mutable std::vector<MediaItem> cachedVisibleItems;
+    bool volumeSavePending = false;
+    std::chrono::steady_clock::time_point volumeSaveAt{};
     std::vector<MediaItem> episodes;
     std::optional<MediaItem> pendingEpisodeSeries;
     std::string selectedSeriesId;
@@ -236,6 +255,7 @@ struct App::Impl {
             settings = Settings{};
         }
         settings.volume = std::clamp(settings.volume, 0.0F, 1.0F);
+        player->setVolume(settings.volume);
         if (settings.source) {
             draft = *settings.source;
             draftIdentity = computedSourceId(draft);
@@ -269,6 +289,8 @@ struct App::Impl {
     }
 
     ~Impl() {
+        if (volumeSavePending)
+            saveSettings();
         if (catalogFuture.valid())
             catalogFuture.wait();
         if (episodesFuture.valid())
@@ -337,7 +359,14 @@ struct App::Impl {
         return MediaKind::Live;
     }
 
+    void invalidateCatalogCache() {
+        ++catalogDataVersion;
+        categoriesCacheValid = false;
+        visibleCacheValid = false;
+    }
+
     void saveSettings() {
+        volumeSavePending = false;
         if (preview)
             return;
         try {
@@ -357,13 +386,17 @@ struct App::Impl {
             (settings.source->type != draft.type || settings.source->url != draft.url ||
              settings.source->username != draft.username ||
              settings.source->password != draft.password);
-        if (connectionChanged)
+        if (connectionChanged) {
             ++sourceGeneration;
+            if (player)
+                player->clearFormatCache();
+        }
         const std::string identity = computedSourceId(draft);
         if (draft.id.empty() || identity != draftIdentity)
             draft.id = identity;
         draftIdentity = identity;
         settings.source = draft;
+        invalidateCatalogCache();
         saveSettings();
     }
 
@@ -418,6 +451,7 @@ struct App::Impl {
             catalogs[kind] = std::move(catalog);
             catalogLoaded.insert(kind);
         }
+        invalidateCatalogCache();
     }
 
     void startCatalogJob(const std::vector<MediaKind> &kinds, bool authenticateFirst) {
@@ -425,6 +459,7 @@ struct App::Impl {
             return;
         Source source = *settings.source;
         const HttpGet get = httpGet;
+        const std::string liveFormat = sourceLiveFormat;
         catalogLoadingKinds.clear();
         catalogFailed.clear();
         for (const auto kind : kinds) {
@@ -439,15 +474,19 @@ struct App::Impl {
         catalogJobRunning = true;
         banner.clear();
         catalogFuture = std::async(
-            std::launch::async, [get, source, requested, authenticateFirst, generation]() {
+            std::launch::async,
+            [get, source, requested, authenticateFirst, generation, liveFormat]() {
                 CatalogJobResult result;
                 result.sourceId = source.id.empty() ? brutv::sourceId(source) : source.id;
                 result.sourceIdentity = computedSourceId(source);
                 result.sourceGeneration = generation;
                 try {
                     CatalogClient client(get);
+                    if (!liveFormat.empty())
+                        client.setPreferredLiveFormat(source, liveFormat);
                     if (authenticateFirst)
                         client.authenticate(source);
+                    result.preferredLiveFormat = client.preferredLiveFormat(source);
                     result.authenticated = true;
                     for (const auto kind : requested) {
                         try {
@@ -521,9 +560,18 @@ struct App::Impl {
             ensureCatalogForTab();
             return;
         }
-        if (result.authenticated)
+        if (result.authenticated) {
             sourceAuthenticated = true;
+            if (!result.preferredLiveFormat.empty())
+                sourceLiveFormat = result.preferredLiveFormat;
+        }
+        const bool wasVisibleEmpty = tab != Tab::Settings && visibleItems().empty();
+        bool affectedCurrentTab = false;
         for (auto &[kind, catalog] : result.catalogs) {
+            if (tab == Tab::Favorites ||
+                (tab != Tab::Settings && kind == kindForTab(tab))) {
+                affectedCurrentTab = true;
+            }
             for (auto &item : catalog.items) {
                 if (item.sourceId.empty() && settings.source)
                     item.sourceId = sourceId(*settings.source);
@@ -533,6 +581,8 @@ struct App::Impl {
             catalogLoaded.insert(kind);
             catalogFailed.erase(kind);
         }
+        if (!result.catalogs.empty())
+            invalidateCatalogCache();
         for (const auto &[kind, failure] : result.failures) {
             (void)failure;
             catalogFailed.insert(kind);
@@ -543,8 +593,10 @@ struct App::Impl {
                          ? "Could not sign in. Check the source details and try again."
                          : "Could not load the catalog. Check the source and network, then retry.";
         }
-        itemIndex = 0;
-        categoryIndex = 0;
+        if (!result.catalogs.empty() && (affectedCurrentTab || wasVisibleEmpty)) {
+            itemIndex = 0;
+            categoryIndex = 0;
+        }
         ensureCatalogForTab();
     }
 
@@ -617,6 +669,8 @@ struct App::Impl {
                 item.sourceId = sourceId(*settings.source);
             library[sourceScopedItemKey(item)] = item;
         }
+        if (!episodes.empty())
+            invalidateCatalogCache();
     }
 
     void startEpg(const MediaItem &item) {
@@ -631,6 +685,8 @@ struct App::Impl {
             return;
         const std::string itemId = sourceScopedItemKey(item);
         const auto generation = sourceGeneration;
+        epgInFlightItemId = itemId;
+        epgInFlightGeneration = generation;
         epgJobRunning = true;
         epgFuture = std::async(std::launch::async, [get, source, stream, itemId, generation]() {
             EpgResult result;
@@ -654,17 +710,19 @@ struct App::Impl {
             result = epgFuture.get();
         } catch (...) {
             result.ok = false;
+            result.itemId = epgInFlightItemId;
+            result.sourceGeneration = epgInFlightGeneration;
         }
         epgJobRunning = false;
-        if (result.sourceGeneration != sourceGeneration) {
-            if (playingItem && playingLive)
-                startEpg(*playingItem);
+        if (!playingItem || !playingLive)
+            return;
+        const std::string activeKey = sourceScopedItemKey(*playingItem);
+        if (result.sourceGeneration != sourceGeneration || result.itemId != activeKey) {
+            startEpg(*playingItem);
             return;
         }
-        if (result.ok && playingItem && result.itemId == sourceScopedItemKey(*playingItem)) {
+        if (result.ok) {
             epgEntries = std::move(result.entries);
-        } else if (playingItem && playingLive) {
-            startEpg(*playingItem);
         }
     }
 
@@ -689,52 +747,80 @@ struct App::Impl {
         ensureCatalogForTab();
     }
 
-    std::vector<std::string> categoryNames() const {
-        std::vector<std::string> names{"All"};
-        if (tab == Tab::Favorites) {
-            names = {"All favorites", "Recently played", "Live TV", "Movies", "Series"};
-            return names;
+    const std::vector<std::string> &categoryNames() const {
+        if (categoriesCacheValid && cachedCategoriesTab == tab &&
+            cachedCategoriesVersion == catalogDataVersion) {
+            return cachedCategories;
         }
+        cachedCategories.clear();
+        if (tab == Tab::Favorites) {
+            cachedCategories = {"All favorites", "Recently played", "Live TV", "Movies", "Series"};
+            categoriesCacheValid = true;
+            cachedCategoriesTab = tab;
+            cachedCategoriesVersion = catalogDataVersion;
+            return cachedCategories;
+        }
+        cachedCategories.emplace_back("All");
+        std::unordered_set<std::string> seen{"All"};
         const auto kind = kindForTab(tab);
         auto found = catalogs.find(kind);
         if (found != catalogs.end()) {
             for (const auto &category : found->second.categories) {
                 if (category.kind == kind && !category.name.empty() &&
-                    std::find(names.begin(), names.end(), category.name) == names.end())
-                    names.push_back(category.name);
+                    seen.insert(category.name).second)
+                    cachedCategories.push_back(category.name);
             }
         }
-        if (names.size() == 1) {
+        if (cachedCategories.size() == 1) {
             for (const auto &[key, item] : library) {
                 (void)key;
                 if (item.kind == kind && !item.categoryName.empty() &&
-                    std::find(names.begin(), names.end(), item.categoryName) == names.end())
-                    names.push_back(item.categoryName);
+                    seen.insert(item.categoryName).second)
+                    cachedCategories.push_back(item.categoryName);
             }
         }
-        return names;
+        categoriesCacheValid = true;
+        cachedCategoriesTab = tab;
+        cachedCategoriesVersion = catalogDataVersion;
+        return cachedCategories;
     }
 
-    std::vector<MediaItem> visibleItems() const {
-        std::vector<MediaItem> result;
+    const std::vector<MediaItem> &visibleItems() const {
         const auto source = currentSource();
-        const auto favoritesIt =
-            settings.favoritesBySource.find(source.id.empty() ? sourceId(source) : source.id);
+        const std::string activeSourceId = source.id.empty() ? sourceId(source) : source.id;
+        const auto &categories = categoryNames();
+        const int clampedCategory =
+            categories.empty()
+                ? 0
+                : std::clamp(categoryIndex, 0, static_cast<int>(categories.size()) - 1);
+        if (visibleCacheValid && cachedVisibleTab == tab &&
+            cachedVisibleCategory == clampedCategory && cachedVisibleSearch == searchQuery &&
+            cachedVisibleSourceId == activeSourceId &&
+            cachedVisibleVersion == catalogDataVersion) {
+            return cachedVisibleItems;
+        }
+        const auto favoritesIt = settings.favoritesBySource.find(activeSourceId);
         const std::set<std::string> *favorites =
             favoritesIt == settings.favoritesBySource.end() ? nullptr : &favoritesIt->second;
-        const auto categories = categoryNames();
         const std::string selectedCategory =
-            categories.empty() ? "All"
-                               : categories[static_cast<std::size_t>(std::clamp(
-                                     categoryIndex, 0, static_cast<int>(categories.size()) - 1))];
+            categories.empty() ? "All" : categories[static_cast<std::size_t>(clampedCategory)];
+        std::unordered_set<std::string> recentIds;
+        if (tab == Tab::Favorites && selectedCategory == "Recently played") {
+            const auto recent = settings.recentsBySource.find(activeSourceId);
+            if (recent != settings.recentsBySource.end()) {
+                recentIds.reserve(recent->second.size());
+                for (const auto &played : recent->second)
+                    recentIds.insert(played.id);
+            }
+        }
         const std::string query = lower(searchQuery);
-        std::set<std::string> seen;
+        std::unordered_set<std::string> seen;
+        std::vector<std::pair<std::string, MediaItem>> sortable;
         for (const auto &[key, item] : library) {
             (void)key;
-            const std::string itemId = item.id;
             if (!source.id.empty() && item.sourceId != source.id)
                 continue;
-            if (source.id.empty() && !item.sourceId.empty() && item.sourceId != sourceId(source))
+            if (source.id.empty() && !item.sourceId.empty() && item.sourceId != activeSourceId)
                 continue;
             bool kindMatches = false;
             if (tab == Tab::Live)
@@ -745,13 +831,7 @@ struct App::Impl {
                 kindMatches = item.kind == MediaKind::Series;
             else if (tab == Tab::Favorites) {
                 if (selectedCategory == "Recently played") {
-                    const auto recent = settings.recentsBySource.find(
-                        source.id.empty() ? sourceId(source) : source.id);
-                    kindMatches = recent != settings.recentsBySource.end() &&
-                                  std::any_of(recent->second.begin(), recent->second.end(),
-                                              [&itemId](const MediaItem &played) {
-                                                  return played.id == itemId;
-                                              });
+                    kindMatches = recentIds.count(item.id) != 0;
                 } else {
                     kindMatches = favorites && favorites->count(item.id) != 0;
                 }
@@ -759,17 +839,6 @@ struct App::Impl {
             if (!kindMatches)
                 continue;
             if (tab == Tab::Favorites && selectedCategory != "All favorites") {
-                if (selectedCategory == "Recently played") {
-                    const auto recent = settings.recentsBySource.find(
-                        source.id.empty() ? sourceId(source) : source.id);
-                    const bool isRecent = recent != settings.recentsBySource.end() &&
-                                          std::any_of(recent->second.begin(), recent->second.end(),
-                                                      [&itemId](const MediaItem &played) {
-                                                          return played.id == itemId;
-                                                      });
-                    if (!isRecent)
-                        continue;
-                }
                 if (selectedCategory == "Live TV" && item.kind != MediaKind::Live)
                     continue;
                 if (selectedCategory == "Movies" && item.kind != MediaKind::Movie)
@@ -788,18 +857,27 @@ struct App::Impl {
             }
             const std::string scoped = sourceScopedItemKey(item);
             if (seen.insert(scoped).second)
-                result.push_back(item);
+                sortable.emplace_back(lower(item.title), item);
         }
-        std::stable_sort(result.begin(), result.end(), [](const MediaItem &a, const MediaItem &b) {
-            return lower(a.title) < lower(b.title);
-        });
-        return result;
+        std::stable_sort(sortable.begin(), sortable.end(),
+                         [](const auto &a, const auto &b) { return a.first < b.first; });
+        cachedVisibleItems.clear();
+        cachedVisibleItems.reserve(sortable.size());
+        for (auto &entry : sortable)
+            cachedVisibleItems.push_back(std::move(entry.second));
+        visibleCacheValid = true;
+        cachedVisibleTab = tab;
+        cachedVisibleCategory = clampedCategory;
+        cachedVisibleSearch = searchQuery;
+        cachedVisibleSourceId = activeSourceId;
+        cachedVisibleVersion = catalogDataVersion;
+        return cachedVisibleItems;
     }
 
     void clampItemSelection() {
         if (episodesOpen)
             return;
-        const auto items = visibleItems();
+        const auto &items = visibleItems();
         itemIndex =
             items.empty() ? 0 : std::clamp(itemIndex, 0, static_cast<int>(items.size()) - 1);
     }
@@ -815,6 +893,7 @@ struct App::Impl {
         recents.insert(recents.begin(), item);
         if (recents.size() > 30)
             recents.resize(30);
+        invalidateCatalogCache();
         saveSettings();
         clampItemSelection();
     }
@@ -831,6 +910,7 @@ struct App::Impl {
             favorites.erase(found);
             banner = "Removed from favorites";
         }
+        invalidateCatalogCache();
         saveSettings();
         clampItemSelection();
     }
@@ -875,9 +955,9 @@ struct App::Impl {
             banner = "No stream URL was provided.";
             return;
         }
+        player->setVolume(settings.volume);
         player->open(url, live, requestHeaders);
         playerScreen = true;
-        player->setVolume(settings.volume);
         playerStatus = player->status();
         hasVideoFrame = false;
         showPlayerHud = true;
@@ -889,24 +969,30 @@ struct App::Impl {
             if (episodes.empty() || episodeIndex < 0 ||
                 episodeIndex >= static_cast<int>(episodes.size()))
                 return;
-            launchItem(episodes[static_cast<std::size_t>(episodeIndex)]);
+            const MediaItem selected = episodes[static_cast<std::size_t>(episodeIndex)];
+            launchItem(selected);
             return;
         }
-        const auto items = visibleItems();
+        const auto &items = visibleItems();
         if (items.empty() || itemIndex < 0 || itemIndex >= static_cast<int>(items.size()))
             return;
-        launchItem(items[static_cast<std::size_t>(itemIndex)]);
+        const MediaItem selected = items[static_cast<std::size_t>(itemIndex)];
+        launchItem(selected);
     }
 
     void toggleSelectedFavorite() {
         if (episodesOpen) {
-            if (episodeIndex >= 0 && episodeIndex < static_cast<int>(episodes.size()))
-                toggleFavorite(episodes[static_cast<std::size_t>(episodeIndex)]);
+            if (episodeIndex >= 0 && episodeIndex < static_cast<int>(episodes.size())) {
+                const MediaItem selected = episodes[static_cast<std::size_t>(episodeIndex)];
+                toggleFavorite(selected);
+            }
             return;
         }
-        const auto items = visibleItems();
-        if (itemIndex >= 0 && itemIndex < static_cast<int>(items.size()))
-            toggleFavorite(items[static_cast<std::size_t>(itemIndex)]);
+        const auto &items = visibleItems();
+        if (itemIndex >= 0 && itemIndex < static_cast<int>(items.size())) {
+            const MediaItem selected = items[static_cast<std::size_t>(itemIndex)];
+            toggleFavorite(selected);
+        }
     }
 
     void playUrlValue(const std::string &url, bool live) {
@@ -939,15 +1025,18 @@ struct App::Impl {
         draftIdentity = sourceIdentity;
         settings.source = source;
         sourceAuthenticated = false;
+        sourceLiveFormat.clear();
         catalogLoaded.clear();
         catalogs.clear();
         catalogFailed.clear();
         library.clear();
+        invalidateCatalogCache();
         episodes.clear();
         episodesOpen = false;
         pendingEpisodeSeries.reset();
         selectedSeriesId.clear();
         player->stop();
+        player->clearFormatCache();
         playerScreen = false;
         playingItem.reset();
         epgEntries.clear();
@@ -1025,7 +1114,10 @@ struct App::Impl {
         catalogs.clear();
         catalogFailed.clear();
         sourceAuthenticated = false;
+        sourceLiveFormat.clear();
+        invalidateCatalogCache();
         player->stop();
+        player->clearFormatCache();
         playerScreen = false;
         playingItem.reset();
         epgEntries.clear();
@@ -1215,7 +1307,7 @@ struct App::Impl {
             eraseLastCodepoint(value);
             setFieldValue(field, std::move(value));
         } else if (!searchQuery.empty()) {
-            searchQuery.pop_back();
+            eraseLastCodepoint(searchQuery);
             itemIndex = 0;
         }
     }
@@ -1230,7 +1322,10 @@ struct App::Impl {
     void changeVolume(float delta) {
         settings.volume = std::clamp(settings.volume + delta, 0.0F, 1.0F);
         player->setVolume(settings.volume);
-        saveSettings();
+        if (!preview) {
+            volumeSavePending = true;
+            volumeSaveAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        }
     }
 
     void handleSettingsKey(Key key) {
@@ -1270,7 +1365,7 @@ struct App::Impl {
     }
 
     void moveCategory(int delta) {
-        const auto categories = categoryNames();
+        const auto &categories = categoryNames();
         if (categories.empty())
             return;
         categoryIndex =
@@ -1286,7 +1381,7 @@ struct App::Impl {
                 std::clamp(episodeIndex + delta, 0, static_cast<int>(episodes.size()) - 1);
             return;
         }
-        const auto items = visibleItems();
+        const auto &items = visibleItems();
         if (items.empty())
             return;
         itemIndex = std::clamp(itemIndex + delta, 0, static_cast<int>(items.size()) - 1);
@@ -1466,6 +1561,9 @@ struct App::Impl {
     }
 
     void tick() {
+        if (volumeSavePending && std::chrono::steady_clock::now() >= volumeSaveAt) {
+            saveSettings();
+        }
         pollCatalog();
         pollEpisodes();
         pollEpg();
@@ -1628,7 +1726,7 @@ struct App::Impl {
 
     void renderCategories() {
         gfx.text(tab == Tab::Favorites ? "FILTER" : "CATEGORIES", 344, 168, 17, kMuted, 210);
-        const auto names = categoryNames();
+        const auto &names = categoryNames();
         const int start = categoryIndex >= 12 ? categoryIndex - 11 : 0;
         for (int i = start; i < static_cast<int>(names.size()) && i < start + 13; ++i) {
             const float y = 212.0F + static_cast<float>(i - start) * 53.0F;
@@ -1705,7 +1803,7 @@ struct App::Impl {
             return;
         }
 
-        const auto items = visibleItems();
+        const auto &items = visibleItems();
         itemIndex =
             items.empty() ? 0 : std::clamp(itemIndex, 0, static_cast<int>(items.size()) - 1);
         if (catalogJobRunning && catalogLoaded.count(kindForTab(tab)) == 0 &&
@@ -1941,6 +2039,20 @@ struct App::Impl {
                 std::to_string(playerStatus.width) + " x " + std::to_string(playerStatus.height);
             gfx.text(dimensions, 1650, 103, 18, kMuted, 190);
         }
+        const std::string message = !playerStatus.rewindMessage.empty()
+            ? playerStatus.rewindMessage : playerStatus.message;
+        const auto currentEpg = [&]() -> const EpgEntry * {
+            if (!playingLive || epgEntries.empty())
+                return nullptr;
+            const auto now = static_cast<std::int64_t>(std::time(nullptr));
+            auto current =
+                std::find_if(epgEntries.begin(), epgEntries.end(), [now](const EpgEntry &entry) {
+                    return entry.startEpochSeconds <= now && entry.endEpochSeconds > now;
+                });
+            if (current == epgEntries.end())
+                current = epgEntries.begin();
+            return &(*current);
+        };
         if (playerStatus.durationSeconds > 0.0 && !playingLive) {
             const float progress = static_cast<float>(
                 std::clamp(playerStatus.currentSeconds / playerStatus.durationSeconds, 0.0, 1.0));
@@ -1950,6 +2062,15 @@ struct App::Impl {
                          formatTime(playerStatus.durationSeconds),
                      80, 897, 18, kMuted, 300);
         } else if (playingLive && playerStatus.liveRewind) {
+            if (const auto *entry = currentEpg()) {
+                gfx.text("NOW", 80, 845, 17, kCyan, 70);
+                gfx.text(shortened(entry->title, 70), 140, 844, 20, kText, 1200);
+                if (message.empty() && !entry->description.empty()) {
+                    gfx.text(shortened(entry->description, 120), 80, 938, 17, kMuted, 1700);
+                }
+            } else if (epgJobRunning) {
+                gfx.text("Loading guide...", 80, 845, 17, kMuted, 300);
+            }
             const double window = playerStatus.windowEndSeconds - playerStatus.windowStartSeconds;
             const float progress = static_cast<float>(window > 0 ? std::clamp(
                 (playerStatus.currentSeconds - playerStatus.windowStartSeconds) / window, 0.0, 1.0) : 1.0);
@@ -1959,18 +2080,11 @@ struct App::Impl {
             gfx.text(formatTime(window) + " saved | " + formatTime(behind) + " behind live | " +
                 std::to_string(playerStatus.recordedBytes / 1024 / 1024) + " MiB", 80, 897, 18, kMuted, 900);
             controlHint(Button::Triangle, "Go live", 1430, 897);
-        } else if (playingLive && !epgEntries.empty()) {
-            const auto now = static_cast<std::int64_t>(std::time(nullptr));
-            auto current =
-                std::find_if(epgEntries.begin(), epgEntries.end(), [now](const EpgEntry &entry) {
-                    return entry.startEpochSeconds <= now && entry.endEpochSeconds > now;
-                });
-            if (current == epgEntries.end())
-                current = epgEntries.begin();
+        } else if (const auto *entry = currentEpg()) {
             gfx.text("NOW", 80, 875, 17, kCyan, 80);
-            gfx.text(shortened(current->title, 65), 80, 898, 22, kText, 670);
-            if (!current->description.empty())
-                gfx.text(shortened(current->description, 110), 80, 930, 18, kMuted, 1030);
+            gfx.text(shortened(entry->title, 65), 80, 898, 22, kText, 670);
+            if (!entry->description.empty())
+                gfx.text(shortened(entry->description, 110), 80, 930, 18, kMuted, 1030);
         } else if (playingLive && epgJobRunning) {
             gfx.text("Loading guide...", 80, 884, 18, kMuted, 300);
         }
@@ -1995,8 +2109,6 @@ struct App::Impl {
         };
         controlHint(Button::L1, "Audio: " + selectedTrack(playerStatus.audioTracks, playerStatus.audioTrack, "None"), 80, 1030);
         controlHint(Button::R1, "Subtitles: " + selectedTrack(playerStatus.subtitleTracks, playerStatus.subtitleTrack, "Off"), 730, 1030);
-        const std::string message = !playerStatus.rewindMessage.empty()
-            ? playerStatus.rewindMessage : playerStatus.message;
         if (!message.empty()) gfx.text(shortened(message, 130), 80, 940, 17, kMuted, 1700);
         if (playingLive)
             gfx.text("LIVE", 1705, 53, 17, kRed, 75);

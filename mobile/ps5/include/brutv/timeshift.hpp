@@ -15,7 +15,11 @@ class PacketSpool {
 public:
     struct Limits {
         double seconds = 600.0;
+#ifdef BRUTV_PS5
+        std::size_t bytes = 160U * 1024U * 1024U;
+#else
         std::size_t bytes = 256U * 1024U * 1024U;
+#endif
     };
     struct Snapshot {
         double startSeconds = 0.0;

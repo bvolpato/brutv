@@ -2,9 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace brutv {
@@ -28,6 +31,55 @@ struct VideoFrame {
     std::uint64_t serial = 0;
     std::vector<std::uint8_t> rgba;
 };
+
+struct ReconnectPolicy {
+    static constexpr int kMaxLiveFailures = 6;
+    static constexpr int kMaxVodFailures = 2;
+    static constexpr int kHealthyPlaybackSeconds = 30;
+    static constexpr int kFormatSwitchBackoffMs = 300;
+    static constexpr int kMinBackoffMs = 1500;
+    static constexpr int kMaxBackoffMs = 12000;
+
+    struct Outcome {
+        bool shouldRetry = false;
+        int failures = 0;
+        int failuresOnActiveFormat = 0;
+        int maxFailures = 0;
+        int backoffMs = 0;
+        bool switchFormat = false;
+    };
+
+    static Outcome evaluate(bool live, bool local, bool hadFirstFrame, bool everOpened,
+                            double healthyPlaybackSeconds, bool hasAlternateFormat,
+                            int previousFailures, int previousFailuresOnActive, double jitterUnit);
+};
+
+class WorkingFormatCache {
+public:
+    static constexpr std::size_t kDefaultMaxEntries = 128;
+
+    explicit WorkingFormatCache(std::size_t maxEntries = kDefaultMaxEntries);
+
+    std::optional<std::string> lookup(const std::string& primaryUrl);
+    void remember(const std::string& primaryUrl, const std::string& workingUrl);
+    void clear();
+    std::size_t size() const;
+
+private:
+    using EntryList = std::list<std::pair<std::string, std::string>>;
+
+    std::size_t maxEntries_;
+    EntryList order_;
+    std::unordered_map<std::string, EntryList::iterator> index_;
+};
+
+struct DirectFallbackTiming {
+    double origin = 0.0;
+    double offset = 0.0;
+    double discardBefore = -1.0;
+};
+
+DirectFallbackTiming prepareDirectFallbackTiming(double currentPosition);
 
 class Player {
 public:
@@ -69,8 +121,9 @@ public:
 
     // open() replaces any previous session. Demux and software decoding run on
     // a worker without an OpenGL context. HTTP(S), HLS and files use FFmpeg.
-    // Only User-Agent and Referer source headers are accepted. Header values
-    // cannot contain controls, and their combined serialized size is bounded.
+    // User-Agent, Referer, and safe custom HTTP headers (such as Cookie/Origin)
+    // are forwarded after rejecting forbidden hop-by-hop/Host headers, control
+    // characters, duplicates, and oversized values.
     void open(const std::string& url, bool live = true,
               const std::unordered_map<std::string, std::string>& requestHeaders = {});
     void stop();
@@ -81,6 +134,7 @@ public:
     void cycleAudioTrack();
     void cycleSubtitleTrack();
     void setVolume(float volume);
+    void clearFormatCache();
     Status status() const;
 
     // Call from the render loop. Returns a due RGBA frame without blocking;

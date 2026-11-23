@@ -209,6 +209,122 @@ void settingsAtomicPrivateRoundTripAndRecovery() {
     assert(store.load().volume == 1.0F);
     std::filesystem::remove_all(root);
 }
+
+void xtreamLiveAlternateAndOutputFormats() {
+    auto toTs = alternateXtreamLiveUrl("https://iptv.example/live/user1/pass1/77.m3u8");
+    assert(toTs && *toTs == "https://iptv.example/live/user1/pass1/77.ts");
+
+    auto toM3u8 = alternateXtreamLiveUrl("https://iptv.example/live/user1/pass1/77.ts");
+    assert(toM3u8 && *toM3u8 == "https://iptv.example/live/user1/pass1/77.m3u8");
+
+    auto withPanelAndQuery = alternateXtreamLiveUrl(
+        "https://iptv.example/panel/live/user%2Fname/pass%20word/77.M3U8?token=a%2Bb&k=1#frag");
+    assert(withPanelAndQuery &&
+           *withPanelAndQuery ==
+               "https://iptv.example/panel/live/user%2Fname/pass%20word/77.ts?token=a%2Bb&k=1#frag");
+
+    auto reverseWithPortAndQuery = alternateXtreamLiveUrl(
+        "http://127.0.0.1:8080/live/u/p/99.TS?token=xyz");
+    assert(reverseWithPortAndQuery &&
+           *reverseWithPortAndQuery == "http://127.0.0.1:8080/live/u/p/99.m3u8?token=xyz");
+
+    auto shortToTs = alternateXtreamLiveUrl("https://iptv.example/user1/pass1/77.m3u8?k=1#frag");
+    assert(shortToTs && *shortToTs == "https://iptv.example/user1/pass1/77.ts?k=1#frag");
+    auto shortToM3u8 = alternateXtreamLiveUrl("https://iptv.example/user1/pass1/77.ts?k=1");
+    assert(shortToM3u8 && *shortToM3u8 == "https://iptv.example/user1/pass1/77.m3u8?k=1");
+
+    assert(!alternateXtreamLiveUrl("https://iptv.example/movie/u/p/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/series/u/p/77.ts"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/movie/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/series/sub/77.ts"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/timeshift/sub/77.ts"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/vod/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/hls/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/streams/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/static/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/assets/sub/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/hls/index.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/live/u/p/.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/live/u//77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/user1//77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example//live/u/p/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("https://iptv.example/live/u/p/77.mp4"));
+    assert(!alternateXtreamLiveUrl("file:///live/u/p/77.m3u8"));
+    assert(!alternateXtreamLiveUrl("/live/u/p/77.m3u8"));
+
+    Source source;
+    source.id = "ts-only-provider";
+    source.type = SourceType::Xtream;
+    source.url = "https://iptv.example/panel";
+    source.username = "u";
+    source.password = "p";
+    CatalogClient tsOnlyClient([](const std::string& url) {
+        if (url.find("action=get_live_categories") != std::string::npos)
+            return std::string(R"([{"category_id":"1","category_name":"Live"}])");
+        if (url.find("action=get_live_streams") != std::string::npos)
+            return std::string(R"([{"stream_id":42,"name":"Channel TS","category_id":"1"}])");
+        return std::string(R"({"user_info":{"auth":1,"status":"Active","allowed_output_formats":["ts"]}})");
+    });
+    tsOnlyClient.authenticate(source);
+    assert(tsOnlyClient.preferredLiveFormat(source) == "ts");
+    auto tsLive = tsOnlyClient.load(source, MediaKind::Live);
+    assert(tsLive.items.size() == 1);
+    assert(tsLive.items[0].mediaUrl == "https://iptv.example/panel/live/u/p/42.ts");
+
+    CatalogClient bothFormatsClient([](const std::string& url) {
+        if (url.find("action=get_live_categories") != std::string::npos)
+            return std::string(R"([{"category_id":"1","category_name":"Live"}])");
+        if (url.find("action=get_live_streams") != std::string::npos)
+            return std::string(R"([{"stream_id":42,"name":"Channel Both","category_id":"1"}])");
+        return std::string(R"({"user_info":{"auth":1,"status":"Active","allowed_output_formats":["ts","m3u8"]}})");
+    });
+    bothFormatsClient.authenticate(source);
+    assert(bothFormatsClient.preferredLiveFormat(source) == "m3u8");
+    auto bothLive = bothFormatsClient.load(source, MediaKind::Live);
+    assert(bothLive.items.size() == 1);
+    assert(bothLive.items[0].mediaUrl == "https://iptv.example/panel/live/u/p/42.m3u8");
+
+    // UTF-8 BOM in provider JSON + "mpegts" / "hls" aliases in allowed_output_formats.
+    CatalogClient mpegtsBomClient([](const std::string& url) {
+        const std::string bom("\xEF\xBB\xBF", 3);
+        if (url.find("action=get_live_categories") != std::string::npos)
+            return bom + R"([{"category_id":"1","category_name":"Live"}])";
+        if (url.find("action=get_live_streams") != std::string::npos)
+            return bom + R"([{"stream_id":55,"name":"Channel MPEGTS","category_id":"1"}])";
+        return bom + R"({"user_info":{"auth":1,"status":"Active","allowed_output_formats":["mpegts"]}})";
+    });
+    mpegtsBomClient.authenticate(source);
+    assert(mpegtsBomClient.preferredLiveFormat(source) == "ts");
+    auto mpegtsLive = mpegtsBomClient.load(source, MediaKind::Live);
+    assert(mpegtsLive.items.size() == 1);
+    assert(mpegtsLive.items[0].mediaUrl == "https://iptv.example/panel/live/u/p/55.ts");
+
+    CatalogClient hlsAliasClient([](const std::string&) {
+        return std::string(R"({"user_info":{"auth":1,"status":"Active","allowed_output_formats":["mpegts","hls"]}})");
+    });
+    hlsAliasClient.authenticate(source);
+    assert(hlsAliasClient.preferredLiveFormat(source) == "m3u8");
+
+    // Verify M3U parses Cookie/Origin while dropping hop-by-hop headers.
+    Source m3uSource;
+    m3uSource.id = "headers-m3u";
+    m3uSource.type = SourceType::M3U;
+    m3uSource.url = "https://provider.example/list.m3u";
+    CatalogClient m3uClient([](const std::string&) {
+        return std::string(
+            "#EXTM3U\n"
+            "#EXTINF:-1,Header Channel\n"
+            "#EXTVLCOPT:http-cookie=sid=abc\n"
+            "#EXTHTTP:{\"Origin\":\"https://provider.example\",\"Transfer-Encoding\":\"chunked\",\"Host\":\"evil.example\"}\n"
+            "https://provider.example/ch.m3u8\n");
+    });
+    auto m3uLive = m3uClient.load(m3uSource, MediaKind::Live);
+    assert(m3uLive.items.size() == 1);
+    assert(m3uLive.items[0].requestHeaders.at("Cookie") == "sid=abc");
+    assert(m3uLive.items[0].requestHeaders.at("Origin") == "https://provider.example");
+    assert(m3uLive.items[0].requestHeaders.count("Transfer-Encoding") == 0);
+    assert(m3uLive.items[0].requestHeaders.count("Host") == 0);
+}
 } // namespace
 
 int main() {
@@ -217,5 +333,6 @@ int main() {
     xtreamCatalogEpisodesAndEpg();
     providerFailuresDoNotExposeCredentials();
     settingsAtomicPrivateRoundTripAndRecovery();
+    xtreamLiveAlternateAndOutputFormats();
     std::cout << "BruTV catalog tests passed\n";
 }

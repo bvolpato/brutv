@@ -178,6 +178,38 @@ void concurrentCapture() {
     require(!producerFailed && count == 1000, "Concurrent capture lost unexpired packets.");
 }
 
+void binarySearchSeekEdgeCases() {
+    brutv::PacketSpool spool({60.0, 2U * 1024U * 1024U});
+    Packet source;
+    Packet output;
+    // Populate multiple chunks (chunkSeconds = 8.0) with keyframes every 2s and inter-frames every 0.5s.
+    for (int step = 0; step < 60; ++step) {
+        const double t = step * 0.5;
+        const bool kf = (step % 4 == 0);
+        source.fill(64, step, kf);
+        require(spool.append(source.value, t, kf), "Failed to append seek test packet.");
+    }
+    // Target before first keyframe -> oldest keyframe (pts 0).
+    auto cursor = spool.seek(-5.0);
+    require(spool.read(cursor, output.value) == brutv::PacketSpool::ReadResult::Ready &&
+            output.value->pts == 0, "Seek before start did not clamp to oldest keyframe.");
+    // Exact keyframe across chunk boundaries (t = 16.0 -> step 32 -> pts 32000).
+    cursor = spool.seek(16.0);
+    require(spool.read(cursor, output.value) == brutv::PacketSpool::ReadResult::Ready &&
+            output.value->pts == 32000 && (output.value->flags & AV_PKT_FLAG_KEY),
+            "Exact chunk-boundary keyframe seek failed.");
+    // Mid-GOP target (t = 23.4 -> preceding keyframe is t = 22.0 -> step 44 -> pts 44000).
+    cursor = spool.seek(23.4);
+    require(spool.read(cursor, output.value) == brutv::PacketSpool::ReadResult::Ready &&
+            output.value->pts == 44000 && (output.value->flags & AV_PKT_FLAG_KEY),
+            "Mid-GOP binary search seek chose wrong keyframe.");
+    // Target beyond end (t = 999.0 -> last keyframe t = 28.0 -> step 56 -> pts 56000).
+    cursor = spool.seek(999.0);
+    require(spool.read(cursor, output.value) == brutv::PacketSpool::ReadResult::Ready &&
+            output.value->pts == 56000 && (output.value->flags & AV_PKT_FLAG_KEY),
+            "Seek past end did not choose latest keyframe.");
+}
+
 } // namespace
 
 int main() {
@@ -186,6 +218,7 @@ int main() {
         retentionAndSeeking();
         byteCapAndCleanup();
         concurrentCapture();
+        binarySearchSeekEdgeCases();
         std::cout << "Live packet retention, keyframe seeking, metadata, privacy and concurrent capture passed.\n";
         return 0;
     } catch (const std::exception& error) {

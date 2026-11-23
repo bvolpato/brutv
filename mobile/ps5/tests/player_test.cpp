@@ -1,4 +1,5 @@
 #include "brutv/player.hpp"
+#include "brutv/catalog.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -185,14 +186,28 @@ void controls(const std::string& path) {
     for (const auto& headers : {
              std::unordered_map<std::string, std::string>{{"User-Agent", "BruTV\r\nInjected: secret"}},
              std::unordered_map<std::string, std::string>{{"Referer", std::string("hidden\0secret", 13)}},
-             std::unordered_map<std::string, std::string>{{"Cookie", "private-secret"}},
+             std::unordered_map<std::string, std::string>{{"Host", "private-secret.example"}},
+             std::unordered_map<std::string, std::string>{{"Transfer-Encoding", "private-secret"}},
              std::unordered_map<std::string, std::string>{{"user-agent", std::string(8193, 'a')}}}) {
         player.open(path, false, headers);
         require(player.status().state == brutv::Player::State::Error, "Unsafe request header was accepted.");
         require(player.status().message.find("secret") == std::string::npos,
                 "Header validation diagnostics exposed private values.");
     }
+    // Safe M3U extra headers (Cookie, Origin) are accepted instead of throwing.
+    player.open(path, false, {{"Cookie", "session=ok"}, {"Origin", "https://brutv.example"}});
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        player.takeFrame(frame);
+        return status.currentSeconds > 0.1;
+    }, std::chrono::seconds(4));
+    player.stop();
+    // Pausing/unpausing while Opening must not falsely report Playing.
     player.open("http://example-user:example-secret@127.0.0.1:1/missing", false);
+    player.setPaused(true);
+    player.setPaused(false);
+    require(player.status().state != brutv::Player::State::Playing,
+            "setPaused(false) during Opening falsely claimed Playing.");
     const auto deadline = Clock::now() + std::chrono::seconds(3);
     while (player.status().state != brutv::Player::State::Error && Clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -295,17 +310,242 @@ void liveDirectFallback(const std::string& url) {
     player.stop();
 }
 
+void unitTests() {
+    // 1. Xtream .m3u8 <-> .ts bidirectional fallback helper.
+    const auto ts = brutv::alternateXtreamLiveUrl("https://provider.example/live/u/p/101.m3u8?k=1");
+    require(ts && *ts == "https://provider.example/live/u/p/101.ts?k=1",
+            "Xtream .m3u8 -> .ts fallback helper failed.");
+    const auto m3u8 = brutv::alternateXtreamLiveUrl(*ts);
+    require(m3u8 && *m3u8 == "https://provider.example/live/u/p/101.m3u8?k=1",
+            "Xtream .ts -> .m3u8 fallback helper failed.");
+    require(!brutv::alternateXtreamLiveUrl("https://provider.example/hls/index.m3u8"),
+            "Non-Xtream HLS URL was incorrectly rewritten.");
+
+    // 2. Retry budget reset after sustained healthy playback (>30s since first decoded frame).
+    {
+        const auto reset = brutv::ReconnectPolicy::evaluate(
+            true, false, true, true, 35.0, true, brutv::ReconnectPolicy::kMaxLiveFailures, 1, 0.5);
+        require(reset.shouldRetry && reset.failures == 1 && reset.maxFailures == 6,
+                "Sustained healthy live playback did not reset retry budget before checking limit.");
+        require(!reset.switchFormat,
+                "First disconnect after sustained healthy playback should stay on working format.");
+        require(reset.backoffMs >= brutv::ReconnectPolicy::kMinBackoffMs &&
+                reset.backoffMs <= brutv::ReconnectPolicy::kMaxBackoffMs,
+                "Retry backoff outside [1.5s, 12s].");
+
+        // Hanging in openSource for 60s WITHOUT decoding a first frame must NOT reset failures.
+        const auto noResetOnOpenHang = brutv::ReconnectPolicy::evaluate(
+            true, false, false, false, 60.0, true, brutv::ReconnectPolicy::kMaxLiveFailures, 1, 0.5);
+        require(!noResetOnOpenHang.shouldRetry && noResetOnOpenHang.failures == 7,
+                "Open hang without decoded frame erroneously reset failure counter.");
+
+        // Short playback (<30s) must NOT reset failures.
+        const auto shortPlay = brutv::ReconnectPolicy::evaluate(
+            true, false, true, true, 12.0, true, brutv::ReconnectPolicy::kMaxLiveFailures, 1, 0.5);
+        require(!shortPlay.shouldRetry && shortPlay.failures == 7,
+                "Short unhealthy playback erroneously reset failure counter.");
+
+        // Consecutive live failures 1..6: initial format switch uses fast 300ms pause,
+        // subsequent retries use jittered exponential backoff; 7th fails.
+        int prevFailures = 0;
+        int prevOnActive = 0;
+        for (int attempt = 1; attempt <= 6; ++attempt) {
+            const auto step = brutv::ReconnectPolicy::evaluate(
+                true, false, false, false, 0.0, true, prevFailures, prevOnActive, 0.5);
+            require(step.shouldRetry && step.failures == attempt,
+                    "Live reconnect stopped before reaching 6 consecutive retries.");
+            require(step.switchFormat,
+                    "Immediate open failure on Xtream live stream did not switch alternate format.");
+            if (attempt == 1) {
+                require(step.backoffMs == brutv::ReconnectPolicy::kFormatSwitchBackoffMs,
+                        "Initial format switch before first frame did not use fast 300ms backoff.");
+            } else {
+                require(step.backoffMs >= brutv::ReconnectPolicy::kMinBackoffMs &&
+                        step.backoffMs <= brutv::ReconnectPolicy::kMaxBackoffMs,
+                        "Live reconnect backoff exceeded [1.5s, 12s] after initial format switch.");
+            }
+            prevFailures = step.failures;
+            prevOnActive = step.failuresOnActiveFormat;
+        }
+        const auto exhausted = brutv::ReconnectPolicy::evaluate(
+            true, false, false, false, 0.0, true, prevFailures, prevOnActive, 0.5);
+        require(!exhausted.shouldRetry, "Live reconnect exceeded max consecutive failure budget.");
+
+        const auto noAlternate = brutv::ReconnectPolicy::evaluate(
+            true, false, false, false, 0.0, false, 0, 0, 0.5);
+        require(noAlternate.shouldRetry && !noAlternate.switchFormat &&
+                noAlternate.backoffMs >= brutv::ReconnectPolicy::kMinBackoffMs &&
+                noAlternate.backoffMs <= brutv::ReconnectPolicy::kMaxBackoffMs,
+                "First live failure without alternate format did not use standard backoff.");
+
+        // Jitter varies backoff around exponential base while staying bounded.
+        const auto lowJitter = brutv::ReconnectPolicy::evaluate(
+            true, false, true, true, 5.0, false, 1, 1, 0.0);
+        const auto highJitter = brutv::ReconnectPolicy::evaluate(
+            true, false, true, true, 5.0, false, 1, 1, 1.0);
+        require(lowJitter.backoffMs < highJitter.backoffMs &&
+                lowJitter.backoffMs >= 1500 && highJitter.backoffMs <= 12000,
+                "Exponential backoff jitter was not applied cleanly.");
+
+        // VOD: fails immediately if initial open never succeeded or local file; allows 2 retries after open.
+        const auto vodInitialFail = brutv::ReconnectPolicy::evaluate(
+            false, false, false, false, 0.0, false, 0, 0, 0.5);
+        require(!vodInitialFail.shouldRetry,
+                "Unreachable VOD initial open should not block with retries.");
+        const auto vodLocalFail = brutv::ReconnectPolicy::evaluate(
+            false, true, true, true, 5.0, false, 0, 0, 0.5);
+        require(!vodLocalFail.shouldRetry, "Local file failure should not retry.");
+        const auto vodRetry1 = brutv::ReconnectPolicy::evaluate(
+            false, false, true, true, 5.0, false, 0, 0, 0.5);
+        const auto vodRetry2 = brutv::ReconnectPolicy::evaluate(
+            false, false, true, true, 5.0, false, 1, 1, 0.5);
+        const auto vodRetry3 = brutv::ReconnectPolicy::evaluate(
+            false, false, true, true, 5.0, false, 2, 2, 0.5);
+        require(vodRetry1.shouldRetry && vodRetry2.shouldRetry && !vodRetry3.shouldRetry,
+                "HTTP VOD did not allow exactly 2 bounded reconnect retries.");
+    }
+
+    // 3. Rewind-to-direct fallback without black-frame timestamp drop.
+    {
+        const double currentPosition = 142.75;
+        auto timing = brutv::prepareDirectFallbackTiming(currentPosition);
+        require(!std::isfinite(timing.origin),
+                "Direct fallback did not reset origin so next raw PTS re-anchors cleanly.");
+        require(std::abs(timing.offset - currentPosition) < 1e-9,
+                "Direct fallback did not preserve current timeline offset.");
+        require(timing.discardBefore < 0.0,
+                "Direct fallback left discardBefore >= 0, risking permanent black-frame drops.");
+
+        // Simulate frameTime() after fallback when incoming raw PTS is arbitrary or wrapped.
+        for (double rawFirst : {1142.75, 0.5, 50000.0}) {
+            double origin = timing.origin;
+            const double offset = timing.offset;
+            if (!std::isfinite(origin)) origin = rawFirst;
+            const double firstPts = std::max(0.0, rawFirst - origin + offset);
+            const double secondPts = std::max(0.0, (rawFirst + 0.04) - origin + offset);
+            require(!(firstPts + 0.02 < timing.discardBefore),
+                    "Post-fallback frame was silently discarded by discardBefore.");
+            require(std::abs(firstPts - currentPosition) < 1e-6 &&
+                    secondPts > firstPts,
+                    "Post-fallback frame timestamps did not continue seamlessly from current position.");
+        }
+    }
+
+    // 4. Bounded LRU WorkingFormatCache.
+    {
+        brutv::WorkingFormatCache cache(2);
+        require(!cache.lookup("https://provider.example/live/u/p/1.m3u8").has_value(),
+                "Empty WorkingFormatCache unexpectedly returned an entry.");
+        cache.remember("https://provider.example/live/u/p/1.m3u8",
+                       "https://provider.example/live/u/p/1.ts");
+        cache.remember("https://provider.example/live/u/p/2.m3u8",
+                       "https://provider.example/live/u/p/2.m3u8");
+        require(cache.size() == 2, "WorkingFormatCache size did not match inserted count.");
+        const auto hit1 = cache.lookup("https://provider.example/live/u/p/1.m3u8");
+        require(hit1 && *hit1 == "https://provider.example/live/u/p/1.ts",
+                "WorkingFormatCache lookup did not return remembered URL.");
+        cache.remember("https://provider.example/live/u/p/3.m3u8",
+                       "https://provider.example/live/u/p/3.ts");
+        require(cache.size() == 2, "WorkingFormatCache exceeded max capacity.");
+        require(!cache.lookup("https://provider.example/live/u/p/2.m3u8").has_value(),
+                "WorkingFormatCache did not evict least-recently-used entry.");
+        const auto hit1Again = cache.lookup("https://provider.example/live/u/p/1.m3u8");
+        const auto hit3 = cache.lookup("https://provider.example/live/u/p/3.m3u8");
+        require(hit1Again && *hit1Again == "https://provider.example/live/u/p/1.ts" &&
+                hit3 && *hit3 == "https://provider.example/live/u/p/3.ts",
+                "WorkingFormatCache lost recently used entries during LRU eviction.");
+        cache.remember("https://provider.example/live/u/p/1.m3u8",
+                       "https://provider.example/live/u/p/1.m3u8");
+        const auto updated = cache.lookup("https://provider.example/live/u/p/1.m3u8");
+        require(updated && *updated == "https://provider.example/live/u/p/1.m3u8",
+                "WorkingFormatCache did not update an existing key.");
+        cache.clear();
+        require(cache.size() == 0 &&
+                !cache.lookup("https://provider.example/live/u/p/1.m3u8").has_value(),
+                "WorkingFormatCache::clear did not remove cached entries.");
+    }
+}
+
+void liveFallbackOrReconnect(const std::string& url,
+                             const std::unordered_map<std::string, std::string>& headers = {}) {
+    brutv::Player player(std::make_shared<CountingSink>());
+    player.open(url, true, headers);
+    std::size_t frameCount = 0;
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        if (player.takeFrame(frame)) {
+            ++frameCount;
+        }
+        return frameCount >= 5 && status.currentSeconds > 0.2 &&
+               status.state == brutv::Player::State::Playing;
+    }, std::chrono::seconds(15));
+    player.stop();
+}
+
+void vodWithHeaders(const std::string& url) {
+    brutv::Player player(std::make_shared<CountingSink>());
+    player.open(url, false, {{"Cookie", "session=brutv-test"}, {"Origin", "https://brutv.example"}});
+    std::size_t frameCount = 0;
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        if (player.takeFrame(frame)) {
+            ++frameCount;
+        }
+        return status.state == brutv::Player::State::Ended;
+    }, std::chrono::seconds(15));
+    require(frameCount >= 10, "VOD with custom headers decoded too few frames.");
+    player.stop();
+}
+
+void vodReconnect(const std::string& url) {
+    brutv::Player player(std::make_shared<CountingSink>());
+    player.open(url, false);
+    std::size_t frameCount = 0;
+    waitFor(player, [&](const auto& status) {
+        brutv::VideoFrame frame;
+        if (player.takeFrame(frame)) {
+            ++frameCount;
+        }
+        return status.state == brutv::Player::State::Ended;
+    }, std::chrono::seconds(20));
+    require(frameCount >= 10, "Reconnected VOD decoded too few frames.");
+    player.stop();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc == 3 && (std::string(argv[1]) == "--live" || std::string(argv[1]) == "--live-direct")) {
+    if (argc == 2 && std::string(argv[1]) == "--unit") {
         try {
-            if (std::string(argv[1]) == "--live") {
+            unitTests();
+            std::cout << "Player unit tests (Xtream fallback, retry budget, direct fallback timing) passed.\n";
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
+    if (argc == 3 && (std::string(argv[1]) == "--live" || std::string(argv[1]) == "--live-direct" ||
+                      std::string(argv[1]) == "--live-fallback" ||
+                      std::string(argv[1]) == "--vod-headers" ||
+                      std::string(argv[1]) == "--vod-reconnect")) {
+        try {
+            const std::string mode = argv[1];
+            if (mode == "--live") {
                 liveRewind(argv[2]);
                 std::cout << "Live recording during pause, rewind and Go Live passed.\n";
-            } else {
+            } else if (mode == "--live-direct") {
                 liveDirectFallback(argv[2]);
                 std::cout << "Unavailable live storage falls back to direct playback.\n";
+            } else if (mode == "--live-fallback") {
+                liveFallbackOrReconnect(argv[2]);
+                std::cout << "Live fallback / reconnect playback passed.\n";
+            } else if (mode == "--vod-headers") {
+                vodWithHeaders(argv[2]);
+                std::cout << "VOD custom headers playback passed.\n";
+            } else {
+                vodReconnect(argv[2]);
+                std::cout << "VOD reconnect and resume playback passed.\n";
             }
             return 0;
         } catch (const std::exception& error) {
@@ -318,6 +558,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     try {
+        unitTests();
         decodeFixture(argv[1], true);
         decodeFixture(argv[1], false);
         controls(argv[1]);
