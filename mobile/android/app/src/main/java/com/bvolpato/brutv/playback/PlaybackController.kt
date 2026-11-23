@@ -1,7 +1,13 @@
 package com.bvolpato.brutv.playback
 
+import android.app.ActivityManager
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
+import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 import androidx.annotation.OptIn
@@ -18,30 +24,28 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.HttpDataSource
-import androidx.media3.extractor.DefaultExtractorsFactory
-import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
-import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.session.MediaSession
+import com.bvolpato.brutv.data.CatalogRepository
 import com.bvolpato.brutv.data.MediaEntry
 import com.bvolpato.brutv.data.MediaKind
-import java.net.SocketTimeoutException
-import java.net.SocketException
-import java.net.UnknownHostException
 import java.io.File
 import java.util.UUID
-import javax.net.ssl.SSLException
-import kotlinx.coroutines.CoroutineScope
+import java.util.concurrent.TimeUnit
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -51,7 +55,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.random.Random
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.CacheControl
+import okhttp3.ConnectionPool
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal data class PlaybackSnapshot(
     val entry: MediaEntry? = null,
@@ -84,19 +92,39 @@ internal data class PlaybackSnapshot(
 )
 
 @OptIn(UnstableApi::class)
-internal class PlaybackController(context: Context, private val profile: BufferProfile) {
+internal class PlaybackController(
+    context: Context,
+    private val profile: BufferProfile,
+    maxConnections: Int = 1,
+) {
     private val appContext = context.applicationContext
+    var maxConnections: Int = maxConnections.coerceAtLeast(1)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val ioCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val playbackConnectionPool = ConnectionPool(5, 30, TimeUnit.SECONDS)
+    private val playbackClient = createPlaybackHttpClient(playbackConnectionPool)
+    private val loadErrorPolicy = StreamLoadErrorHandlingPolicy()
     private val recovery = RecoveryPolicy()
+    private val progressMonitor = PlaybackProgressMonitor()
+    private val networkRecoveryPolicy = NetworkRecoveryPolicy()
+    private val connectivityManager = runCatching {
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    }.getOrNull()
+    private var networkCallbackRegistered = false
+    private val isLowRamDevice = (appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+        ?.isLowRamDevice == true
     private var generation = 0L
     private var retryJob: Job? = null
     private var watchdog: Job? = null
-    private var healthySince = 0L
     private var hasPlayed = false
     private var lastPlaybackState = Player.STATE_IDLE
     private var resumeAfterBackground = false
+    private var inBackground = false
     private var disposed = false
     private var timeShift: HlsTimeShiftSession? = null
+    private var pendingTimeShiftCloseJob: Job? = null
+    private var pendingEvictJob: Job? = null
+    private var hadPreviousLiveConnection = false
     private var timeShiftAttempted = false
     private var timeShiftNotice: String? = null
     private var prepareJob: Job? = null
@@ -107,6 +135,12 @@ internal class PlaybackController(context: Context, private val profile: BufferP
     private var localSource: LocalTimeShiftSource? = null
     private var pendingLiveAnchorMs: Long? = null
     private var pendingLivePlay = false
+    private var activeStreamUrl = ""
+    private var formatFallbackUsed = false
+    private var retriesOnCurrentFormat = 0
+    private var liveAuthNotFoundRetries = 0
+    private var lastAutoLiveSeekElapsedMs = 0L
+    private var lastTerminalFailureKind: FailureKind? = null
     private val mutableState = MutableStateFlow(PlaybackSnapshot())
     val state = mutableState.asStateFlow()
 
@@ -122,13 +156,11 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             .setMediaCodecSelector(decoderSelector),
     )
         .setLooper(Looper.getMainLooper())
-        .setTrackSelector(DefaultTrackSelector(appContext).apply {
-            setParameters(buildUponParameters().setExceedRendererCapabilitiesIfNecessary(false))
-        })
+        .setTrackSelector(DefaultTrackSelector(appContext))
         .setLoadControl(
             DefaultLoadControl.Builder()
                 .setBufferDurationsMs(tuning.minBufferMs, tuning.maxBufferMs, tuning.startBufferMs, tuning.rebufferMs)
-                .setTargetBufferBytes(tuning.targetBytes)
+                .setTargetBufferBytes(tuning.effectiveTargetBytes(isLowRamDevice))
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .setBackBuffer(0, false)
                 .build(),
@@ -165,7 +197,8 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             ) {
                 if (disposed) return
                 if (playerCommands.contains(Player.COMMAND_PLAY_PAUSE) &&
-                    (prepareJob?.isActive == true || pendingLiveAnchorMs != null)) {
+                    (prepareJob?.isActive == true || pendingLiveAnchorMs != null)
+                ) {
                     intendedPlay = controlPlayer.playWhenReady
                     pendingLivePlay = intendedPlay
                     if (!intendedPlay) cancelRecovery()
@@ -181,30 +214,27 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             if (disposed) return
             val previousState = lastPlaybackState
             lastPlaybackState = playbackState
+            val currentEntry = mutableState.value.entry
             if (playbackState == Player.STATE_BUFFERING && retryJob?.isActive == true) {
                 // System or native controls prepared the player before the delayed reconnect.
                 cancelRecovery()
-                generation = recovery.startEntry()
+                generation = recovery.startEntry(isLive = currentEntry?.kind == MediaKind.LIVE)
+                lastTerminalFailureKind = null
                 mutableState.value = mutableState.value.copy(error = null)
             }
-            if (playbackState == Player.STATE_ENDED && mutableState.value.entry?.kind == MediaKind.LIVE && player.playWhenReady) {
+            if (playbackState == Player.STATE_ENDED && currentEntry?.kind == MediaKind.LIVE && requestedPlay()) {
                 if (timeShift?.snapshot()?.recording == false) {
-                    player.pause()
-                    refresh()
-                    return
+                    closeTimeShift()
+                    timeShiftNotice = null
                 }
                 recover(FailureKind.NETWORK)
                 return
             }
-            val buffering = playbackState == Player.STATE_BUFFERING && player.playWhenReady
+            val buffering = playbackState == Player.STATE_BUFFERING && requestedPlay()
             if (buffering && previousState == Player.STATE_READY && hasPlayed) {
                 mutableState.value = mutableState.value.copy(stalls = mutableState.value.stalls + 1)
-                if (mutableState.value.entry?.kind == MediaKind.LIVE && player.totalBufferedDuration > 300) {
-                    player.play()
-                }
             }
             if (buffering) {
-                healthySince = 0
                 startWatchdog()
             } else {
                 watchdog?.cancel()
@@ -216,59 +246,67 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
                 hasPlayed = true
-                if (healthySince == 0L) healthySince = SystemClock.elapsedRealtime()
-            } else {
-                healthySince = 0
             }
             refresh()
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (disposed) return
-            if (playWhenReady && player.mediaItemCount == 0 && prepareJob?.isActive != true && mutableState.value.entry != null) {
+            val currentEntry = mutableState.value.entry
+            if (playWhenReady && player.mediaItemCount == 0 && prepareJob?.isActive != true && currentEntry != null) {
                 retry(play = true)
                 return
             }
             if (playWhenReady && mutableState.value.error != null) {
+                lastTerminalFailureKind = null
                 mutableState.value = mutableState.value.copy(error = null)
-                generation = recovery.startEntry()
+                generation = recovery.startEntry(isLive = currentEntry?.kind == MediaKind.LIVE)
             }
-            if (playWhenReady && !recovery.isCurrent(generation)) generation = recovery.startEntry()
+            if (playWhenReady && !recovery.isCurrent(generation)) {
+                generation = recovery.startEntry(isLive = currentEntry?.kind == MediaKind.LIVE)
+            }
             if (playWhenReady && player.playbackState == Player.STATE_BUFFERING) startWatchdog()
-            if (!playWhenReady) cancelRecovery()
+            if (!playWhenReady && pendingLiveAnchorMs == null) cancelRecovery()
             refresh()
         }
 
         override fun onPlayerError(error: PlaybackException) {
             if (disposed) return
             val kind = classify(error)
+            val httpStatus = extractHttpStatusCode(error)
             if (timeShift != null && kind == FailureKind.UNSUPPORTED) {
                 val entry = mutableState.value.entry ?: return
-                val play = if (pendingLiveAnchorMs != null) pendingLivePlay else player.playWhenReady
+                val play = requestedPlay()
                 cancelRecovery()
                 closeTimeShift()
                 // One native fallback can choose a different master rendition for this device.
                 timeShiftAttempted = true
                 timeShiftNotice = "The recording rendition is unsupported on this device. Using direct live playback."
-                generation = recovery.startEntry()
+                generation = recovery.startEntry(isLive = entry.kind == MediaKind.LIVE)
+                lastTerminalFailureKind = null
                 mutableState.value = mutableState.value.copy(error = null, recovering = false)
-                player.stop()
+                stopAndEvict(cancelActive = true)
                 prepare(entry, 0, play)
                 return
             }
-            val response = generateSequence<Throwable>(error) { it.cause }.take(12)
-                .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
             if (timeShift != null && expiredRecoveryAttempts < 2 &&
-                (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW || response == 410)) {
-                // A bounded ring can expire an old paused position or cached native manifest.
-                timeShiftNotice = "Older buffered footage expired. Playback moved to the oldest saved footage."
+                (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW || httpStatus == 410)
+            ) {
                 expiredRecoveryAttempts++
-                val play = player.playWhenReady
-                player.seekTo(0)
+                val play = requestedPlay()
+                if (manuallyBehindLive) {
+                    // A bounded ring can expire an old paused or rewound position.
+                    timeShiftNotice = "Older buffered footage expired. Playback moved to the oldest saved footage."
+                    player.seekTo(0)
+                } else {
+                    player.seekToDefaultPosition()
+                }
                 player.prepare()
                 player.playWhenReady = play
                 refresh()
-            } else recover(kind)
+            } else {
+                recover(kind, httpStatus)
+            }
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -279,6 +317,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
             if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                 manuallyBehindLive = (liveDistanceFromDefaultMs() ?: 0) > 1_000
+                progressMonitor.onSeek()
             }
             refresh()
         }
@@ -301,19 +340,88 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         }
     }
 
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val networkId = network.networkHandle
+            scope.launch {
+                if (disposed) return@launch
+                if (!networkRecoveryPolicy.onAvailable(networkId, SystemClock.elapsedRealtime())) return@launch
+                evictPlaybackConnections(cancelActive = false)
+                if (inBackground) return@launch
+                val entry = mutableState.value.entry ?: return@launch
+                when {
+                    retryJob?.isActive == true -> retry(play = true)
+                    mutableState.value.error != null && lastTerminalFailureKind?.retryable == true -> retry(play = true)
+                    requestedPlay() && entry.kind == MediaKind.LIVE && player.playbackState == Player.STATE_BUFFERING -> retry(play = true)
+                }
+            }
+        }
+
+        override fun onLost(network: Network) {
+            val networkId = network.networkHandle
+            scope.launch {
+                if (disposed) return@launch
+                networkRecoveryPolicy.onLost(networkId)
+            }
+        }
+    }
+
     init {
         player.addListener(listener)
         player.addAnalyticsListener(analytics)
+        connectivityManager?.let { cm ->
+            runCatching {
+                if (cm.activeNetwork == null) {
+                    networkRecoveryPolicy.onLost(-1L)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    cm.registerDefaultNetworkCallback(networkCallback)
+                } else {
+                    val request = NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build()
+                    cm.registerNetworkCallback(request, networkCallback)
+                }
+                networkCallbackRegistered = true
+            }
+        }
         scope.launch {
             while (isActive) {
                 refresh()
-                if (healthySince != 0L && SystemClock.elapsedRealtime() - healthySince >= 30_000) {
+                val now = SystemClock.elapsedRealtime()
+                val entry = mutableState.value.entry
+                val isLive = entry?.kind == MediaKind.LIVE
+                val isPlayingReady = player.playbackState == Player.STATE_READY &&
+                    player.isPlaying &&
+                    requestedPlay()
+                val progress = progressMonitor.sample(
+                    nowElapsedMs = now,
+                    positionMs = player.currentPosition,
+                    isPlayingReady = isPlayingReady,
+                    isLive = isLive,
+                )
+                if (progress.reachedHealthyThreshold) {
                     recovery.healthy()
                     expiredRecoveryAttempts = 0
+                    retriesOnCurrentFormat = 0
+                    liveAuthNotFoundRetries = 0
+                    if (isLive) {
+                        LiveFormatCache.shared.remember(entry.streamUrl, activeStreamUrl.ifBlank { entry.streamUrl })
+                    }
                 }
-                if (mutableState.value.entry?.kind == MediaKind.LIVE && timeShift == null && !manuallyBehindLive && player.playWhenReady) {
+                if (progress.frozen && entry != null && retryJob?.isActive != true && prepareJob?.isActive != true) {
+                    recover(FailureKind.TIMEOUT)
+                }
+                if (isLive &&
+                    timeShift == null &&
+                    !manuallyBehindLive &&
+                    requestedPlay() &&
+                    player.playbackState == Player.STATE_READY &&
+                    now - lastAutoLiveSeekElapsedMs >= AUTO_LIVE_SEEK_COOLDOWN_MS
+                ) {
                     val behind = behindLiveDefaultPositionMs()
                     if (behind != null && behind > 30_000L) {
+                        lastAutoLiveSeekElapsedMs = now
                         player.seekToDefaultPosition()
                     }
                 }
@@ -324,31 +432,70 @@ internal class PlaybackController(context: Context, private val profile: BufferP
 
     fun select(entry: MediaEntry, resumePositionMs: Long = 0) {
         checkMainThread()
-        if (disposed || (mutableState.value.entry == entry && player.mediaItemCount > 0)) return
+        if (disposed || (mutableState.value.entry == entry && (player.mediaItemCount > 0 || prepareJob?.isActive == true))) return
+        val previousEntry = mutableState.value.entry
+        if (timeShift != null ||
+            (previousEntry?.kind == MediaKind.LIVE && (player.mediaItemCount > 0 || prepareJob?.isActive == true))
+        ) {
+            hadPreviousLiveConnection = true
+        }
+        inBackground = false
         cancelRecovery()
         closeTimeShift()
+        stopAndEvict(cancelActive = true)
+        activeStreamUrl = if (entry.kind == MediaKind.LIVE) {
+            LiveFormatCache.shared.get(entry.streamUrl) ?: entry.streamUrl
+        } else {
+            entry.streamUrl
+        }
+        formatFallbackUsed = false
+        retriesOnCurrentFormat = 0
+        liveAuthNotFoundRetries = 0
+        lastTerminalFailureKind = null
         timeShiftNotice = null
         backgroundSourceReleased = false
         expiredRecoveryAttempts = 0
-        generation = recovery.startEntry()
-        healthySince = 0
+        lastAutoLiveSeekElapsedMs = 0L
+        progressMonitor.resetAll()
+        generation = recovery.startEntry(isLive = entry.kind == MediaKind.LIVE)
         hasPlayed = false
         lastPlaybackState = Player.STATE_IDLE
         resumeAfterBackground = false
-        player.stop()
-        player.clearMediaItems()
         mutableState.value = PlaybackSnapshot(entry = entry)
         prepare(entry, resumePositionMs, true)
     }
 
-    fun retry(play: Boolean = player.playWhenReady || timeShift == null) {
+    fun retry(play: Boolean = requestedPlay() || timeShift == null) {
         checkMainThread()
         val entry = mutableState.value.entry ?: return
+        val hadError = mutableState.value.error != null
+        val deadTimeShift = timeShift?.snapshot()?.recording == false
+        if (timeShift != null ||
+            (entry.kind == MediaKind.LIVE && (player.mediaItemCount > 0 || prepareJob?.isActive == true))
+        ) {
+            hadPreviousLiveConnection = true
+        }
+        cancelRecovery()
+        if (hadError) {
+            closeTimeShift()
+            if (formatFallbackUsed) {
+                LiveFormatCache.shared.remove(entry.streamUrl)
+                activeStreamUrl = entry.streamUrl
+                formatFallbackUsed = false
+            }
+            retriesOnCurrentFormat = 0
+            liveAuthNotFoundRetries = 0
+        } else if (deadTimeShift) {
+            closeTimeShift()
+        }
         val position = if (entry.kind == MediaKind.LIVE && timeShift == null) 0 else player.currentPosition
         val anchor = liveContentAnchorMs()
-        cancelRecovery()
-        generation = recovery.startEntry()
+        backgroundSourceReleased = false
         expiredRecoveryAttempts = 0
+        lastTerminalFailureKind = null
+        progressMonitor.resetAll()
+        generation = recovery.startEntry(isLive = entry.kind == MediaKind.LIVE)
+        stopAndEvict(cancelActive = true)
         mutableState.value = mutableState.value.copy(error = null, recovering = false)
         prepare(entry, position, play, liveAnchorMs = anchor)
     }
@@ -368,9 +515,15 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         checkMainThread()
         intendedPlay = true
         pendingLivePlay = true
-        if (prepareJob?.isActive == true || pendingLiveAnchorMs != null) refresh()
-        else if (mutableState.value.error != null || player.playbackState == Player.STATE_IDLE) retry(play = true)
-        else player.play()
+        if (prepareJob?.isActive == true || pendingLiveAnchorMs != null) {
+            lastTerminalFailureKind = null
+            refresh()
+        } else if (mutableState.value.error != null || player.playbackState == Player.STATE_IDLE) {
+            retry(play = true)
+        } else {
+            lastTerminalFailureKind = null
+            player.play()
+        }
     }
 
     fun pause() {
@@ -384,21 +537,28 @@ internal class PlaybackController(context: Context, private val profile: BufferP
 
     fun pauseForBackground() {
         checkMainThread()
+        inBackground = true
         resumeAfterBackground = requestedPlay() || mutableState.value.recovering
         cancelRecovery()
         player.pause()
-        if (timeShift != null || prepareJob?.isActive == true) {
+        val isLive = mutableState.value.entry?.kind == MediaKind.LIVE
+        val hadTimeShift = timeShift != null || (isLive && prepareJob?.isActive == true)
+        if (isLive || hadTimeShift) {
             closeTimeShift()
-            player.stop()
-            player.clearMediaItems()
+            stopAndEvict(cancelActive = true)
             backgroundSourceReleased = true
-            timeShiftNotice = "The temporary live buffer was cleared when BruTV left the foreground."
+            if (hadTimeShift) {
+                timeShiftNotice = "The temporary live buffer was cleared when BruTV left the foreground."
+            }
             refresh()
+        } else {
+            evictPlaybackConnections(cancelActive = false)
         }
     }
 
     fun resumeForeground() {
         checkMainThread()
+        inBackground = false
         if (!resumeAfterBackground) return
         resumeAfterBackground = false
         if (backgroundSourceReleased) {
@@ -406,7 +566,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
             retry(play = true)
             return
         }
-        if (player.playbackState == Player.STATE_IDLE && mutableState.value.error == null) retry()
+        if (player.playbackState == Player.STATE_IDLE && mutableState.value.error == null) retry(play = true)
         else player.play()
     }
 
@@ -422,6 +582,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         expiredRecoveryAttempts = 0
         manuallyBehindLive = false
         timeShiftNotice = null
+        lastAutoLiveSeekElapsedMs = SystemClock.elapsedRealtime()
         player.seekToDefaultPosition()
         player.play()
     }
@@ -431,6 +592,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         if (!player.isCurrentMediaItemSeekable) return
         expiredRecoveryAttempts = 0
         val duration = player.duration.takeUnless { it == C.TIME_UNSET } ?: return
+        progressMonitor.onSeek()
         player.seekTo((player.currentPosition + offsetMs).coerceIn(0, duration.coerceAtLeast(0)))
     }
 
@@ -439,33 +601,65 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         cancelRecovery()
         recovery.stop()
         closeTimeShift()
+        progressMonitor.resetAll()
+        lastTerminalFailureKind = null
         player.pause()
-        player.stop()
-        player.clearMediaItems()
+        stopAndEvict(cancelActive = true)
         mutableState.value = mutableState.value.copy(error = null)
         refresh()
     }
 
     fun position(): Long = if (disposed) mutableState.value.positionMs else player.currentPosition.coerceAtLeast(0)
 
+    fun canCommitPosition(): Boolean = !disposed && prepareJob?.isActive != true && player.mediaItemCount > 0
+
     fun release() {
         checkMainThread()
         if (disposed) return
         disposed = true
+        if (networkCallbackRegistered) {
+            networkCallbackRegistered = false
+            runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
+        }
         cancelRecovery()
         recovery.stop()
         closeTimeShift()
+        progressMonitor.resetAll()
         scope.cancel()
         player.removeListener(listener)
         player.removeAnalyticsListener(analytics)
         mediaSession.release()
         player.release()
+        ioCleanupScope.launch {
+            runCatching { playbackClient.dispatcher.cancelAll() }
+            runCatching { playbackConnectionPool.evictAll() }
+            runCatching { playbackClient.dispatcher.executorService.shutdown() }
+            ioCleanupScope.cancel()
+        }
+    }
+
+    private fun stopAndEvict(cancelActive: Boolean) {
+        player.stop()
+        player.clearMediaItems()
+        evictPlaybackConnections(cancelActive = cancelActive)
+    }
+
+    private fun evictPlaybackConnections(cancelActive: Boolean) {
+        val previous = pendingEvictJob
+        pendingEvictJob = ioCleanupScope.launch {
+            previous?.join()
+            if (cancelActive) runCatching { playbackClient.dispatcher.cancelAll() }
+            runCatching { playbackConnectionPool.evictAll() }
+        }
     }
 
     private fun closeTimeShift() {
         prepareJob?.cancel()
         prepareJob = null
-        timeShift?.close()
+        timeShift?.let { session ->
+            pendingTimeShiftCloseJob = session.closeAsync()
+            hadPreviousLiveConnection = true
+        }
         timeShift = null
         timeShiftAttempted = false
         manuallyBehindLive = false
@@ -473,22 +667,84 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         pendingLiveAnchorMs = null
     }
 
-    private fun prepare(entry: MediaEntry, positionMs: Long, play: Boolean, liveAnchorMs: Long? = null) {
+    private fun prepare(
+        entry: MediaEntry,
+        positionMs: Long,
+        play: Boolean,
+        liveAnchorMs: Long? = null,
+        skipSlotReleaseDelay: Boolean = false,
+    ) {
         prepareJob?.cancel()
         intendedPlay = play
+        val targetUrl = activeStreamUrl.ifBlank { entry.streamUrl }
+        val waitForSlotRelease = !skipSlotReleaseDelay &&
+            hadPreviousLiveConnection &&
+            entry.kind == MediaKind.LIVE &&
+            maxConnections <= 1
+        hadPreviousLiveConnection = false
         mutableState.value = mutableState.value.copy(buffering = play)
         prepareJob = scope.launch {
+            // Ensure previous channel and timeshift sockets are closed before opening a new stream.
+            val closeJob = pendingTimeShiftCloseJob
+            if (closeJob != null) {
+                withTimeoutOrNull(TIMESHIFT_CLOSE_TIMEOUT_MS) { closeJob.join() }
+                if (pendingTimeShiftCloseJob === closeJob) pendingTimeShiftCloseJob = null
+            }
+            val evictJob = pendingEvictJob
+            if (evictJob != null) {
+                withTimeoutOrNull(TIMESHIFT_CLOSE_TIMEOUT_MS) { evictJob.join() }
+                if (pendingEvictJob === evictJob) pendingEvictJob = null
+            }
+            withContext(Dispatchers.IO) {
+                runCatching { playbackConnectionPool.evictAll() }
+            }
+            if (waitForSlotRelease) {
+                delay(CHANNEL_SWITCH_RELEASE_DELAY_MS)
+            }
             if (entry.kind == MediaKind.LIVE && !timeShiftAttempted) {
                 timeShiftAttempted = true
-                val url = Uri.parse(entry.streamUrl)
+                val url = Uri.parse(targetUrl)
                 if (url.path?.endsWith(".ts", true) == true || url.path?.endsWith(".mpd", true) == true) {
                     timeShiftNotice = "Local live recording is available for supported HLS sources. This stream plays directly."
                 } else {
+                    val alternateUrl = if (!formatFallbackUsed) {
+                        LivePlaybackPolicy.alternateLiveFormatUrl(targetUrl)
+                    } else {
+                        null
+                    }
+                    val openTimeoutMs = if (alternateUrl != null) {
+                        PREPARE_TIMESHIFT_WITH_ALTERNATE_TIMEOUT_MS
+                    } else {
+                        PREPARE_TIMESHIFT_TIMEOUT_MS
+                    }
                     try {
-                        timeShift = HlsTimeShiftSession.open(File(appContext.cacheDir, "brutv_timeshift"), entry.streamUrl, entry.requestHeaders)
-                        timeShiftNotice = null
+                        val opened = withTimeoutOrNull(openTimeoutMs) {
+                            HlsTimeShiftSession.open(
+                                File(appContext.cacheDir, "brutv_timeshift"),
+                                targetUrl,
+                                entry.requestHeaders,
+                            )
+                        }
+                        if (opened != null) {
+                            timeShift = opened
+                            timeShiftNotice = null
+                        } else {
+                            if (alternateUrl != null) {
+                                retriesOnCurrentFormat++
+                            }
+                            timeShiftNotice = "The temporary live recorder timed out. This stream plays directly."
+                        }
                     } catch (error: CancellationException) {
                         throw error
+                    } catch (error: TimeShiftHttpException) {
+                        if (alternateUrl != null && error.statusCode in setOf(403, 404, 410)) {
+                            if (!disposed && mutableState.value.entry == entry) {
+                                prepareJob = null
+                                switchToAlternateLiveFormat(entry, alternateUrl, play = intendedPlay)
+                            }
+                            return@launch
+                        }
+                        timeShiftNotice = "The temporary live recorder could not start. This stream plays directly."
                     } catch (error: UnsupportedTimeShift) {
                         timeShiftNotice = error.message
                     } catch (_: Exception) {
@@ -497,41 +753,62 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                 }
             }
             if (!disposed && mutableState.value.entry == entry) {
-                prepareResolved(entry, positionMs, intendedPlay, liveAnchorMs)
+                prepareResolved(entry, targetUrl, positionMs, intendedPlay, liveAnchorMs)
             }
             prepareJob = null
         }
     }
 
-    private fun prepareResolved(entry: MediaEntry, positionMs: Long, play: Boolean, liveAnchorMs: Long?) {
+    private fun prepareResolved(
+        entry: MediaEntry,
+        targetUrl: String,
+        positionMs: Long,
+        play: Boolean,
+        liveAnchorMs: Long?,
+    ) {
         localSource = timeShift?.createPlaybackSource()
         pendingLiveAnchorMs = liveAnchorMs
         pendingLivePlay = play
-        val uri = Uri.parse(localSource?.url ?: entry.streamUrl)
+        val resolvedUrl = localSource?.url ?: targetUrl
+        val uri = Uri.parse(resolvedUrl)
         if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
             recovery.stop()
             player.pause()
+            lastTerminalFailureKind = FailureKind.UNSUPPORTED
             mutableState.value = mutableState.value.copy(error = "This entry does not contain a supported HTTP or HTTPS stream.", recovering = false)
             return
         }
-        val http = DefaultHttpDataSource.Factory()
-            .setUserAgent("BruTV Android/1.0")
-            .setConnectTimeoutMs(12_000)
-            .setReadTimeoutMs(15_000)
-            .setDefaultRequestProperties(if (timeShift == null) entry.requestHeaders else emptyMap())
+        val effectiveUserAgent = entry.requestHeaders.entries
+            .firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }
+            ?.value
+            ?.takeIf { it.isNotBlank() }
+            ?: CatalogRepository.USER_AGENT
+        val customHeaders = if (timeShift == null) {
+            entry.requestHeaders.filterKeys { !it.equals("User-Agent", ignoreCase = true) }
+        } else {
+            emptyMap()
+        }
+        val sourceOrigin = if (timeShift == null) resolvedUrl.toHttpUrlOrNull() else null
+        val requestClient = if (sourceOrigin != null) {
+            playbackClient.newBuilder()
+                .addNetworkInterceptor(CrossOriginHeaderStripInterceptor(sourceOrigin, customHeaders.keys))
+                .build()
+        } else {
+            playbackClient
+        }
+        val http = OkHttpDataSource.Factory(requestClient)
+            .setUserAgent(effectiveUserAgent)
+            .setDefaultRequestProperties(customHeaders)
+            .apply {
+                if (entry.kind == MediaKind.LIVE && timeShift == null) {
+                    setCacheControl(CacheControl.FORCE_NETWORK)
+                }
+            }
+        val dataSourceFactory = DefaultDataSource.Factory(appContext, http)
+        val tsFlags = DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
+            DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
         val extractorsFactory = DefaultExtractorsFactory()
-            .setTsExtractorFlags(
-                DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES or
-                DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS
-            )
-        val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(appContext, http), extractorsFactory)
-            .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy(0) {
-                override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long = C.TIME_UNSET
-                override fun getFallbackSelectionFor(
-                    fallbackOptions: LoadErrorHandlingPolicy.FallbackOptions,
-                    loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo,
-                ): LoadErrorHandlingPolicy.FallbackSelection? = null
-            })
+            .setTsExtractorFlags(tsFlags)
         val item = MediaItem.Builder()
             .setMediaId(entry.id)
             .setUri(uri)
@@ -539,6 +816,7 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         val extension = when {
             timeShift != null || uri.path?.endsWith(".m3u8", true) == true -> "m3u8"
             uri.path?.endsWith(".mpd", true) == true -> "mpd"
+            uri.path?.endsWith(".ts", true) == true -> "ts"
             else -> entry.containerExtension.lowercase().removePrefix(".")
         }
         when (extension) {
@@ -557,40 +835,114 @@ internal class PlaybackController(context: Context, private val profile: BufferP
                     .build(),
             )
         }
-        player.setMediaSource(sources.createMediaSource(item.build()), if (entry.kind == MediaKind.LIVE) C.TIME_UNSET else positionMs.coerceAtLeast(0))
+        val builtItem = item.build()
+        val mediaSource = if (extension == "m3u8") {
+            HlsMediaSource.Factory(dataSourceFactory)
+                .setExtractorFactory(DefaultHlsExtractorFactory(tsFlags, true))
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                .createMediaSource(builtItem)
+        } else {
+            DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
+                .setLoadErrorHandlingPolicy(loadErrorPolicy)
+                .createMediaSource(builtItem)
+        }
+        player.setMediaSource(mediaSource, if (entry.kind == MediaKind.LIVE) C.TIME_UNSET else positionMs.coerceAtLeast(0))
         player.playWhenReady = play && liveAnchorMs == null
         player.prepare()
         if (play) startWatchdog()
     }
 
-    private fun recover(kind: FailureKind) {
+    private fun recover(kind: FailureKind, httpStatus: Int? = null) {
         watchdog?.cancel()
         watchdog = null
         if (retryJob?.isActive == true || disposed) return
         val entry = mutableState.value.entry ?: return
-        if (!player.playWhenReady) {
-            player.stop()
+        progressMonitor.resetAll()
+        if (!requestedPlay()) {
+            stopAndEvict(cancelActive = true)
+            lastTerminalFailureKind = kind
             mutableState.value = mutableState.value.copy(error = message(kind), recovering = false, buffering = false)
             return
         }
-        val ticket = recovery.retry(kind, Random.nextDouble())
+        val isLive = entry.kind == MediaKind.LIVE
+        val currentUrl = activeStreamUrl.ifBlank { entry.streamUrl }
+        val alternateUrl = if (isLive && !formatFallbackUsed && httpStatus != 401) {
+            LivePlaybackPolicy.alternateLiveFormatUrl(currentUrl)
+        } else {
+            null
+        }
+        val immediateFormatFallback = alternateUrl != null && (
+            httpStatus == 403 ||
+                httpStatus == 404 ||
+                httpStatus == 410 ||
+                kind == FailureKind.UNSUPPORTED ||
+                (kind.retryable && retriesOnCurrentFormat >= PRIMARY_FORMAT_RETRIES_BEFORE_FALLBACK)
+            )
+        if (immediateFormatFallback) {
+            switchToAlternateLiveFormat(entry, checkNotNull(alternateUrl))
+            return
+        }
+        val allowLiveStatusRetry = isLive &&
+            (httpStatus == 403 || httpStatus == 404) &&
+            liveAuthNotFoundRetries < MAX_LIVE_AUTH_NOT_FOUND_RETRIES
+        val ticket = recovery.retry(kind, Random.nextDouble(), allowTemporaryOverride = allowLiveStatusRetry)
         if (ticket == null) {
+            if (alternateUrl != null) {
+                switchToAlternateLiveFormat(entry, alternateUrl)
+                return
+            }
             recovery.stop()
             player.pause()
-            player.stop()
+            stopAndEvict(cancelActive = true)
+            lastTerminalFailureKind = kind
             mutableState.value = mutableState.value.copy(error = message(kind), recovering = false, buffering = false)
             return
         }
-        val position = if (entry.kind == MediaKind.LIVE && timeShift == null) 0 else position()
+        if (allowLiveStatusRetry) liveAuthNotFoundRetries++
+        retriesOnCurrentFormat++
+        if (timeShift != null && (timeShift?.snapshot()?.recording == false || kind == FailureKind.TIMEOUT || httpStatus == 403 || httpStatus == 404)) {
+            closeTimeShift()
+            timeShiftNotice = null
+        }
+        val position = if (isLive && timeShift == null) 0 else position()
         val anchor = liveContentAnchorMs()
-        player.stop()
+        stopAndEvict(cancelActive = true)
+        lastTerminalFailureKind = null
         mutableState.value = mutableState.value.copy(recovering = true, error = null)
         retryJob = scope.launch {
             delay(ticket.delayMs)
             if (!recovery.isCurrent(ticket.generation) || disposed) return@launch
             retryJob = null
             mutableState.value = mutableState.value.copy(recovering = false, retries = mutableState.value.retries + 1)
-            prepare(entry, position, true, liveAnchorMs = anchor)
+            prepare(
+                entry,
+                position,
+                true,
+                liveAnchorMs = anchor,
+                skipSlotReleaseDelay = ticket.delayMs >= CHANNEL_SWITCH_RELEASE_DELAY_MS,
+            )
+        }
+    }
+
+    private fun switchToAlternateLiveFormat(entry: MediaEntry, alternateUrl: String, play: Boolean = true) {
+        formatFallbackUsed = true
+        activeStreamUrl = alternateUrl
+        retriesOnCurrentFormat = 0
+        liveAuthNotFoundRetries = 0
+        lastTerminalFailureKind = null
+        closeTimeShift()
+        timeShiftNotice = null
+        stopAndEvict(cancelActive = true)
+        generation = recovery.startEntry(isLive = true)
+        val token = generation
+        mutableState.value = mutableState.value.copy(recovering = true, error = null)
+        retryJob = scope.launch {
+            // Brief pause lets single-connection Xtream panels release the old slot cleanly.
+            delay(FORMAT_FALLBACK_RELEASE_DELAY_MS)
+            if (!recovery.isCurrent(token) || disposed) return@launch
+            retryJob = null
+            mutableState.value = mutableState.value.copy(recovering = false, retries = mutableState.value.retries + 1)
+            prepare(entry, 0, play, liveAnchorMs = null, skipSlotReleaseDelay = true)
         }
     }
 
@@ -598,8 +950,8 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         if (watchdog?.isActive == true || retryJob?.isActive == true || disposed) return
         val token = generation
         watchdog = scope.launch {
-            delay(25_000)
-            if (recovery.isCurrent(token) && player.playWhenReady && player.playbackState == Player.STATE_BUFFERING) {
+            delay(BUFFERING_WATCHDOG_TIMEOUT_MS)
+            if (recovery.isCurrent(token) && requestedPlay() && player.playbackState == Player.STATE_BUFFERING) {
                 watchdog = null
                 recover(FailureKind.TIMEOUT)
             }
@@ -618,10 +970,11 @@ internal class PlaybackController(context: Context, private val profile: BufferP
         if (disposed) return
         val format = player.videoFormat
         val recording = timeShift?.snapshot()
+        val wantPlay = requestedPlay()
         mutableState.value = mutableState.value.copy(
             isPlaying = player.isPlaying,
-            playWhenReady = if (prepareJob?.isActive == true) intendedPlay else player.playWhenReady,
-            buffering = if (prepareJob?.isActive == true) intendedPlay else player.playbackState == Player.STATE_BUFFERING && player.playWhenReady,
+            playWhenReady = wantPlay,
+            buffering = if (prepareJob?.isActive == true) intendedPlay else player.playbackState == Player.STATE_BUFFERING && wantPlay,
             positionMs = player.currentPosition.coerceAtLeast(0),
             durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
             bufferMs = player.totalBufferedDuration.coerceAtLeast(0),
@@ -700,30 +1053,24 @@ internal class PlaybackController(context: Context, private val profile: BufferP
     }
 
     private fun checkMainThread() = check(Looper.myLooper() == Looper.getMainLooper())
+
+    companion object {
+        private const val PREPARE_TIMESHIFT_TIMEOUT_MS = 20_000L
+        private const val PREPARE_TIMESHIFT_WITH_ALTERNATE_TIMEOUT_MS = 10_000L
+        private const val TIMESHIFT_CLOSE_TIMEOUT_MS = 500L
+        private const val CHANNEL_SWITCH_RELEASE_DELAY_MS = 300L
+        private const val BUFFERING_WATCHDOG_TIMEOUT_MS = 25_000L
+        private const val AUTO_LIVE_SEEK_COOLDOWN_MS = 15_000L
+        private const val FORMAT_FALLBACK_RELEASE_DELAY_MS = 300L
+        private const val PRIMARY_FORMAT_RETRIES_BEFORE_FALLBACK = 2
+        private const val MAX_LIVE_AUTH_NOT_FOUND_RETRIES = 2
+    }
 }
 
 @OptIn(UnstableApi::class)
 private fun classify(error: PlaybackException): FailureKind {
     val causes = generateSequence<Throwable>(error) { it.cause }.take(12).toList()
-    val response = causes.filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
-    if (response != null) return httpFailure(response)
-    if (causes.any { it is SSLException }) return FailureKind.OTHER
-    if (causes.any { it is SocketTimeoutException }) return FailureKind.TIMEOUT
-    if (causes.any { it is SocketException || it is UnknownHostException }) return FailureKind.NETWORK
-    return when (error.errorCode) {
-        PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW -> FailureKind.LIVE_WINDOW
-        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> FailureKind.NETWORK
-        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> FailureKind.TIMEOUT
-        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> FailureKind.NOT_FOUND
-        PlaybackException.ERROR_CODE_IO_NO_PERMISSION -> FailureKind.UNAUTHORIZED
-        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FAILED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
-        PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED -> FailureKind.UNSUPPORTED
-        else -> FailureKind.OTHER
-    }
+    return classifyFailure(causes, error.errorCode)
 }
 
 private fun message(kind: FailureKind): String = when (kind) {
@@ -733,6 +1080,7 @@ private fun message(kind: FailureKind): String = when (kind) {
     FailureKind.NETWORK -> "The stream could not connect. Check the connection or try another stream."
     FailureKind.TIMEOUT -> "The provider stopped sending data. Try another stream or retry when the connection improves."
     FailureKind.SERVER -> "The provider is having a server problem. Try again later."
+    FailureKind.RATE_LIMITED -> "The provider is limiting connections right now. Wait a moment and try again."
     FailureKind.LIVE_WINDOW -> "The live window moved beyond the available stream. Retry to return to live."
     FailureKind.OTHER -> "The stream could not be played. Check the source settings or try another stream."
 }

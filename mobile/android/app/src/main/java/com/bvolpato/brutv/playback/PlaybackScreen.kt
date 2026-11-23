@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -117,18 +118,26 @@ fun PlaybackScreen(
     onClose: (Long) -> Unit,
     onItemChanged: (MediaEntry) -> Unit,
     onPosition: (MediaEntry, Long) -> Unit,
+    onCommitPosition: (MediaEntry, Long) -> Unit = onPosition,
     onToggleFavorite: (MediaEntry) -> Unit,
     isFavorite: (String) -> Boolean,
     onPlayerChanged: (Player?) -> Unit,
     isInPictureInPictureMode: Boolean = false,
+    maxConnections: Int = 1,
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.activity() }
     val lifecycleOwner = LocalLifecycleOwner.current
-    val controller = remember(context.applicationContext, profile) { PlaybackController(context, profile) }
+    val controller = remember(context.applicationContext, profile) {
+        PlaybackController(context, profile, maxConnections = maxConnections)
+    }
+    LaunchedEffect(controller, maxConnections) {
+        controller.maxConnections = maxConnections
+    }
     val snapshot by controller.state.collectAsState()
     val current = snapshot.entry ?: entry
     val positionCallback by rememberUpdatedState(onPosition)
+    val commitPositionCallback by rememberUpdatedState(onCommitPosition)
     val itemCallback by rememberUpdatedState(onItemChanged)
     val playerCallback by rememberUpdatedState(onPlayerChanged)
     var guideOpen by remember { mutableStateOf(false) }
@@ -137,16 +146,20 @@ fun PlaybackScreen(
     var statsVisible by remember(showStats) { mutableStateOf(showStats) }
     val isInPip = isInPictureInPictureMode
     val pipActive by rememberUpdatedState(isInPictureInPictureMode)
+    var wasInPip by remember { mutableStateOf(false) }
     var favoriteRefresh by remember { mutableIntStateOf(0) }
     val retryFocus = remember { FocusRequester() }
 
-    fun savePosition() {
-        snapshot.entry?.let { positionCallback(it, controller.position()) }
+    fun savePosition(force: Boolean = false) {
+        snapshot.entry?.let {
+            val pos = controller.position()
+            if (force) commitPositionCallback(it, pos) else positionCallback(it, pos)
+        }
     }
 
     fun select(next: MediaEntry) {
         if (next.id == current.id) return
-        savePosition()
+        savePosition(force = true)
         controller.select(next)
         itemCallback(next)
         guideOpen = false
@@ -160,7 +173,9 @@ fun PlaybackScreen(
 
     fun close() {
         val position = controller.position()
-        snapshot.entry?.let { positionCallback(it, position) }
+        if (controller.canCommitPosition()) {
+            snapshot.entry?.let { commitPositionCallback(it, position) }
+        }
         controller.release()
         playerCallback(null)
         onClose(position)
@@ -169,7 +184,9 @@ fun PlaybackScreen(
     DisposableEffect(controller) {
         playerCallback(controller.controlPlayer)
         onDispose {
-            controller.state.value.entry?.let { positionCallback(it, controller.position()) }
+            if (controller.canCommitPosition()) {
+                controller.state.value.entry?.let { commitPositionCallback(it, controller.position()) }
+            }
             playerCallback(null)
             controller.release()
         }
@@ -186,18 +203,39 @@ fun PlaybackScreen(
     LaunchedEffect(snapshot.error, isInPip) {
         if (isTv && snapshot.error != null && !isInPip) retryFocus.requestFocus()
     }
+    var wasPlayWhenReady by remember(controller, entry) { mutableStateOf(false) }
+    LaunchedEffect(snapshot.playWhenReady) {
+        if (wasPlayWhenReady && !snapshot.playWhenReady && controller.canCommitPosition()) {
+            controller.state.value.entry?.let { commitPositionCallback(it, controller.position()) }
+        }
+        wasPlayWhenReady = snapshot.playWhenReady
+    }
+    LaunchedEffect(isInPip, lifecycleOwner, controller) {
+        if (wasInPip && !isInPip && !lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            if (controller.canCommitPosition()) {
+                controller.state.value.entry?.let { commitPositionCallback(it, controller.position()) }
+            }
+            controller.pauseForBackground()
+        }
+        wasInPip = isInPip
+    }
     LaunchedEffect(controller) {
         while (true) {
             delay(5_000)
-            controller.state.value.entry?.let { positionCallback(it, controller.position()) }
+            if (controller.canCommitPosition()) {
+                controller.state.value.entry?.let { positionCallback(it, controller.position()) }
+            }
         }
     }
     DisposableEffect(lifecycleOwner, controller, activity) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> if (!pipActive &&
-                    (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || activity?.isInPictureInPictureMode != true)) {
-                    controller.state.value.entry?.let { positionCallback(it, controller.position()) }
+                    (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || activity?.isInPictureInPictureMode != true)
+                ) {
+                    if (controller.canCommitPosition()) {
+                        controller.state.value.entry?.let { commitPositionCallback(it, controller.position()) }
+                    }
                     controller.pauseForBackground()
                 }
                 Lifecycle.Event.ON_START -> controller.resumeForeground()
@@ -209,6 +247,7 @@ fun PlaybackScreen(
     }
     var controlsVisible by remember { mutableStateOf(true) }
     var lastInteractionNanos by remember { mutableLongStateOf(System.nanoTime()) }
+    var suppressNextSelectUp by remember { mutableStateOf(false) }
     fun pokeControls() {
         controlsVisible = true
         lastInteractionNanos = System.nanoTime()
@@ -218,8 +257,8 @@ fun PlaybackScreen(
         pokeControls()
     }
 
-    LaunchedEffect(controlsVisible, lastInteractionNanos, snapshot.isPlaying) {
-        if (controlsVisible && snapshot.isPlaying) {
+    LaunchedEffect(controlsVisible, lastInteractionNanos, snapshot.isPlaying, guideOpen, trackDialog) {
+        if (controlsVisible && snapshot.isPlaying && !guideOpen && trackDialog == C.TRACK_TYPE_UNKNOWN) {
             delay(2800L)
             controlsVisible = false
         }
@@ -237,9 +276,27 @@ fun PlaybackScreen(
     Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
         Box(
             Modifier.fillMaxSize().then(if (isInPip) Modifier else Modifier.safeDrawingPadding()).onPreviewKeyEvent { event ->
-                if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                val native = event.nativeKeyEvent
+                val isSelectKey = native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                    native.keyCode == KeyEvent.KEYCODE_ENTER ||
+                    native.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                if (isSelectKey && native.action == KeyEvent.ACTION_UP && suppressNextSelectUp) {
+                    suppressNextSelectUp = false
+                    return@onPreviewKeyEvent true
+                }
+                if (native.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                val wasHidden = !controlsVisible
                 pokeControls()
-                when (event.nativeKeyEvent.keyCode) {
+                val isRevealNavKey = isSelectKey ||
+                    native.keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+                    native.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                    native.keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                    native.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                if (wasHidden && !guideOpen && trackDialog == C.TRACK_TYPE_UNKNOWN && isRevealNavKey) {
+                    if (isSelectKey) suppressNextSelectUp = true
+                    return@onPreviewKeyEvent true
+                }
+                when (native.keyCode) {
                     KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_NEXT -> { changeChannel(1); true }
                     KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { changeChannel(-1); true }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { controller.togglePlayPause(); true }
@@ -475,17 +532,15 @@ fun PlaybackScreen(
             onDismissRequest = { guideOpen = false },
             title = { Text(if (current.kind == MediaKind.LIVE) "Channel guide" else "Play queue") },
             text = {
-                LazyColumn(Modifier.height(if (isTv) 360.dp else 400.dp)) {
+                LazyColumn(Modifier.height(if (isTv) 360.dp else 400.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(queue, key = { it.id }) { item ->
-                        TextButton(onClick = { select(item); guideOpen = false }, modifier = Modifier.fillMaxWidth()) {
-                            Icon(if (item.id == current.id) Icons.Outlined.Check else Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                if (item.id == current.id) "Playing · ${item.name}" else item.name,
-                                modifier = Modifier.fillMaxWidth(),
-                                fontWeight = if (item.id == current.id) FontWeight.Bold else FontWeight.Normal,
-                            )
-                        }
+                        val active = item.id == current.id
+                        DialogRowButton(
+                            label = if (active) "Playing · ${item.name}" else item.name,
+                            icon = if (active) Icons.Outlined.Check else Icons.Outlined.PlayArrow,
+                            selected = active,
+                            onClick = { select(item); guideOpen = false },
+                        )
                     }
                 }
             },
@@ -558,23 +613,26 @@ private fun TrackDialog(player: Player, tracks: Tracks, type: Int, onDismiss: ()
         onDismissRequest = onDismiss,
         title = { Text(if (type == C.TRACK_TYPE_AUDIO) "Audio track" else "Subtitles") },
         text = {
-            LazyColumn(Modifier.height(280.dp)) {
+            LazyColumn(Modifier.height(280.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item {
-                    TextButton(onClick = { choose(null) }, modifier = Modifier.fillMaxWidth()) {
-                        Icon(if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (type == C.TRACK_TYPE_AUDIO) "Automatic" else "Off", modifier = Modifier.fillMaxWidth())
-                    }
+                    DialogRowButton(
+                        label = if (type == C.TRACK_TYPE_AUDIO) "Automatic" else "Off",
+                        icon = if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles,
+                        selected = false,
+                        onClick = { choose(null) },
+                    )
                 }
                 items(choices) { choice ->
                     val format = choice.group.getTrackFormat(choice.index)
                     val language = format.language?.takeUnless { it == "und" }?.let { Locale.forLanguageTag(it).displayLanguage }
                     val label = format.label ?: language ?: "Track ${choice.index + 1}"
-                    TextButton(onClick = { choose(choice) }, modifier = Modifier.fillMaxWidth()) {
-                        Icon(if (choice.group.isTrackSelected(choice.index)) Icons.Outlined.Check else if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (choice.group.isTrackSelected(choice.index)) "Selected · $label" else label, modifier = Modifier.fillMaxWidth())
-                    }
+                    val selected = choice.group.isTrackSelected(choice.index)
+                    DialogRowButton(
+                        label = if (selected) "Selected · $label" else label,
+                        icon = if (selected) Icons.Outlined.Check else if (type == C.TRACK_TYPE_AUDIO) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Subtitles,
+                        selected = selected,
+                        onClick = { choose(choice) },
+                    )
                 }
             }
         },
@@ -586,6 +644,59 @@ private fun TrackDialog(player: Player, tracks: Tracks, type: Int, onDismiss: ()
             }
         },
     )
+}
+
+@Composable
+private fun DialogRowButton(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(10.dp)
+    val accent = Color(0xFF38D9CA)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .clip(shape)
+            .background(
+                when {
+                    focused -> Color(0xFF1E3344)
+                    selected -> Color(0xFF163C43)
+                    else -> Color.Transparent
+                },
+            )
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = when {
+                    focused -> accent
+                    selected -> Color(0xFF2B7979)
+                    else -> Color.Transparent
+                },
+                shape = shape,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (focused || selected) accent else Color.White,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            label,
+            color = Color.White,
+            modifier = Modifier.weight(1f),
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 private data class TrackChoice(val group: Tracks.Group, val index: Int)

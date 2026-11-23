@@ -17,12 +17,15 @@ import com.bvolpato.brutv.data.ProfileStore
 import com.bvolpato.brutv.data.SavedState
 import com.bvolpato.brutv.data.SourceConfig
 import com.bvolpato.brutv.data.SourceType
+import com.bvolpato.brutv.playback.LiveFormatCache
 import com.bvolpato.brutv.signin.Pairing
 import com.bvolpato.brutv.signin.PairingInvite
 import java.util.concurrent.atomic.AtomicLong
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import java.util.UUID
+import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,6 +83,7 @@ data class BruTvUiState(
     val bufferProfile: String = "balanced",
     val showStats: Boolean = false,
     val language: String = "system",
+    val maxConnections: Int = 1,
     val library: LibraryState = LibraryState(),
 ) {
     val activeSource: SourceConfig? get() = profiles.firstOrNull { it.id == activeSourceId }
@@ -111,6 +115,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     private var linkBeforeRestore: String? = null
     private var catalogJob: Job? = null
     private var detailJob: Job? = null
+    private var searchDebounceJob: Job? = null
     private var searchJob: Job? = null
     private var pageBeforeOverlay = BruTvPage.HOME
     private var sourceGeneration = 0L
@@ -287,11 +292,11 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSearchText(value: String) {
         _state.update { it.copy(searchText = value) }
-        searchJob?.cancel()
+        searchDebounceJob?.cancel()
         val request = filterGeneration.incrementAndGet()
-        searchJob = viewModelScope.launch {
+        searchDebounceJob = viewModelScope.launch {
             delay(120)
-            recomputeVisible(request)
+            recomputeVisible(request, cancelDebounce = false)
         }
     }
 
@@ -431,6 +436,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                     libraries = savedState.libraries + (normalized.id to savedState.libraries[normalized.id].orEmptyLibrary()),
                 )
                 repository = nextRepository
+                LiveFormatCache.shared.clear()
                 _state.update {
                     it.copy(
                         busy = false,
@@ -442,6 +448,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                         sections = emptyMap(),
                         destination = BruTvDestination.LIVE,
                         selectedCategoryId = null,
+                        maxConnections = nextRepository.maxConnections,
                         library = savedState.libraries[normalized.id].orEmptyLibrary(),
                     )
                 }
@@ -481,7 +488,8 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             sourceGeneration++
             catalogJob?.cancel()
             repository = null
-            _state.update { it.copy(sections = emptyMap(), visibleEntries = emptyList(), library = LibraryState(), destination = BruTvDestination.LIVE) }
+            LiveFormatCache.shared.clear()
+            _state.update { it.copy(sections = emptyMap(), visibleEntries = emptyList(), library = LibraryState(), destination = BruTvDestination.LIVE, maxConnections = 1) }
         } else if (activeId != current.activeSourceId) {
             profiles.firstOrNull { it.id == activeId }?.let { activate(it, persist = false) }
         }
@@ -523,7 +531,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closePlayer(positionMs: Long) {
-        _state.value.playingEntry?.let { updateResumePosition(it, positionMs) }
+        _state.value.playingEntry?.let { updateResumePosition(it, positionMs, force = true) }
         _state.update { it.copy(playingEntry = null) }
     }
 
@@ -532,7 +540,8 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(playingEntry = entry) }
     }
 
-    fun savePosition(entry: MediaEntry, positionMs: Long) = updateResumePosition(entry, positionMs)
+    fun savePosition(entry: MediaEntry, positionMs: Long, force: Boolean = false) =
+        updateResumePosition(entry, positionMs, force = force)
 
     fun isFavorite(id: String): Boolean = id in _state.value.library.favoriteIds
 
@@ -594,6 +603,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         val generation = sourceGeneration
         catalogJob?.cancel()
         detailJob?.cancel()
+        LiveFormatCache.shared.clear()
         repository = CatalogRepository(
             source,
             localPlaylistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists"),
@@ -611,6 +621,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                 selectedEntry = null,
                 episodes = emptyList(),
                 programmes = emptyList(),
+                maxConnections = 1,
                 library = library,
                 catalogLoading = true,
                 catalogError = null,
@@ -627,7 +638,14 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (generation != sourceGeneration) return@launch
             result.onSuccess { section ->
-                _state.update { it.copy(catalogLoading = false, sections = it.sections + (MediaKind.LIVE to section), catalogError = null) }
+                _state.update {
+                    it.copy(
+                        catalogLoading = false,
+                        sections = it.sections + (MediaKind.LIVE to section),
+                        catalogError = null,
+                        maxConnections = currentRepository.maxConnections,
+                    )
+                }
                 recomputeVisible()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
@@ -662,34 +680,38 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun recomputeVisible(request: Long = filterGeneration.incrementAndGet()) {
+    private fun recomputeVisible(
+        request: Long = filterGeneration.incrementAndGet(),
+        cancelDebounce: Boolean = true,
+    ) {
+        if (cancelDebounce) searchDebounceJob?.cancel()
+        searchJob?.cancel()
         val snapshot = _state.value
-        val entries = when (snapshot.destination) {
-            BruTvDestination.FAVORITES -> snapshot.activeSection.entries.filter { it.id in snapshot.library.favoriteIds }
-            BruTvDestination.RECENTS -> snapshot.activeSection.entries.associateBy { it.id }
-                .let { index -> snapshot.library.recentIds.mapNotNull(index::get) }
-            else -> snapshot.activeSection.entries
-        }
-        val categories = if (snapshot.destination == BruTvDestination.FAVORITES || snapshot.destination == BruTvDestination.RECENTS) {
-            emptyList()
-        } else snapshot.activeSection.categories
-        val query = snapshot.searchText.trim().lowercase()
+        val destination = snapshot.destination
+        val sectionEntries = snapshot.activeSection.entries
+        val favoriteIds = snapshot.library.favoriteIds
+        val recentIds = snapshot.library.recentIds
+        val query = snapshot.searchText.trim().lowercase(Locale.ROOT)
         val categoryId = snapshot.selectedCategoryId
         val quality = snapshot.qualityFilter
-        val favorites = snapshot.library.favoriteIds
         val onlyFavorites = snapshot.onlyFavorites
-        val filtered = viewModelScope.launch(Dispatchers.Default) {
-            val result = entries.asSequence()
+        searchJob = viewModelScope.launch(Dispatchers.Default) {
+            val baseEntries = when (destination) {
+                BruTvDestination.FAVORITES -> sectionEntries.filter { it.id in favoriteIds }
+                BruTvDestination.RECENTS -> sectionEntries.associateBy { it.id }
+                    .let { index -> recentIds.mapNotNull(index::get) }
+                else -> sectionEntries
+            }
+            val result = baseEntries.asSequence()
                 .filter { categoryId == null || it.categoryId == categoryId }
                 .filter { query.isBlank() || it.searchableName.contains(query) }
                 .filter { quality == null || it.quality == quality }
-                .filter { !onlyFavorites || it.id in favorites }
+                .filter { !onlyFavorites || it.id in favoriteIds }
                 .toList()
             withContext(Dispatchers.Main.immediate) {
                 if (request == filterGeneration.get()) _state.update { it.copy(visibleEntries = result) }
             }
         }
-        searchJob = filtered
     }
 
     private fun recordRecent(entry: MediaEntry) {
@@ -698,9 +720,13 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         updateLibrary(old.copy(recentIds = recent))
     }
 
-    private fun updateResumePosition(entry: MediaEntry, positionMs: Long) {
+    private fun updateResumePosition(entry: MediaEntry, positionMs: Long, force: Boolean = false) {
         if (entry.kind == MediaKind.LIVE) return
-        val updated = _state.value.library.copy(resumePositions = _state.value.library.resumePositions + (entry.id to positionMs.coerceAtLeast(0)))
+        val clamped = positionMs.coerceAtLeast(0L)
+        val previous = _state.value.library.resumePositions[entry.id]
+        if (previous == clamped) return
+        if (!force && previous != null && abs(clamped - previous) < RESUME_PERSIST_MIN_DELTA_MS) return
+        val updated = _state.value.library.copy(resumePositions = _state.value.library.resumePositions + (entry.id to clamped))
         updateLibrary(updated)
     }
 
@@ -717,6 +743,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             activeSourceId = _state.value.activeSourceId,
             bufferProfile = _state.value.bufferProfile,
             showStats = _state.value.showStats,
+            language = _state.value.language,
         )
         if (!storeReady) {
             _state.update {
@@ -774,19 +801,39 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         !candidate.exists() || candidate.delete()
     }.getOrDefault(false)
 
-    private fun safeMessage(error: Throwable): String = when (error) {
-        is IllegalArgumentException -> error.message ?: "Check the sign-in details and try again."
-        else -> error.message?.takeIf { it.isNotBlank() && !it.contains("http", ignoreCase = true) }
-            ?.take(160) ?: "BruTV could not reach this provider. Check the connection and try again."
-    }
+    private fun safeMessage(error: Throwable): String = sanitizeUserErrorMessage(error)
 
     override fun onCleared() {
         playlistImportGeneration++
         playlistImportJob?.cancel()
+        searchDebounceJob?.cancel()
+        searchJob?.cancel()
         cancelConnect()
         persistenceQueue.close()
         super.onCleared()
     }
+
+    companion object {
+        internal const val RESUME_PERSIST_MIN_DELTA_MS = 10_000L
+    }
+}
+
+private val SENSITIVE_CREDENTIAL_PATTERN =
+    Regex("""(?:\b(?:username|password|pass|token|secret|auth)\s*=|://)""", RegexOption.IGNORE_CASE)
+
+private val HOST_LEAK_PATTERN =
+    Regex("""(?:resolve host|failed to connect to|unable to resolve)""", RegexOption.IGNORE_CASE)
+
+internal fun sanitizeUserErrorMessage(error: Throwable): String {
+    val fallback = when (error) {
+        is IllegalArgumentException -> "Check the sign-in details and try again."
+        else -> "BruTV could not reach this provider. Check the connection and try again."
+    }
+    val raw = error.message?.trim()?.takeIf { it.isNotEmpty() } ?: return fallback
+    if (SENSITIVE_CREDENTIAL_PATTERN.containsMatchIn(raw) || HOST_LEAK_PATTERN.containsMatchIn(raw)) {
+        return fallback
+    }
+    return raw.take(160)
 }
 
 private fun SourceConfig.toDraft() = LoginDraft(

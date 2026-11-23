@@ -1,6 +1,7 @@
 package com.bvolpato.brutv.data
 
 import java.net.URI
+import java.util.Locale
 import java.util.UUID
 
 /** A provider connection. IDs remain stable when the profile is edited. */
@@ -94,24 +95,58 @@ data class MediaEntry(
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
 ) {
-    val quality: String
-        get() = when {
-            "4K" in name.uppercase() || "UHD" in name.uppercase() -> "4K"
-            "FHD" in name.uppercase() || "1080P" in name.uppercase() -> "FHD"
-            "HD" in name.uppercase() || "720P" in name.uppercase() -> "HD"
-            else -> "SD"
-        }
+    val quality: String = computeQuality(name)
 
-    val searchableName: String get() = name.trim().lowercase()
+    val searchableName: String = name.trim().lowercase(Locale.ROOT)
 
     override fun toString(): String =
         "MediaEntry(id=$id, providerId=$providerId, name=$name, kind=$kind, categoryId=$categoryId, streamUrl=<redacted>, requestHeaders=<redacted>)"
 }
 
+private fun computeQuality(name: String): String {
+    val upper = name.uppercase(Locale.ROOT)
+    return when {
+        "4K" in upper || "UHD" in upper -> "4K"
+        "FHD" in upper || "1080P" in upper -> "FHD"
+        "HD" in upper || "720P" in upper -> "HD"
+        else -> "SD"
+    }
+}
+
 data class CatalogSection(
     val categories: List<Category> = emptyList(),
     val entries: List<MediaEntry> = emptyList(),
-)
+    val categoryCounts: Map<String, Int> = emptyMap(),
+    val categoryIcons: Map<String, String> = emptyMap(),
+    val firstArtworkUrl: String? = null,
+) {
+    companion object {
+        fun build(categories: List<Category>, entries: List<MediaEntry>): CatalogSection {
+            val counts = HashMap<String, Int>(categories.size.coerceAtLeast(16))
+            val icons = HashMap<String, String>(categories.size.coerceAtLeast(16))
+            var firstArtwork: String? = null
+            for (entry in entries) {
+                if (firstArtwork == null && entry.artwork.isNotBlank()) {
+                    firstArtwork = entry.artwork
+                }
+                val catId = entry.categoryId
+                if (catId.isNotBlank()) {
+                    counts[catId] = (counts[catId] ?: 0) + 1
+                    if (!icons.containsKey(catId) && entry.artwork.isNotBlank()) {
+                        icons[catId] = entry.artwork
+                    }
+                }
+            }
+            return CatalogSection(
+                categories = categories,
+                entries = entries,
+                categoryCounts = counts,
+                categoryIcons = icons,
+                firstArtworkUrl = firstArtwork,
+            )
+        }
+    }
+}
 
 data class Programme(
     val title: String,

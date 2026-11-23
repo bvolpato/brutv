@@ -63,6 +63,42 @@ class TimeShiftPlaylistTest {
         rejects("not a playlist")
     }
 
+    @Test fun parsesFractionalTargetDurationWhitespaceCommentsAndQueryOrBracketRelativeUris() {
+        val variant = TimeShiftPlaylistParser.variant(
+            """
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080
+            # comment before variant URI
+            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=500000,URI="iframe.m3u8"
+            ?variant=hd&tag=[1]
+            """.trimIndent(),
+            "https://example.com/live/master.m3u8",
+        )
+        assertEquals("https://example.com/live/master.m3u8?variant=hd&tag=[1]", variant)
+
+        val playlist = TimeShiftPlaylistParser.parse(
+            """
+            #EXTM3U
+            #EXT-X-VERSION: 7
+            #EXT-X-TARGETDURATION: 6.5
+            #EXT-X-MEDIA-SEQUENCE: 10
+            #EXT-X-DISCONTINUITY-SEQUENCE: 2
+            #EXTINF: 2.5,
+            ?seg=2
+            #EXTINF: 3.0,
+            seg[1].ts?k=a b
+            """.trimIndent(),
+            "https://example.com/channel/live.m3u8",
+        )
+        assertEquals(7, playlist.version)
+        assertEquals(7, playlist.targetDuration)
+        assertEquals(10L, playlist.segments[0].sequence)
+        assertEquals(2L, playlist.segments[0].discontinuitySequence)
+        assertEquals(2500L, playlist.segments[0].durationMs)
+        assertEquals("https://example.com/channel/live.m3u8?seg=2", playlist.segments[0].url)
+        assertEquals("https://example.com/channel/seg[1].ts?k=a%20b", playlist.segments[1].url)
+    }
+
     private fun rejects(text: String, master: Boolean = false) {
         try {
             if (master) TimeShiftPlaylistParser.variant(text, "https://example.com/live.m3u8")

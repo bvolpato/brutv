@@ -8,6 +8,9 @@ import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -190,6 +193,278 @@ class HlsTimeShiftSessionTest {
             assertTrue(unrelated.exists())
             session.close()
             assertEquals(listOf(unrelated), root.listFiles().orEmpty().toList())
+        }
+    }
+
+    @Test fun servesConcurrentLoopbackRequestsWithoutBlocking() = runBlocking {
+        Source(segmentSize = 8_192).use { source ->
+            val session = HlsTimeShiftSession.open(temporary.newFolder(), source.url, emptyMap())
+            try {
+                val manifest = URL(session.playbackUrl).readText()
+                val segment = manifest.lines().first { it.startsWith("resource-") }
+                val segmentUrl = URL(URL(session.playbackUrl), segment)
+                val results = (1..8).map { index ->
+                    async(Dispatchers.IO) {
+                        if (index % 2 == 0) URL(session.playbackUrl).readText().contains("#EXTM3U")
+                        else segmentUrl.readBytes().size == 8_192
+                    }
+                }.awaitAll()
+                assertTrue(results.all { it })
+            } finally {
+                session.close()
+            }
+        }
+    }
+
+    @Test fun closeAsyncFlipsSnapshotImmediatelyAndCleansDirectoryInBackground() = runBlocking {
+        Source().use { source ->
+            val root = temporary.newFolder()
+            val session = HlsTimeShiftSession.open(root, source.url, emptyMap())
+            assertTrue(session.snapshot().recording)
+            assertTrue(session.snapshot().bytes > 0L)
+            session.closeAsync()
+            assertFalse(session.snapshot().recording)
+            assertEquals(0L, session.snapshot().bytes)
+            await { root.listFiles().orEmpty().isEmpty() }
+        }
+    }
+
+    @Test fun fastStartupDownloadsOneSegmentForLongTenSecondIptvSegments() = runBlocking {
+        Source().use { source ->
+            source.target.set(10)
+            source.segmentDurationMs.set(10_000)
+            source.end.set(5)
+            val session = HlsTimeShiftSession.open(temporary.newFolder(), source.url, emptyMap())
+            try {
+                assertEquals(10_000L, session.snapshot().durationMs)
+                assertTrue(session.snapshot().recording)
+            } finally {
+                session.close()
+            }
+        }
+    }
+
+    @Test fun bridgesBriefGapAndSourceRestartWithDiscontinuity() = runBlocking {
+        Source().use { source ->
+            val session = HlsTimeShiftSession.open(temporary.newFolder(), source.url, emptyMap())
+            try {
+                // Brief gap: skip 1 segment (sequence 4 missed, playlist jumps from 3 -> [5, 6, 7]).
+                source.end.set(7)
+                await { session.snapshot().durationMs >= 6_000L }
+                assertTrue(session.snapshot().recording)
+                val afterGap = URL(session.playbackUrl).readText()
+                assertTrue(afterGap.contains("#EXT-X-DISCONTINUITY"))
+
+                // Source restart: upstream resets back to [1, 2, 3] after reaching 12.
+                source.end.set(8)
+                await { session.snapshot().durationMs >= 7_000L }
+                source.end.set(9)
+                await { session.snapshot().durationMs >= 8_000L }
+                source.end.set(10)
+                await { session.snapshot().durationMs >= 9_000L }
+                source.end.set(3)
+                await { session.snapshot().durationMs >= 12_000L }
+                assertTrue(session.snapshot().recording)
+                val afterRestart = URL(session.playbackUrl).readText()
+                assertTrue(afterRestart.split("#EXT-X-DISCONTINUITY").size >= 3)
+            } finally {
+                session.close()
+            }
+        }
+    }
+
+    @Test fun reResolvesOriginalUrlWhenStaleEdgeStallsOrReturnsError() = runBlocking {
+        val edgeTwoEnd = AtomicLong(4)
+        val redirectCount = AtomicInteger(0)
+        val edge1 = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                val path = exchange.requestURI.path
+                when {
+                    path == "/edge1.m3u8" -> {
+                        val body = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n" +
+                            "#EXTINF:1.0,\nseg-1.ts\n#EXTINF:1.0,\nseg-2.ts\n#EXTINF:1.0,\nseg-3.ts\n"
+                        respond(exchange, 200, body.toByteArray())
+                    }
+                    path.startsWith("/seg-") -> respond(exchange, 200, ByteArray(8))
+                    else -> respond(exchange, 404, ByteArray(0))
+                }
+            }
+            start()
+        }
+        val edge2 = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                val path = exchange.requestURI.path
+                when {
+                    path == "/edge2.m3u8" -> {
+                        val last = edgeTwoEnd.get()
+                        val body = buildString {
+                            append("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:${last - 2}\n")
+                            for (seq in last - 2..last) append("#EXTINF:1.0,\nseg-$seq.ts\n")
+                        }
+                        respond(exchange, 200, body.toByteArray())
+                    }
+                    path.startsWith("/seg-") -> respond(exchange, 200, ByteArray(8))
+                    else -> respond(exchange, 404, ByteArray(0))
+                }
+            }
+            start()
+        }
+        val router = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/live.m3u8") { exchange ->
+                val target = if (redirectCount.incrementAndGet() == 1) {
+                    "http://127.0.0.1:${edge1.address.port}/edge1.m3u8"
+                } else {
+                    "http://127.0.0.1:${edge2.address.port}/edge2.m3u8"
+                }
+                exchange.responseHeaders.add("Location", target)
+                respond(exchange, 302, ByteArray(0))
+            }
+            start()
+        }
+        try {
+            val session = HlsTimeShiftSession.open(
+                temporary.newFolder(),
+                "http://127.0.0.1:${router.address.port}/live.m3u8",
+                emptyMap(),
+                TimeShiftLimits(staleManifestTimeoutMs = 900L),
+            )
+            try {
+                await(timeoutMs = 5_000) { session.snapshot().durationMs >= 4_000L }
+                assertTrue(redirectCount.get() >= 2)
+                assertTrue(session.snapshot().recording)
+            } finally {
+                session.close()
+            }
+        } finally {
+            router.stop(0)
+            edge1.stop(0)
+            edge2.stop(0)
+        }
+    }
+
+    @Test fun rejectsExtensionlessMpegTsAndVideoContentTypeImmediatelyWithoutDraining() = runBlocking {
+        val bytesWrittenVideo = AtomicLong(0)
+        val bytesWrittenOctet = AtomicLong(0)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/ts-header") { exchange ->
+                exchange.responseHeaders.add("Content-Type", "video/mp2t")
+                exchange.sendResponseHeaders(200, 0)
+                val chunk = ByteArray(16 * 1024) { 0x47 }
+                exchange.responseBody.use { out ->
+                    runCatching {
+                        repeat(128) {
+                            out.write(chunk)
+                            out.flush()
+                            bytesWrittenVideo.addAndGet(chunk.size.toLong())
+                        }
+                    }
+                }
+                exchange.close()
+            }
+            createContext("/ts-extensionless") { exchange ->
+                exchange.responseHeaders.add("Content-Type", "application/octet-stream")
+                exchange.sendResponseHeaders(200, 0)
+                val chunk = ByteArray(16 * 1024) { 0x47 }
+                exchange.responseBody.use { out ->
+                    runCatching {
+                        repeat(128) {
+                            out.write(chunk)
+                            out.flush()
+                            bytesWrittenOctet.addAndGet(chunk.size.toLong())
+                        }
+                    }
+                }
+                exchange.close()
+            }
+            start()
+        }
+        try {
+            for (path in listOf("/ts-header", "/ts-extensionless")) {
+                val root = temporary.newFolder()
+                try {
+                    HlsTimeShiftSession.open(root, "http://127.0.0.1:${server.address.port}$path", emptyMap())
+                    throw AssertionError("Raw MPEG-TS stream at $path was accepted as HLS")
+                } catch (_: UnsupportedTimeShift) {
+                    assertTrue(root.listFiles().orEmpty().isEmpty())
+                }
+            }
+            assertTrue("Expected video/mp2t stream to abort early", bytesWrittenVideo.get() < 512 * 1024)
+            assertTrue("Expected extensionless TS stream to abort early", bytesWrittenOctet.get() < 512 * 1024)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test fun reEmitsInitializationMapAfterDiscontinuity() = runBlocking {
+        Source(initialization = true).use { source ->
+            val session = HlsTimeShiftSession.open(temporary.newFolder(), source.url, emptyMap())
+            try {
+                // Brief gap triggers #EXT-X-DISCONTINUITY while keeping the same initialization map.
+                source.end.set(7)
+                await { session.snapshot().durationMs >= 6_000L }
+                val manifest = URL(session.playbackUrl).readText()
+                val afterDiscontinuity = manifest.substringAfter("#EXT-X-DISCONTINUITY\n")
+                assertTrue("Expected #EXT-X-DISCONTINUITY in local manifest", manifest.contains("#EXT-X-DISCONTINUITY\n"))
+                assertTrue(
+                    "Expected #EXT-X-MAP to be re-emitted immediately after #EXT-X-DISCONTINUITY",
+                    afterDiscontinuity.startsWith("#EXT-X-MAP:URI=\"resource-"),
+                )
+            } finally {
+                session.close()
+            }
+        }
+    }
+
+    @Test fun http404ThrowsTimeShiftHttpExceptionOnOpenAndFailsFastDuringIngest() = runBlocking {
+        val openRequests = AtomicInteger(0)
+        val ingestRequests = AtomicInteger(0)
+        val failIngest = AtomicInteger(0)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/missing.m3u8") { exchange ->
+                openRequests.incrementAndGet()
+                respond(exchange, 404, ByteArray(0))
+            }
+            createContext("/live.m3u8") { exchange ->
+                if (failIngest.get() > 0) {
+                    ingestRequests.incrementAndGet()
+                    respond(exchange, 404, ByteArray(0))
+                } else {
+                    val body = "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n" +
+                        "#EXTINF:1.0,\nseg-1.ts\n#EXTINF:1.0,\nseg-2.ts\n#EXTINF:1.0,\nseg-3.ts\n"
+                    respond(exchange, 200, body.toByteArray())
+                }
+            }
+            createContext("/seg-") { exchange ->
+                respond(exchange, 200, ByteArray(8))
+            }
+            start()
+        }
+        try {
+            val root = temporary.newFolder()
+            try {
+                HlsTimeShiftSession.open(root, "http://127.0.0.1:${server.address.port}/missing.m3u8", emptyMap())
+                throw AssertionError("Expected HTTP 404 to throw TimeShiftHttpException")
+            } catch (error: TimeShiftHttpException) {
+                assertEquals(404, error.statusCode)
+                assertEquals(1, openRequests.get())
+                assertTrue(root.listFiles().orEmpty().isEmpty())
+            }
+
+            val session = HlsTimeShiftSession.open(
+                temporary.newFolder(),
+                "http://127.0.0.1:${server.address.port}/live.m3u8",
+                emptyMap(),
+            )
+            try {
+                failIngest.set(1)
+                await(timeoutMs = 2_000) { !session.snapshot().recording }
+                assertEquals(1, ingestRequests.get())
+                assertTrue(session.snapshot().notice.orEmpty().contains("404"))
+            } finally {
+                session.closeAsync().join()
+            }
+        } finally {
+            server.stop(0)
         }
     }
 

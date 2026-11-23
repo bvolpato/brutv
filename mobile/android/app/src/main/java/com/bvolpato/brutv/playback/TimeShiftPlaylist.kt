@@ -1,6 +1,7 @@
 package com.bvolpato.brutv.playback
 
-import java.net.URI
+import kotlin.math.ceil
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal data class TimeShiftLimits(
     val durationMs: Long = 600_000,
@@ -8,6 +9,7 @@ internal data class TimeShiftLimits(
     val manifestBytes: Long = 1024 * 1024,
     val segmentBytes: Long = 32L * 1024 * 1024,
     val segments: Int = 2_000,
+    val staleManifestTimeoutMs: Long? = null,
 )
 
 internal class UnsupportedTimeShift(message: String) : Exception(message)
@@ -43,8 +45,18 @@ internal object TimeShiftPlaylistParser {
             if (attributes.containsKey("AUDIO") || attributes.containsKey("SUBTITLES")) {
                 throw UnsupportedTimeShift("This HLS master uses separate audio or subtitles. Live recording is unavailable.")
             }
-            val uri = lines.getOrNull(index + 1)?.takeUnless { it.startsWith('#') }
-                ?: throw UnsupportedTimeShift("The HLS variant playlist is incomplete.")
+            var uri: String? = null
+            var cursor = index + 1
+            while (cursor < lines.size) {
+                val candidate = lines[cursor]
+                if (candidate.startsWith("#EXT-X-STREAM-INF:")) break
+                if (!candidate.startsWith('#')) {
+                    uri = candidate
+                    break
+                }
+                cursor++
+            }
+            if (uri == null) throw UnsupportedTimeShift("The HLS variant playlist is incomplete.")
             val bandwidth = attributes["AVERAGE-BANDWIDTH"]?.toLongOrNull()
                 ?: attributes["BANDWIDTH"]?.toLongOrNull() ?: Long.MAX_VALUE
             val height = attributes["RESOLUTION"]?.substringAfter('x')?.toIntOrNull() ?: 0
@@ -80,10 +92,13 @@ internal object TimeShiftPlaylistParser {
                 line.startsWith("#EXT-X-MEDIA-SEQUENCE:") -> sequence = positiveLong(line)
                 line.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:") -> discontinuity = positiveLong(line)
                 line == "#EXT-X-DISCONTINUITY" -> discontinuity++
-                line.startsWith("#EXT-X-TARGETDURATION:") -> target = line.substringAfter(':').toIntOrNull() ?: 0
-                line.startsWith("#EXT-X-VERSION:") -> version = line.substringAfter(':').toIntOrNull() ?: 3
+                line.startsWith("#EXT-X-TARGETDURATION:") ->
+                    target = line.substringAfter(':').trim().toDoubleOrNull()
+                        ?.takeIf { it.isFinite() && it > 0.0 && it <= 120.0 }
+                        ?.let { ceil(it).toInt() } ?: 0
+                line.startsWith("#EXT-X-VERSION:") -> version = line.substringAfter(':').trim().toIntOrNull() ?: 3
                 line.startsWith("#EXTINF:") -> {
-                    val seconds = line.substringAfter(':').substringBefore(',').toDoubleOrNull()
+                    val seconds = line.substringAfter(':').substringBefore(',').trim().toDoubleOrNull()
                     if (seconds == null || !seconds.isFinite() || seconds <= 0 || seconds > 120) {
                         throw UnsupportedTimeShift("The HLS segment duration is invalid.")
                     }
@@ -96,7 +111,7 @@ internal object TimeShiftPlaylistParser {
                     version = maxOf(version, 6)
                 }
                 line.startsWith("#EXT-X-PROGRAM-DATE-TIME:") -> {
-                    date = line.substringAfter(':')
+                    date = line.substringAfter(':').trim()
                     if (date.length > 80) throw UnsupportedTimeShift("The HLS program timestamp is invalid.")
                 }
                 line == "#EXT-X-GAP" -> gap = true
@@ -126,17 +141,17 @@ internal object TimeShiftPlaylistParser {
         return lines
     }
 
-    private fun positiveLong(line: String): Long = line.substringAfter(':').toLongOrNull()
+    private fun positiveLong(line: String): Long = line.substringAfter(':').trim().toLongOrNull()
         ?.takeIf { it >= 0 && it < Long.MAX_VALUE / 2 }
         ?: throw UnsupportedTimeShift("The HLS sequence number is invalid.")
 
     private fun resolve(base: String, path: String): String {
-        val uri = runCatching { URI(base).resolve(path) }.getOrNull()
+        val resolved = base.toHttpUrlOrNull()?.resolve(path)
             ?: throw UnsupportedTimeShift("The HLS resource URI is invalid.")
-        if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+        if (resolved.scheme !in setOf("http", "https") || resolved.host.isBlank()) {
             throw UnsupportedTimeShift("The HLS resource URI is unsupported.")
         }
-        return uri.toString()
+        return resolved.toString()
     }
 
     private fun attributes(value: String): Map<String, String> =
