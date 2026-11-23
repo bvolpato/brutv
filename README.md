@@ -68,4 +68,4 @@ Before releasing, run the full platform and Apple device suites with `gh workflo
 
 ## License
 
-BruTV's original code is licensed under the [MIT License](LICENSE), except for the standalone [PS5 port](mobile/ps5/LICENSE), which remains GPL-3.0-or-later. Third-party code and assets keep their original licenses and notices.
+All original BruTV code across every platform (including the original C++ sources and scripts in [mobile/ps5](mobile/ps5)) is licensed under the [MIT License](LICENSE). The only GPL-3.0-or-later parts in this repository are the three BlackBearReloaded-adapted PS5 native compatibility files ([cmake/ps5-pie.ld](mobile/ps5/cmake/ps5-pie.ld), [tools/console_compat.c](mobile/ps5/tools/console_compat.c), and [tools/native-tooling.patch](mobile/ps5/tools/native-tooling.patch)) and any packaged PS5 title binary linked against GPL-3.0-or-later upstream dependencies (see [mobile/ps5/LICENSE](mobile/ps5/LICENSE) and [mobile/ps5/THIRD_PARTY_NOTICES.md](mobile/ps5/THIRD_PARTY_NOTICES.md)). Third-party code and assets keep their original licenses and notices.

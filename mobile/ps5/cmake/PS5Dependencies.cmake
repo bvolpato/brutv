@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 foreach(name PS5_PAYLOAD_SDK BRUTV_PS5_OPENGL BRUTV_PS5_NATIVE BRUTV_PS5_PACBREW)
   if(NOT DEFINED ENV{${name}})
     message(FATAL_ERROR "Missing ${name}; use tools/build-ps5.sh")

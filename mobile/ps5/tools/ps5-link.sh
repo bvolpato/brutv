@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 # CMake's LINKER: syntax is compiler-driver oriented. This adapter preserves its
 # argument boundaries while invoking lld directly, as the public SDK requires.
 set -euo pipefail

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 set -euo pipefail
 [[ $# == 0 ]] || { echo 'usage: package-ps5.sh' >&2; exit 2; }
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -38,6 +38,7 @@ cp "$cache/pacbrew-0.40.3/user/homebrew/etc/ca-bundle.crt" "$app/assets/ca-bundl
 [[ ! -f $root/assets/icon0.png ]] || cp "$root/assets/icon0.png" "$app/sce_sys/icon0.png"
 (cd "$native/runtime" && sha256sum -c --strict libc.prx.sha256)
 cp "$native/runtime/libc.prx" "$app/sce_module/libc.prx"
+[[ ! -f $root/../../LICENSE ]] || cp "$root/../../LICENSE" "$app/licenses/BruTV-MIT.txt"
 cp "$root/LICENSE" "$app/licenses/BruTV-PS5-GPL-3.0.txt"
 cp "$root/THIRD_PARTY_NOTICES.md" "$app/licenses/THIRD_PARTY_NOTICES.md"
 cp "$cache/downloads/json-3.11.3-LICENSE.MIT" "$app/licenses/nlohmann-json-MIT.txt"

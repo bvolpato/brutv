@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 # Explicit FTP staging for a directory-title loader. Never launches a title.
 set -euo pipefail
 usage() {
