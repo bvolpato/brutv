@@ -1,5 +1,89 @@
 import Foundation
 import Combine
+#if canImport(Security)
+import Security
+#endif
+
+/// Stores per-profile sensitive secrets (Xtream passwords and credentialed M3U URLs) in Keychain
+/// on Apple platforms, with graceful fallback when Keychain entitlements are absent in unsigned test hosts.
+private enum AccountCredentialVault {
+    struct SecretPayload: Codable {
+        var password: String
+        var playlistURL: String?
+    }
+
+    #if canImport(Security)
+    private static let service = "com.bvolpato.brutv.credentials"
+
+    @discardableResult
+    static func save(_ payload: SecretPayload, for profileID: UUID) -> Bool {
+        guard let data = try? JSONEncoder().encode(payload) else { return false }
+        let account = profileID.uuidString
+        let baseQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+
+        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        if updateStatus == errSecItemNotFound {
+            var addQuery = baseQuery
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            return addStatus == errSecSuccess
+        }
+        return false
+    }
+
+    static func load(for profileID: UUID) -> SecretPayload? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: profileID.uuidString,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return try? JSONDecoder().decode(SecretPayload.self, from: data)
+    }
+
+    static func delete(for profileID: UUID) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: profileID.uuidString,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+    #else
+    @discardableResult
+    static func save(_ payload: SecretPayload, for profileID: UUID) -> Bool { false }
+    static func load(for profileID: UUID) -> SecretPayload? { nil }
+    static func delete(for profileID: UUID) {}
+    #endif
+
+    /// Redacts credentials/query tokens from a playlist URL before storing metadata in UserDefaults.
+    static func redactedPlaylistDisplayURL(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw), let host = components.host else {
+            return ""
+        }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? host
+    }
+}
 
 @MainActor
 public final class AccountStore: ObservableObject {
@@ -27,11 +111,14 @@ public final class AccountStore: ObservableObject {
     @Published public private(set) var isAuthenticated: Bool = false
     @Published public var isLoading: Bool = false
     @Published public var errorMessage: String?
+    /// Incremented whenever the user explicitly refreshes catalog listings so mounted tabs reload.
+    @Published public private(set) var catalogRefreshRevision: UInt64 = 0
 
     public let client: XtreamCodesClient
 
     private let defaults: UserDefaults
     private let favorites: FavoritesStore
+    private let useKeychain: Bool
     private let userDefaultsKey = "brutv.account.currentProfile"
     private let profilesKey = "brutv.account.savedProfiles"
     private var generation = UUID()
@@ -47,34 +134,114 @@ public final class AccountStore: ObservableObject {
         self.client = client
         self.defaults = userDefaults
         self.favorites = favorites ?? FavoritesStore.shared
+        self.useKeychain = (userDefaults === UserDefaults.standard)
         if ProcessInfo.processInfo.arguments.contains("--reset-session") {
             userDefaults.removeObject(forKey: userDefaultsKey)
         }
         loadPersistedState()
         self.favorites.selectSource(currentProfile?.id)
+        if userDefaults === UserDefaults.standard {
+            WatchProgressStore.shared.selectSource(currentProfile?.id)
+            TopShelfStore.shared.selectProfile(currentProfile?.id)
+            client.configureDiskCache(profileID: currentProfile?.id)
+        }
         if shouldRestoreSession {
             restoreSession()
         }
     }
 
+    private func hydrateFromKeychain(_ profile: ServerProfile) -> (profile: ServerProfile, migrated: Bool) {
+        guard useKeychain else { return (profile, false) }
+        var hydrated = profile
+        var migrated = false
+
+        if let secret = AccountCredentialVault.load(for: profile.id) {
+            if hydrated.kind == .xtream {
+                if hydrated.password.isEmpty {
+                    hydrated.password = secret.password
+                } else {
+                    // Legacy plaintext password still existed in UserDefaults; overwrite Keychain and scrub UserDefaults.
+                    if AccountCredentialVault.save(
+                        AccountCredentialVault.SecretPayload(password: hydrated.password, playlistURL: nil),
+                        for: profile.id
+                    ) {
+                        migrated = true
+                    }
+                }
+            } else if hydrated.kind == .m3u, let fullPlaylist = secret.playlistURL, !fullPlaylist.isEmpty {
+                hydrated.playlistURL = fullPlaylist
+                hydrated.serverURL = fullPlaylist
+            }
+        } else {
+            // Transparently migrate plaintext UserDefaults credentials into Keychain.
+            let payload = AccountCredentialVault.SecretPayload(
+                password: hydrated.password,
+                playlistURL: hydrated.kind == .m3u ? (hydrated.playlistURL ?? hydrated.serverURL) : nil
+            )
+            let hasSecret = !payload.password.isEmpty || (payload.playlistURL != nil && !(payload.playlistURL!.isEmpty))
+            if hasSecret, AccountCredentialVault.save(payload, for: profile.id) {
+                migrated = true
+            }
+        }
+        return (hydrated, migrated)
+    }
+
+    private func scrubForDefaults(_ profile: ServerProfile) -> ServerProfile {
+        guard useKeychain else { return profile }
+        let payload = AccountCredentialVault.SecretPayload(
+            password: profile.password,
+            playlistURL: profile.kind == .m3u ? (profile.playlistURL ?? profile.serverURL) : nil
+        )
+        let savedToKeychain = AccountCredentialVault.save(payload, for: profile.id)
+        guard savedToKeychain else {
+            // Keep credentials in UserDefaults only if Keychain is unavailable (e.g. unsigned test host).
+            return profile
+        }
+        var sanitized = profile
+        sanitized.password = ""
+        if sanitized.kind == .m3u {
+            let redacted = AccountCredentialVault.redactedPlaylistDisplayURL(profile.playlistURL ?? profile.serverURL)
+            sanitized.playlistURL = redacted
+            sanitized.serverURL = redacted
+        }
+        return sanitized
+    }
+
     private func loadPersistedState() {
+        var needsMigrationRewrite = false
         if let data = defaults.data(forKey: userDefaultsKey),
            let profile = try? JSONDecoder().decode(ServerProfile.self, from: data) {
-            currentProfile = profile
+            let result = hydrateFromKeychain(profile)
+            currentProfile = result.profile
+            needsMigrationRewrite = needsMigrationRewrite || result.migrated
         }
         if let data = defaults.data(forKey: profilesKey),
            let profiles = try? JSONDecoder().decode([ServerProfile].self, from: data) {
-            savedProfiles = profiles
+            var hydratedProfiles: [ServerProfile] = []
+            hydratedProfiles.reserveCapacity(profiles.count)
+            for profile in profiles {
+                let result = hydrateFromKeychain(profile)
+                hydratedProfiles.append(result.profile)
+                needsMigrationRewrite = needsMigrationRewrite || result.migrated
+            }
+            savedProfiles = hydratedProfiles
+        }
+        if needsMigrationRewrite {
+            persistState()
         }
     }
 
     private func persistState() {
-        if let currentProfile, let data = try? JSONEncoder().encode(currentProfile) {
-            defaults.set(data, forKey: userDefaultsKey)
+        if let currentProfile {
+            let sanitized = scrubForDefaults(currentProfile)
+            if let data = try? JSONEncoder().encode(sanitized) {
+                defaults.set(data, forKey: userDefaultsKey)
+            }
         } else {
             defaults.removeObject(forKey: userDefaultsKey)
         }
-        if let data = try? JSONEncoder().encode(savedProfiles) {
+        let sanitizedProfiles = savedProfiles.map { scrubForDefaults($0) }
+        if let data = try? JSONEncoder().encode(sanitizedProfiles) {
             defaults.set(data, forKey: profilesKey)
         }
     }
@@ -94,6 +261,9 @@ public final class AccountStore: ObservableObject {
         let token = beginSessionChange()
         let candidate = client.makeIndependentClient()
         configure(candidate, for: profile)
+        if defaults === UserDefaults.standard {
+            candidate.configureDiskCache(profileID: profile.id)
+        }
         client.adoptSource(from: candidate)
         isAuthenticated = true
         guard profile.kind == .xtream else { return }
@@ -212,6 +382,46 @@ public final class AccountStore: ObservableObject {
         try await login(link: profile.loginLink)
     }
 
+    public func switchProfile(to profile: ServerProfile) async throws {
+        if currentProfile?.id == profile.id && isAuthenticated { return }
+        try await login(profile: profile)
+    }
+
+    public func renameProfile(_ profile: ServerProfile, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let idx = savedProfiles.firstIndex(where: { $0.id == profile.id }) {
+            savedProfiles[idx].name = trimmed
+        }
+        if currentProfile?.id == profile.id {
+            currentProfile?.name = trimmed
+        }
+        persistState()
+    }
+
+    public func deleteProfile(_ profile: ServerProfile) {
+        savedProfiles.removeAll { $0.id == profile.id }
+        if useKeychain {
+            AccountCredentialVault.delete(for: profile.id)
+        }
+        if defaults === UserDefaults.standard {
+            client.clearDiskCache(for: profile.id)
+            WatchProgressStore.shared.clear(sourceID: profile.id)
+            TopShelfStore.shared.clearProfile(profile.id)
+        }
+        if currentProfile?.id == profile.id {
+            logout()
+        } else {
+            persistState()
+        }
+    }
+
+    /// Clears RAM & on-disk catalog caches and broadcasts a refresh revision so mounted tabs reload.
+    public func refreshCatalog() {
+        client.clearCache(includeDisk: true)
+        catalogRefreshRevision &+= 1
+    }
+
     #if DEBUG
     public func loginWithDemo() async throws {
         let demo = ServerProfile.demo
@@ -244,6 +454,11 @@ public final class AccountStore: ObservableObject {
         )
         currentProfile = profile
         favorites.selectSource(profile.id)
+        if defaults === UserDefaults.standard {
+            WatchProgressStore.shared.selectSource(profile.id)
+            TopShelfStore.shared.selectProfile(profile.id)
+            client.configureDiskCache(profileID: profile.id)
+        }
         isAuthenticated = true
         if save {
             var profiles = savedProfiles.filter { $0.id != profile.id && !$0.sameSource(as: profile) }
@@ -261,6 +476,11 @@ public final class AccountStore: ObservableObject {
         authResponse = nil
         currentProfile = nil
         favorites.selectSource(nil)
+        if defaults === UserDefaults.standard {
+            WatchProgressStore.shared.selectSource(nil)
+            TopShelfStore.shared.selectProfile(nil)
+            client.configureDiskCache(profileID: nil)
+        }
         defaults.removeObject(forKey: userDefaultsKey)
         client.adoptSource(from: client.makeIndependentClient())
     }

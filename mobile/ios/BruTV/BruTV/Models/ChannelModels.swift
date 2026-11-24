@@ -1,4 +1,256 @@
 import Foundation
+#if canImport(CoreFoundation)
+import CoreFoundation
+#endif
+
+public enum MediaURL {
+    public static func parse(_ raw: String?) -> URL? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        if let direct = URL(string: trimmed) {
+            return direct
+        }
+        if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            return URL(string: encoded)
+        }
+        return nil
+    }
+}
+
+public enum ChannelTextHelper {
+    /// Fast normalized search string (case- and diacritic-insensitive) with an ASCII fast path.
+    public static func normalizedSearchText(_ raw: String) -> String {
+        guard !raw.isEmpty else { return "" }
+        let isASCII = raw.utf8.allSatisfy { $0 < 0x80 }
+        if isASCII {
+            var bytes: [UInt8] = []
+            bytes.reserveCapacity(raw.utf8.count)
+            for b in raw.utf8 {
+                bytes.append((b >= 0x41 && b <= 0x5A) ? (b + 0x20) : b)
+            }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        return raw.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    /// Parses ratings such as "8.4", "8.4/10", or " 7.5 " into a comparable Double.
+    public static func parseRating(_ raw: String?) -> Double {
+        guard let raw else { return 0 }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        let prefix: Substring
+        if let slash = trimmed.firstIndex(of: "/") {
+            prefix = trimmed[..<slash]
+        } else {
+            prefix = trimmed[...]
+        }
+        let cleaned = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Double(cleaned), value.isFinite, value > 0 else { return 0 }
+        return value
+    }
+
+    /// Detects stream quality by scanning UTF-8 bytes case-insensitively without allocating an uppercased copy.
+    public static func detectQuality(from name: String) -> StreamQuality {
+        var sawFHD = false
+        var sawHD = false
+        return name.utf8.withContiguousStorageIfAvailable { buf -> StreamQuality in
+            let n = buf.count
+            var i = 0
+            while i < n {
+                let c0 = asciiUpper(buf[i])
+                if c0 == 0x34, i + 1 < n, asciiUpper(buf[i + 1]) == 0x4B { // 4K
+                    return .uhd4k
+                }
+                if c0 == 0x55, i + 2 < n, asciiUpper(buf[i + 1]) == 0x48, asciiUpper(buf[i + 2]) == 0x44 { // UHD
+                    return .uhd4k
+                }
+                if !sawFHD {
+                    if c0 == 0x46, i + 2 < n, asciiUpper(buf[i + 1]) == 0x48, asciiUpper(buf[i + 2]) == 0x44 { // FHD
+                        sawFHD = true
+                    } else if c0 == 0x31, i + 4 < n,
+                              buf[i + 1] == 0x30, buf[i + 2] == 0x38, buf[i + 3] == 0x30,
+                              asciiUpper(buf[i + 4]) == 0x50 { // 1080P
+                        sawFHD = true
+                    }
+                }
+                if !sawHD {
+                    if c0 == 0x48, i + 1 < n, asciiUpper(buf[i + 1]) == 0x44 { // HD
+                        sawHD = true
+                    } else if c0 == 0x37, i + 3 < n,
+                              buf[i + 1] == 0x32, buf[i + 2] == 0x30,
+                              asciiUpper(buf[i + 3]) == 0x50 { // 720P
+                        sawHD = true
+                    }
+                }
+                i += 1
+            }
+            if sawFHD { return .fhd }
+            if sawHD { return .hd }
+            return .sd
+        } ?? fallbackDetectQuality(from: name)
+    }
+
+    private static func fallbackDetectQuality(from name: String) -> StreamQuality {
+        let upper = name.uppercased()
+        if upper.contains("4K") || upper.contains("UHD") {
+            return .uhd4k
+        } else if upper.contains("FHD") || upper.contains("1080P") {
+            return .fhd
+        } else if upper.contains("HD") || upper.contains("720P") {
+            return .hd
+        } else {
+            return .sd
+        }
+    }
+
+    @inline(__always)
+    private static func asciiUpper(_ byte: UInt8) -> UInt8 {
+        (byte >= 0x61 && byte <= 0x7A) ? (byte - 0x20) : byte
+    }
+
+    private static let redundantQualitySuffixes = [" FHD", " HD", " 4K", " SD", " [FHD]", " [HD]", " [4K]", " [SD]"]
+
+    public static func cleanName(from name: String) -> String {
+        var result = name
+        for tag in redundantQualitySuffixes {
+            if result.hasSuffix(tag) {
+                result = String(result.dropLast(tag.count))
+                break
+            }
+        }
+        return result.trimmingCharacters(in: .whitespaces)
+    }
+}
+
+enum FlexibleJSON {
+    @inline(__always)
+    static func isPresent<K: CodingKey>(_ container: KeyedDecodingContainer<K>, forKey key: K) -> Bool {
+        guard container.contains(key) else { return false }
+        return (try? container.decodeNil(forKey: key)) != true
+    }
+
+    static func decodeInt<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>,
+        forKey key: K,
+        preferString: Bool = false,
+        default defaultValue: Int = 0
+    ) -> Int {
+        decodeOptionalInt(from: container, forKey: key, preferString: preferString) ?? defaultValue
+    }
+
+    static func decodeOptionalInt<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>,
+        forKey key: K,
+        preferString: Bool = false
+    ) -> Int? {
+        guard isPresent(container, forKey: key) else { return nil }
+        if preferString {
+            if let str = try? container.decode(String.self, forKey: key) {
+                return Int(str.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            if let intVal = try? container.decode(Int.self, forKey: key) {
+                return intVal
+            }
+        } else {
+            if let intVal = try? container.decode(Int.self, forKey: key) {
+                return intVal
+            }
+            if let str = try? container.decode(String.self, forKey: key) {
+                return Int(str.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        return nil
+    }
+
+    static func decodeString<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>,
+        forKey key: K,
+        default defaultValue: String = ""
+    ) -> String {
+        guard isPresent(container, forKey: key) else { return defaultValue }
+        if let str = try? container.decode(String.self, forKey: key) {
+            return str
+        }
+        if let intVal = try? container.decode(Int.self, forKey: key) {
+            return String(intVal)
+        }
+        return defaultValue
+    }
+
+    static func decodeOptionalString<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>,
+        forKey key: K
+    ) -> String? {
+        guard isPresent(container, forKey: key) else { return nil }
+        return try? container.decode(String.self, forKey: key)
+    }
+
+    static func decodeRating<K: CodingKey>(
+        from container: KeyedDecodingContainer<K>,
+        forKey key: K
+    ) -> String? {
+        guard isPresent(container, forKey: key) else { return nil }
+        if let str = try? container.decode(String.self, forKey: key) {
+            return str
+        }
+        if let dbl = try? container.decode(Double.self, forKey: key) {
+            return String(format: "%.1f", dbl)
+        }
+        return nil
+    }
+
+    // MARK: - Zero-throw dictionary extraction (for JSONSerialization fast catalog decoding)
+
+    @inline(__always)
+    static func intValue(_ raw: Any?) -> Int? {
+        guard let raw else { return nil }
+        if let s = raw as? String {
+            return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if raw is Bool { return nil }
+        #if canImport(CoreFoundation)
+        if let num = raw as? NSNumber {
+            if CFGetTypeID(num) == CFBooleanGetTypeID() { return nil }
+            return num.intValue
+        }
+        #endif
+        if let i = raw as? Int { return i }
+        if let d = raw as? Double, d.isFinite { return Int(d) }
+        return nil
+    }
+
+    @inline(__always)
+    static func stringValue(_ raw: Any?) -> String? {
+        guard let raw else { return nil }
+        if let s = raw as? String { return s }
+        if raw is NSNull || raw is Bool { return nil }
+        #if canImport(CoreFoundation)
+        if let num = raw as? NSNumber {
+            if CFGetTypeID(num) == CFBooleanGetTypeID() { return nil }
+            return num.stringValue
+        }
+        #endif
+        if let i = raw as? Int { return String(i) }
+        return nil
+    }
+
+    @inline(__always)
+    static func ratingString(_ raw: Any?) -> String? {
+        guard let raw else { return nil }
+        if let s = raw as? String { return s }
+        if raw is NSNull || raw is Bool { return nil }
+        #if canImport(CoreFoundation)
+        if let num = raw as? NSNumber {
+            if CFGetTypeID(num) == CFBooleanGetTypeID() { return nil }
+            return String(format: "%.1f", num.doubleValue)
+        }
+        #endif
+        if let d = raw as? Double { return String(format: "%.1f", d) }
+        if let i = raw as? Int { return String(format: "%.1f", Double(i)) }
+        return nil
+    }
+}
 
 public enum StreamQuality: String, Codable, CaseIterable, Sendable {
     case all = "ALL"
@@ -37,23 +289,25 @@ public struct LiveCategory: Codable, Identifiable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let stringId = try? container.decode(String.self, forKey: .id) {
-            self.id = stringId
-        } else if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = String(intId)
-        } else {
-            self.id = UUID().uuidString
-        }
+        let decodedID = FlexibleJSON.decodeString(from: container, forKey: .id)
+        self.id = decodedID.isEmpty ? UUID().uuidString : decodedID
+        self.name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Unknown"
+        self.parentId = FlexibleJSON.decodeInt(from: container, forKey: .parentId)
+    }
 
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Unknown"
-
-        if let intParent = try? container.decode(Int.self, forKey: .parentId) {
-            self.parentId = intParent
-        } else if let stringParent = try? container.decode(String.self, forKey: .parentId), let intVal = Int(stringParent) {
-            self.parentId = intVal
-        } else {
-            self.parentId = 0
+    static func decodeArray(from data: Data) throws -> [LiveCategory] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([LiveCategory].self, from: data)
         }
+        var result: [LiveCategory] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.stringValue(dict["category_id"]) ?? UUID().uuidString
+            let name = (dict["category_name"] as? String) ?? "Unknown"
+            let parentId = FlexibleJSON.intValue(dict["parent_id"]) ?? 0
+            result.append(LiveCategory(id: id, name: name, parentId: parentId))
+        }
+        return result
     }
 }
 
@@ -68,6 +322,9 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
     public let tvArchive: Int
     /// Set for M3U playlist channels. Xtream channels build their URL from credentials.
     public let directURLString: String?
+    public let quality: StreamQuality
+    public let cleanName: String
+    public let normalizedSearchText: String
 
     enum CodingKeys: String, CodingKey {
         case id = "stream_id"
@@ -102,86 +359,81 @@ public struct LiveStream: Codable, Identifiable, Hashable, Sendable {
         self.categoryId = categoryId
         self.tvArchive = tvArchive
         self.directURLString = directURLString
+        self.quality = ChannelTextHelper.detectQuality(from: name)
+        self.cleanName = ChannelTextHelper.cleanName(from: name)
+        self.normalizedSearchText = ChannelTextHelper.normalizedSearchText(name)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = intId
-        } else if let stringId = try? container.decode(String.self, forKey: .id), let intVal = Int(stringId) {
-            self.id = intVal
-        } else {
-            self.id = 0
-        }
-
-        if let intNum = try? container.decode(Int.self, forKey: .num) {
-            self.num = intNum
-        } else if let stringNum = try? container.decode(String.self, forKey: .num), let intVal = Int(stringNum) {
-            self.num = intVal
-        } else {
-            self.num = 0
-        }
-
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Channel \(self.id)"
-        self.streamType = try container.decodeIfPresent(String.self, forKey: .streamType) ?? "live"
-        self.iconURLString = try? container.decodeIfPresent(String.self, forKey: .iconURLString)
-        self.epgChannelId = try? container.decodeIfPresent(String.self, forKey: .epgChannelId)
-
-        if let stringCat = try? container.decode(String.self, forKey: .categoryId) {
-            self.categoryId = stringCat
-        } else if let intCat = try? container.decode(Int.self, forKey: .categoryId) {
-            self.categoryId = String(intCat)
-        } else {
-            self.categoryId = ""
-        }
-
-        if let intArchive = try? container.decode(Int.self, forKey: .tvArchive) {
-            self.tvArchive = intArchive
-        } else if let stringArchive = try? container.decode(String.self, forKey: .tvArchive), let intVal = Int(stringArchive) {
-            self.tvArchive = intVal
-        } else {
-            self.tvArchive = 0
-        }
-
-        self.directURLString = try? container.decodeIfPresent(String.self, forKey: .directURLString)
+        let id = FlexibleJSON.decodeInt(from: container, forKey: .id)
+        let num = FlexibleJSON.decodeInt(from: container, forKey: .num)
+        let name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Channel \(id)"
+        let streamType = FlexibleJSON.decodeOptionalString(from: container, forKey: .streamType) ?? "live"
+        let iconURLString = FlexibleJSON.decodeOptionalString(from: container, forKey: .iconURLString)
+        let epgChannelId = FlexibleJSON.decodeOptionalString(from: container, forKey: .epgChannelId)
+        let categoryId = FlexibleJSON.decodeString(from: container, forKey: .categoryId)
+        let tvArchive = FlexibleJSON.decodeInt(from: container, forKey: .tvArchive)
+        let directURLString = FlexibleJSON.decodeOptionalString(from: container, forKey: .directURLString)
+        self.init(
+            id: id,
+            num: num,
+            name: name,
+            streamType: streamType,
+            iconURLString: iconURLString,
+            epgChannelId: epgChannelId,
+            categoryId: categoryId,
+            tvArchive: tvArchive,
+            directURLString: directURLString
+        )
     }
 
-    public var quality: StreamQuality {
-        let upper = name.uppercased()
-        if upper.contains("4K") || upper.contains("UHD") {
-            return .uhd4k
-        } else if upper.contains("FHD") || upper.contains("1080P") {
-            return .fhd
-        } else if upper.contains("HD") || upper.contains("720P") {
-            return .hd
-        } else {
-            return .sd
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(num, forKey: .num)
+        try container.encode(name, forKey: .name)
+        try container.encode(streamType, forKey: .streamType)
+        try container.encodeIfPresent(iconURLString, forKey: .iconURLString)
+        try container.encodeIfPresent(epgChannelId, forKey: .epgChannelId)
+        try container.encode(categoryId, forKey: .categoryId)
+        try container.encode(tvArchive, forKey: .tvArchive)
+        try container.encodeIfPresent(directURLString, forKey: .directURLString)
+    }
+
+    static func decodeArray(from data: Data) throws -> [LiveStream] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([LiveStream].self, from: data)
         }
+        var result: [LiveStream] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.intValue(dict["stream_id"]) ?? 0
+            let num = FlexibleJSON.intValue(dict["num"]) ?? 0
+            let name = (dict["name"] as? String) ?? "Channel \(id)"
+            let streamType = (dict["stream_type"] as? String) ?? "live"
+            let icon = dict["stream_icon"] as? String
+            let epg = dict["epg_channel_id"] as? String
+            let categoryId = FlexibleJSON.stringValue(dict["category_id"]) ?? ""
+            let tvArchive = FlexibleJSON.intValue(dict["tv_archive"]) ?? 0
+            let directURL = dict["brutv_direct_url"] as? String
+            result.append(LiveStream(
+                id: id,
+                num: num,
+                name: name,
+                streamType: streamType,
+                iconURLString: icon,
+                epgChannelId: epg,
+                categoryId: categoryId,
+                tvArchive: tvArchive,
+                directURLString: directURL
+            ))
+        }
+        return result
     }
 
     public var iconURL: URL? {
-        guard let raw = iconURLString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
-        if let direct = URL(string: raw) {
-            return direct
-        }
-        if let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            return URL(string: encoded)
-        }
-        return nil
-    }
-
-    public var cleanName: String {
-        var result = name
-        // Strip common suffixes for cleaner display when quality badge is shown
-        let redundantTags = [" FHD", " HD", " 4K", " SD", " [FHD]", " [HD]", " [4K]", " [SD]"]
-        for tag in redundantTags {
-            if result.hasSuffix(tag) {
-                result = String(result.dropLast(tag.count))
-                break
-            }
-        }
-        return result.trimmingCharacters(in: .whitespaces)
+        MediaURL.parse(iconURLString)
     }
 }
 
@@ -204,23 +456,25 @@ public struct VODCategory: Codable, Identifiable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let stringId = try? container.decode(String.self, forKey: .id) {
-            self.id = stringId
-        } else if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = String(intId)
-        } else {
-            self.id = UUID().uuidString
-        }
+        let decodedID = FlexibleJSON.decodeString(from: container, forKey: .id)
+        self.id = decodedID.isEmpty ? UUID().uuidString : decodedID
+        self.name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Movies"
+        self.parentId = FlexibleJSON.decodeInt(from: container, forKey: .parentId)
+    }
 
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Movies"
-
-        if let intParent = try? container.decode(Int.self, forKey: .parentId) {
-            self.parentId = intParent
-        } else if let stringParent = try? container.decode(String.self, forKey: .parentId), let intVal = Int(stringParent) {
-            self.parentId = intVal
-        } else {
-            self.parentId = 0
+    static func decodeArray(from data: Data) throws -> [VODCategory] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([VODCategory].self, from: data)
         }
+        var result: [VODCategory] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.stringValue(dict["category_id"]) ?? UUID().uuidString
+            let name = (dict["category_name"] as? String) ?? "Movies"
+            let parentId = FlexibleJSON.intValue(dict["parent_id"]) ?? 0
+            result.append(VODCategory(id: id, name: name, parentId: parentId))
+        }
+        return result
     }
 }
 
@@ -233,6 +487,8 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
     public let categoryId: String
     public let containerExtension: String
     public let streamType: String
+    public let ratingValue: Double
+    public let normalizedSearchText: String
 
     enum CodingKeys: String, CodingKey {
         case id = "stream_id"
@@ -267,54 +523,78 @@ public struct VODStream: Codable, Identifiable, Hashable, Sendable {
         self.categoryId = categoryId
         self.containerExtension = containerExtension
         self.streamType = streamType
+        self.ratingValue = ChannelTextHelper.parseRating(rating)
+        self.normalizedSearchText = ChannelTextHelper.normalizedSearchText(name)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = intId
-        } else if let stringId = try? container.decode(String.self, forKey: .id), let intVal = Int(stringId) {
-            self.id = intVal
-        } else {
-            self.id = 0
+        let id = FlexibleJSON.decodeInt(from: container, forKey: .id)
+        let name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Movie \(id)"
+        let iconURLString = FlexibleJSON.decodeOptionalString(from: container, forKey: .iconURLString)
+        let rating = FlexibleJSON.decodeRating(from: container, forKey: .rating)
+        var plot = FlexibleJSON.decodeOptionalString(from: container, forKey: .plot)
+        if plot == nil, let altContainer = try? decoder.container(keyedBy: AltCodingKeys.self) {
+            plot = FlexibleJSON.decodeOptionalString(from: altContainer, forKey: .description)
         }
+        let categoryId = FlexibleJSON.decodeString(from: container, forKey: .categoryId)
+        let containerExtension = FlexibleJSON.decodeOptionalString(from: container, forKey: .containerExtension) ?? "mp4"
+        let streamType = FlexibleJSON.decodeOptionalString(from: container, forKey: .streamType) ?? "movie"
+        self.init(
+            id: id,
+            name: name,
+            iconURLString: iconURLString,
+            rating: rating,
+            plot: plot,
+            categoryId: categoryId,
+            containerExtension: containerExtension,
+            streamType: streamType
+        )
+    }
 
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Movie \(self.id)"
-        self.iconURLString = try? container.decodeIfPresent(String.self, forKey: .iconURLString)
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(iconURLString, forKey: .iconURLString)
+        try container.encodeIfPresent(rating, forKey: .rating)
+        try container.encodeIfPresent(plot, forKey: .plot)
+        try container.encode(categoryId, forKey: .categoryId)
+        try container.encode(containerExtension, forKey: .containerExtension)
+        try container.encode(streamType, forKey: .streamType)
+    }
 
-        if let stringRating = try? container.decode(String.self, forKey: .rating) {
-            self.rating = stringRating
-        } else if let doubleRating = try? container.decode(Double.self, forKey: .rating) {
-            self.rating = String(format: "%.1f", doubleRating)
-        } else {
-            self.rating = nil
+    static func decodeArray(from data: Data) throws -> [VODStream] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([VODStream].self, from: data)
         }
-
-        let altContainer = try? decoder.container(keyedBy: AltCodingKeys.self)
-        self.plot = (try? container.decodeIfPresent(String.self, forKey: .plot)) ?? (try? altContainer?.decodeIfPresent(String.self, forKey: .description))
-
-        if let stringCat = try? container.decode(String.self, forKey: .categoryId) {
-            self.categoryId = stringCat
-        } else if let intCat = try? container.decode(Int.self, forKey: .categoryId) {
-            self.categoryId = String(intCat)
-        } else {
-            self.categoryId = ""
+        var result: [VODStream] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.intValue(dict["stream_id"]) ?? 0
+            let name = (dict["name"] as? String) ?? "Movie \(id)"
+            let icon = dict["stream_icon"] as? String
+            let rating = FlexibleJSON.ratingString(dict["rating"])
+            let plot = (dict["plot"] as? String) ?? (dict["description"] as? String)
+            let categoryId = FlexibleJSON.stringValue(dict["category_id"]) ?? ""
+            let ext = (dict["container_extension"] as? String) ?? "mp4"
+            let streamType = (dict["stream_type"] as? String) ?? "movie"
+            result.append(VODStream(
+                id: id,
+                name: name,
+                iconURLString: icon,
+                rating: rating,
+                plot: plot,
+                categoryId: categoryId,
+                containerExtension: ext,
+                streamType: streamType
+            ))
         }
-
-        self.containerExtension = try container.decodeIfPresent(String.self, forKey: .containerExtension) ?? "mp4"
-        self.streamType = (try? container.decodeIfPresent(String.self, forKey: .streamType)) ?? "movie"
+        return result
     }
 
     public var iconURL: URL? {
-        guard let raw = iconURLString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
-        if let direct = URL(string: raw) {
-            return direct
-        }
-        if let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            return URL(string: encoded)
-        }
-        return nil
+        MediaURL.parse(iconURLString)
     }
 }
 
@@ -361,23 +641,21 @@ public struct VODInfo: Codable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.name = try? container.decodeIfPresent(String.self, forKey: .name)
-        self.plot = try? container.decodeIfPresent(String.self, forKey: .plot)
-        self.cast = try? container.decodeIfPresent(String.self, forKey: .cast)
-        self.director = try? container.decodeIfPresent(String.self, forKey: .director)
-        self.genre = try? container.decodeIfPresent(String.self, forKey: .genre)
-        self.duration = try? container.decodeIfPresent(String.self, forKey: .duration)
-        if let stringRating = try? container.decode(String.self, forKey: .rating) {
-            self.rating = stringRating
-        } else if let doubleRating = try? container.decode(Double.self, forKey: .rating) {
-            self.rating = String(format: "%.1f", doubleRating)
-        } else {
-            self.rating = nil
-        }
-        if let paths = try? container.decode([String].self, forKey: .backdropPath) {
-            self.backdropPath = paths
-        } else if let single = try? container.decode(String.self, forKey: .backdropPath) {
-            self.backdropPath = [single]
+        self.name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name)
+        self.plot = FlexibleJSON.decodeOptionalString(from: container, forKey: .plot)
+        self.cast = FlexibleJSON.decodeOptionalString(from: container, forKey: .cast)
+        self.director = FlexibleJSON.decodeOptionalString(from: container, forKey: .director)
+        self.genre = FlexibleJSON.decodeOptionalString(from: container, forKey: .genre)
+        self.duration = FlexibleJSON.decodeOptionalString(from: container, forKey: .duration)
+        self.rating = FlexibleJSON.decodeRating(from: container, forKey: .rating)
+        if FlexibleJSON.isPresent(container, forKey: .backdropPath) {
+            if let paths = try? container.decode([String].self, forKey: .backdropPath) {
+                self.backdropPath = paths
+            } else if let single = try? container.decode(String.self, forKey: .backdropPath) {
+                self.backdropPath = [single]
+            } else {
+                self.backdropPath = nil
+            }
         } else {
             self.backdropPath = nil
         }
@@ -411,23 +689,25 @@ public struct SeriesCategory: Codable, Identifiable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let stringId = try? container.decode(String.self, forKey: .id) {
-            self.id = stringId
-        } else if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = String(intId)
-        } else {
-            self.id = UUID().uuidString
-        }
+        let decodedID = FlexibleJSON.decodeString(from: container, forKey: .id)
+        self.id = decodedID.isEmpty ? UUID().uuidString : decodedID
+        self.name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Series"
+        self.parentId = FlexibleJSON.decodeInt(from: container, forKey: .parentId)
+    }
 
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Series"
-
-        if let intParent = try? container.decode(Int.self, forKey: .parentId) {
-            self.parentId = intParent
-        } else if let stringParent = try? container.decode(String.self, forKey: .parentId), let intVal = Int(stringParent) {
-            self.parentId = intVal
-        } else {
-            self.parentId = 0
+    static func decodeArray(from data: Data) throws -> [SeriesCategory] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([SeriesCategory].self, from: data)
         }
+        var result: [SeriesCategory] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.stringValue(dict["category_id"]) ?? UUID().uuidString
+            let name = (dict["category_name"] as? String) ?? "Series"
+            let parentId = FlexibleJSON.intValue(dict["parent_id"]) ?? 0
+            result.append(SeriesCategory(id: id, name: name, parentId: parentId))
+        }
+        return result
     }
 }
 
@@ -441,6 +721,8 @@ public struct SeriesItem: Codable, Identifiable, Hashable, Sendable {
     public let genre: String?
     public let rating: String?
     public let categoryId: String
+    public let ratingValue: Double
+    public let normalizedSearchText: String
 
     enum CodingKeys: String, CodingKey {
         case id = "series_id"
@@ -474,46 +756,80 @@ public struct SeriesItem: Codable, Identifiable, Hashable, Sendable {
         self.genre = genre
         self.rating = rating
         self.categoryId = categoryId
+        self.ratingValue = ChannelTextHelper.parseRating(rating)
+        self.normalizedSearchText = ChannelTextHelper.normalizedSearchText(name)
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = FlexibleJSON.decodeInt(from: container, forKey: .id)
+        let name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name) ?? "Series \(id)"
+        let coverURLString = FlexibleJSON.decodeOptionalString(from: container, forKey: .coverURLString)
+        let plot = FlexibleJSON.decodeOptionalString(from: container, forKey: .plot)
+        let cast = FlexibleJSON.decodeOptionalString(from: container, forKey: .cast)
+        let director = FlexibleJSON.decodeOptionalString(from: container, forKey: .director)
+        let genre = FlexibleJSON.decodeOptionalString(from: container, forKey: .genre)
+        let rating = FlexibleJSON.decodeRating(from: container, forKey: .rating)
+        let categoryId = FlexibleJSON.decodeString(from: container, forKey: .categoryId)
+        self.init(
+            id: id,
+            name: name,
+            coverURLString: coverURLString,
+            plot: plot,
+            cast: cast,
+            director: director,
+            genre: genre,
+            rating: rating,
+            categoryId: categoryId
+        )
+    }
 
-        if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = intId
-        } else if let stringId = try? container.decode(String.self, forKey: .id), let intVal = Int(stringId) {
-            self.id = intVal
-        } else {
-            self.id = 0
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(coverURLString, forKey: .coverURLString)
+        try container.encodeIfPresent(plot, forKey: .plot)
+        try container.encodeIfPresent(cast, forKey: .cast)
+        try container.encodeIfPresent(director, forKey: .director)
+        try container.encodeIfPresent(genre, forKey: .genre)
+        try container.encodeIfPresent(rating, forKey: .rating)
+        try container.encode(categoryId, forKey: .categoryId)
+    }
+
+    static func decodeArray(from data: Data) throws -> [SeriesItem] {
+        guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return try JSONDecoder().decode([SeriesItem].self, from: data)
         }
-
-        self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Series \(self.id)"
-        self.coverURLString = try? container.decodeIfPresent(String.self, forKey: .coverURLString)
-        self.plot = try? container.decodeIfPresent(String.self, forKey: .plot)
-        self.cast = try? container.decodeIfPresent(String.self, forKey: .cast)
-        self.director = try? container.decodeIfPresent(String.self, forKey: .director)
-        self.genre = try? container.decodeIfPresent(String.self, forKey: .genre)
-
-        if let stringRating = try? container.decode(String.self, forKey: .rating) {
-            self.rating = stringRating
-        } else if let doubleRating = try? container.decode(Double.self, forKey: .rating) {
-            self.rating = String(format: "%.1f", doubleRating)
-        } else {
-            self.rating = nil
+        var result: [SeriesItem] = []
+        result.reserveCapacity(array.count)
+        for dict in array {
+            let id = FlexibleJSON.intValue(dict["series_id"]) ?? 0
+            let name = (dict["name"] as? String) ?? "Series \(id)"
+            let cover = dict["cover"] as? String
+            let plot = dict["plot"] as? String
+            let cast = dict["cast"] as? String
+            let director = dict["director"] as? String
+            let genre = dict["genre"] as? String
+            let rating = FlexibleJSON.ratingString(dict["rating"])
+            let categoryId = FlexibleJSON.stringValue(dict["category_id"]) ?? ""
+            result.append(SeriesItem(
+                id: id,
+                name: name,
+                coverURLString: cover,
+                plot: plot,
+                cast: cast,
+                director: director,
+                genre: genre,
+                rating: rating,
+                categoryId: categoryId
+            ))
         }
-
-        if let stringCat = try? container.decode(String.self, forKey: .categoryId) {
-            self.categoryId = stringCat
-        } else if let intCat = try? container.decode(Int.self, forKey: .categoryId) {
-            self.categoryId = String(intCat)
-        } else {
-            self.categoryId = ""
-        }
+        return result
     }
 
     public var coverURL: URL? {
-        guard let coverURLString, !coverURLString.isEmpty else { return nil }
-        return URL(string: coverURLString)
+        MediaURL.parse(coverURLString)
     }
 }
 
@@ -534,7 +850,8 @@ public struct SeriesDetails: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.info = try? container.decodeIfPresent(SeriesInfo.self, forKey: .info)
-        if let dict = try? container.decode([String: [SeriesEpisode]].self, forKey: .episodes) {
+        if FlexibleJSON.isPresent(container, forKey: .episodes),
+           let dict = try? container.decode([String: [SeriesEpisode]].self, forKey: .episodes) {
             self.episodes = dict
         } else {
             self.episodes = [:]
@@ -582,6 +899,28 @@ public struct SeriesInfo: Codable, Sendable {
         self.rating = rating
         self.backdropPath = backdropPath
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = FlexibleJSON.decodeOptionalString(from: container, forKey: .name)
+        self.cover = FlexibleJSON.decodeOptionalString(from: container, forKey: .cover)
+        self.plot = FlexibleJSON.decodeOptionalString(from: container, forKey: .plot)
+        self.cast = FlexibleJSON.decodeOptionalString(from: container, forKey: .cast)
+        self.director = FlexibleJSON.decodeOptionalString(from: container, forKey: .director)
+        self.genre = FlexibleJSON.decodeOptionalString(from: container, forKey: .genre)
+        self.rating = FlexibleJSON.decodeRating(from: container, forKey: .rating)
+        if FlexibleJSON.isPresent(container, forKey: .backdropPath) {
+            if let paths = try? container.decode([String].self, forKey: .backdropPath) {
+                self.backdropPath = paths
+            } else if let single = try? container.decode(String.self, forKey: .backdropPath) {
+                self.backdropPath = [single]
+            } else {
+                self.backdropPath = nil
+            }
+        } else {
+            self.backdropPath = nil
+        }
+    }
 }
 
 public struct SeriesEpisode: Codable, Identifiable, Hashable, Sendable {
@@ -619,34 +958,12 @@ public struct SeriesEpisode: Codable, Identifiable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        if let intId = try? container.decode(Int.self, forKey: .id) {
-            self.id = intId
-        } else if let strId = try? container.decode(String.self, forKey: .id), let intVal = Int(strId) {
-            self.id = intVal
-        } else {
-            self.id = 0
-        }
-
-        if let intNum = try? container.decode(Int.self, forKey: .episodeNum) {
-            self.episodeNum = intNum
-        } else if let strNum = try? container.decode(String.self, forKey: .episodeNum), let intVal = Int(strNum) {
-            self.episodeNum = intVal
-        } else {
-            self.episodeNum = 1
-        }
-
-        self.title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? "Episode \(self.episodeNum)"
-        self.containerExtension = (try? container.decodeIfPresent(String.self, forKey: .containerExtension)) ?? "mp4"
-
-        if let intSeason = try? container.decode(Int.self, forKey: .season) {
-            self.season = intSeason
-        } else if let strSeason = try? container.decode(String.self, forKey: .season), let intVal = Int(strSeason) {
-            self.season = intVal
-        } else {
-            self.season = 1
-        }
-
+        // Xtream get_series_info normally encodes id, episode_num, and season as JSON strings.
+        self.id = FlexibleJSON.decodeInt(from: container, forKey: .id, preferString: true)
+        self.episodeNum = FlexibleJSON.decodeInt(from: container, forKey: .episodeNum, preferString: true, default: 1)
+        self.title = FlexibleJSON.decodeOptionalString(from: container, forKey: .title) ?? "Episode \(self.episodeNum)"
+        self.containerExtension = FlexibleJSON.decodeOptionalString(from: container, forKey: .containerExtension) ?? "mp4"
+        self.season = FlexibleJSON.decodeInt(from: container, forKey: .season, preferString: true, default: 1)
         self.info = try? container.decodeIfPresent(SeriesEpisodeInfo.self, forKey: .info)
     }
 }
@@ -682,16 +999,10 @@ public struct SeriesEpisodeInfo: Codable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.duration = try? container.decodeIfPresent(String.self, forKey: .duration)
-        if let intSecs = try? container.decode(Int.self, forKey: .durationSecs) {
-            self.durationSecs = intSecs
-        } else if let strSecs = try? container.decode(String.self, forKey: .durationSecs), let val = Int(strSecs) {
-            self.durationSecs = val
-        } else {
-            self.durationSecs = nil
-        }
-        self.movieImage = try? container.decodeIfPresent(String.self, forKey: .movieImage)
-        self.plot = try? container.decodeIfPresent(String.self, forKey: .plot)
-        self.rating = try? container.decodeIfPresent(String.self, forKey: .rating)
+        self.duration = FlexibleJSON.decodeOptionalString(from: container, forKey: .duration)
+        self.durationSecs = FlexibleJSON.decodeOptionalInt(from: container, forKey: .durationSecs, preferString: true)
+        self.movieImage = FlexibleJSON.decodeOptionalString(from: container, forKey: .movieImage)
+        self.plot = FlexibleJSON.decodeOptionalString(from: container, forKey: .plot)
+        self.rating = FlexibleJSON.decodeRating(from: container, forKey: .rating)
     }
 }

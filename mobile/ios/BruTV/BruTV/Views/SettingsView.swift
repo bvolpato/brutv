@@ -8,9 +8,19 @@ public struct SettingsView: View {
     @State private var showingLogoutAlert = false
     @State private var showingClearCacheAlert = false
     @State private var showingQRCode = false
+    @State private var switchingProfileID: UUID?
+    @State private var switchError: String?
     @State private var statusFeedback: String?
 
     public init() {}
+
+    private var liveRewindFooter: String {
+        #if os(tvOS)
+        return "Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 96 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.".localized
+        #else
+        return "Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 256 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.".localized
+        #endif
+    }
 
     public var body: some View {
         Form {
@@ -96,6 +106,42 @@ public struct SettingsView: View {
                 }
             }
 
+            // In-App Profile Switcher
+            if account.savedProfiles.count > 1 {
+                Section(header: Text("SWITCH PROFILE".localized)) {
+                    ForEach(account.savedProfiles) { profile in
+                        let isCurrent = account.currentProfile?.id == profile.id
+                        Button {
+                            guard !isCurrent, switchingProfileID == nil else { return }
+                            switchToProfile(profile)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: profile.kind == .m3u ? "list.bullet.rectangle" : "server.rack")
+                                    .foregroundColor(.cyan)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.name)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    Text(profile.kind == .m3u ? "M3U Playlist".localized : profile.serverURL)
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.gray)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                if switchingProfileID == profile.id {
+                                    ProgressView().tint(.cyan)
+                                } else if isCurrent {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.cyan)
+                                }
+                            }
+                        }
+                        .disabled(isCurrent || switchingProfileID != nil)
+                    }
+                }
+            }
+
             Section(
                 header: Text("PLAYBACK & BUFFERING ENGINE".localized),
                 footer: Text("Buffer profiles request more or less video ahead of playback. The actual delay and stability depend on the stream, connection, and device.".localized)
@@ -112,11 +158,17 @@ public struct SettingsView: View {
                     }
                 }
 
+                Picker("Default Aspect Ratio".localized, selection: $playback.settings.defaultAspectRatio) {
+                    ForEach(VideoAspectRatio.allCases) { ratio in
+                        Text(ratio.displayName.localized).tag(ratio)
+                    }
+                }
+
+                Toggle("Auto-Play Next Episode".localized, isOn: $playback.settings.autoPlayNextEpisode)
                 Toggle("Stream Telemetry HUD".localized, isOn: $playback.settings.showStatsHUD)
-                Toggle("Hardware Acceleration".localized, isOn: $playback.settings.hardwareAcceleration)
             }
 
-            Section(header: Text("LIVE REWIND".localized), footer: Text("Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 256 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.".localized)) {
+            Section(header: Text("LIVE REWIND".localized), footer: Text(liveRewindFooter)) {
                 Toggle(isOn: $playback.settings.liveRewind) {
                     Label("Pause & Rewind Live TV".localized, systemImage: "clock.arrow.circlepath")
                 }
@@ -141,7 +193,7 @@ public struct SettingsView: View {
                 }
 
                 Button {
-                    account.client.clearCache()
+                    account.refreshCatalog()
                     showFeedback("Channel listings refreshed".localized)
                 } label: {
                     Label("Refresh Channel Listings".localized, systemImage: "arrow.clockwise")
@@ -179,6 +231,14 @@ public struct SettingsView: View {
                 LoginQRCodeView(link: profile.loginLink, title: profile.name)
             }
         }
+        .alert(
+            "Could not switch profile".localized,
+            isPresented: Binding(get: { switchError != nil }, set: { if !$0 { switchError = nil } })
+        ) {
+            Button("OK".localized, role: .cancel) {}
+        } message: {
+            Text(switchError ?? "")
+        }
         .alert("Clear Image Cache".localized, isPresented: $showingClearCacheAlert) {
             Button("Clear".localized, role: .destructive) {
                 ImageCache.shared.clear()
@@ -196,6 +256,20 @@ public struct SettingsView: View {
             Button("Cancel".localized, role: .cancel) {}
         } message: {
             Text("Are you sure you want to log out of this IPTV server?".localized)
+        }
+    }
+
+    private func switchToProfile(_ profile: ServerProfile) {
+        switchingProfileID = profile.id
+        playback.stop()
+        Task {
+            do {
+                try await account.switchProfile(to: profile)
+            } catch is CancellationError {
+            } catch {
+                switchError = error.localizedDescription
+            }
+            switchingProfileID = nil
         }
     }
 

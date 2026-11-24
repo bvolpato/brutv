@@ -472,6 +472,47 @@ final class MPEGTSRelayTests: XCTestCase {
         XCTAssertTrue(playlist.contains("#EXT-X-DISCONTINUITY\n"), playlist)
         await recorder.stop()
     }
+
+    func testZeroAllocSegmenterParityAcrossUnalignedChunksAndMisplacedAUD() {
+        // Build a stream with misplaced AUD (SPS, PPS, AUD, IDR) fed across odd 137-byte chunks.
+        func keyframePayload(pts: Int64) -> [UInt8] {
+            let ptsBytes: [UInt8] = [
+                0x21 | UInt8((pts >> 29) & 0x0E), UInt8((pts >> 22) & 0xFF),
+                0x01 | UInt8((pts >> 14) & 0xFE), UInt8((pts >> 7) & 0xFF), 0x01 | UInt8((pts << 1) & 0xFE),
+            ]
+            let header: [UInt8] = [0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 0x05] + ptsBytes
+            let sps: [UInt8] = [0, 0, 0, 1, 0x67, 0x42, 0x00]
+            let pps: [UInt8] = [0, 0, 0, 1, 0x68, 0xCE]
+            let aud: [UInt8] = [0, 0, 0, 1, 0x09, 0x10]
+            let idr: [UInt8] = [0, 0, 0, 1, 0x65, 0x88]
+            return header + sps + pps + aud + idr
+        }
+
+        var bytes: [UInt8] = []
+        for frame in 0..<50 {
+            let isKey = frame % 10 == 0
+            let pts = Int64(900_000 + frame * 9_000)
+            bytes += pat + pmt
+            bytes += packet(
+                pid: videoPID,
+                unitStart: true,
+                randomAccess: isKey,
+                payload: isKey ? keyframePayload(pts: pts) : pes(pts: pts, keyframe: false)
+            )
+            bytes += packet(pid: videoPID, unitStart: false, payload: [UInt8](repeating: 0xAB, count: 184))
+        }
+
+        var singleShot = MPEGTSSegmenter(targetDuration: 2)
+        let expected = singleShot.append(Data(bytes))
+        XCTAssertEqual(expected.map(\.duration), [2, 2])
+
+        var chunked = MPEGTSSegmenter(targetDuration: 2)
+        var actual: [TransportStreamSegment] = []
+        for start in stride(from: 0, to: bytes.count, by: 137) {
+            actual += chunked.append(Data(bytes[start..<min(start + 137, bytes.count)]))
+        }
+        XCTAssertEqual(actual, expected)
+    }
 }
 
 private final class AttemptCounter: @unchecked Sendable {

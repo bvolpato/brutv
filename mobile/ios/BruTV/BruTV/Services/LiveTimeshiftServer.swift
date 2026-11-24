@@ -3,11 +3,14 @@ import Foundation
 import Network
 
 /// AVPlayer requires ordinary HTTP URLs for HLS media segments, including local recordings.
+/// Supports HTTP/1.1 persistent keep-alive connections so AVPlayer reuses TCP sockets across
+/// playlist polls and segment fetches without per-request handshake or close-grace overhead.
 final class LiveTimeshiftServer: @unchecked Sendable {
     private static let maxConnections = 32
     private static let idleTimeoutSeconds: TimeInterval = 15
     private static let closeGraceSeconds: TimeInterval = 2
     private static let startTimeoutSeconds: TimeInterval = 5
+    private static let headerDelimiter = Data("\r\n\r\n".utf8)
 
     private let recorder: LiveTimeshiftRecorder
     private let token = UUID().uuidString
@@ -185,9 +188,27 @@ final class LiveTimeshiftServer: @unchecked Sendable {
         connection.cancel()
     }
 
-    /// Completes a response cleanly after TCP FIN (`.finalMessage`) by waiting briefly for
-    /// client EOF instead of immediately sending TCP RST via `connection.cancel()`.
-    private func finishConnection(_ connection: NWConnection) {
+    /// Completes a response cleanly: for keep-alive connections, immediately resumes reading
+    /// the next HTTP request on the same TCP socket; otherwise waits briefly for client EOF.
+    private func completeResponse(_ connection: NWConnection, keepAlive: Bool, remainder: Data) {
+        let identifier = ObjectIdentifier(connection)
+        closeFile(identifier)
+        guard !stopped, connections[identifier] != nil else { return }
+        if keepAlive {
+            scheduleIdleTimeout(for: connection, seconds: Self.idleTimeoutSeconds)
+            if !remainder.isEmpty, let delimiterRange = remainder.range(of: Self.headerDelimiter) {
+                let nextRequest = Data(remainder[remainder.startIndex..<delimiterRange.upperBound])
+                let nextRemainder = Data(remainder[delimiterRange.upperBound...])
+                respond(connection, request: nextRequest, remainder: nextRemainder)
+            } else {
+                receive(connection, bytes: remainder)
+            }
+            return
+        }
+        finishClosingConnection(connection)
+    }
+
+    private func finishClosingConnection(_ connection: NWConnection) {
         let identifier = ObjectIdentifier(connection)
         closeFile(identifier)
         guard connections[identifier] != nil else { return }
@@ -197,7 +218,7 @@ final class LiveTimeshiftServer: @unchecked Sendable {
             if isComplete || error != nil {
                 self.teardownConnection(connection)
             } else if self.connections[identifier] != nil {
-                self.finishConnection(connection)
+                self.finishClosingConnection(connection)
             }
         }
     }
@@ -205,46 +226,67 @@ final class LiveTimeshiftServer: @unchecked Sendable {
     private func receive(_ connection: NWConnection, bytes: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, complete, error in
             guard let self else { connection.cancel(); return }
-            var request = bytes
+            var buffer = bytes
             if let data {
-                request.append(data)
+                buffer.append(data)
                 self.scheduleIdleTimeout(for: connection, seconds: Self.idleTimeoutSeconds)
             }
-            guard request.count <= 16 * 1024 else {
-                self.send(connection, status: 431, body: Data(), head: false)
+            guard buffer.count <= 16 * 1024 else {
+                self.send(connection, status: 431, body: Data(), head: false, keepAlive: false, remainder: Data())
                 return
             }
-            if request.range(of: Data("\r\n\r\n".utf8)) != nil {
-                self.respond(connection, request: request)
+            if let delimiterRange = buffer.range(of: Self.headerDelimiter) {
+                let request = Data(buffer[buffer.startIndex..<delimiterRange.upperBound])
+                let remainder = Data(buffer[delimiterRange.upperBound...])
+                self.respond(connection, request: request, remainder: remainder)
             } else if complete || error != nil {
                 self.teardownConnection(connection)
             } else {
-                self.receive(connection, bytes: request)
+                self.receive(connection, bytes: buffer)
             }
         }
     }
 
-    private func respond(_ connection: NWConnection, request: Data) {
+    private func respond(_ connection: NWConnection, request: Data, remainder: Data) {
         guard let text = String(data: request, encoding: .utf8) else {
-            send(connection, status: 400, body: Data(), head: false); return
+            send(connection, status: 400, body: Data(), head: false, keepAlive: false, remainder: Data()); return
         }
         let lines = text.components(separatedBy: "\r\n")
         let first = (lines.first ?? "").split(separator: " ")
         guard first.count == 3, first[0] == "GET" || first[0] == "HEAD" else {
-            send(connection, status: 405, body: Data(), head: false); return
+            send(connection, status: 405, body: Data(), head: false, keepAlive: false, remainder: Data()); return
         }
         let head = first[0] == "HEAD"
+        let httpVersion = first[2].uppercased()
+        let connectionHeader = lines.dropFirst().first(where: { $0.lowercased().hasPrefix("connection:") }).map {
+            String($0.dropFirst("connection:".count)).trimmingCharacters(in: .whitespaces).lowercased()
+        }
+        let keepAlive: Bool
+        if let connectionHeader {
+            if connectionHeader.contains("close") {
+                keepAlive = false
+            } else if connectionHeader.contains("keep-alive") {
+                keepAlive = true
+            } else {
+                keepAlive = httpVersion == "HTTP/1.1"
+            }
+        } else {
+            keepAlive = httpVersion == "HTTP/1.1"
+        }
+
         guard let path = String(first[1]).split(separator: "?", maxSplits: 1).first else {
-            send(connection, status: 400, body: Data(), head: head); return
+            send(connection, status: 400, body: Data(), head: head, keepAlive: false, remainder: Data()); return
         }
         let prefix = "/\(token)/"
-        guard path.hasPrefix(prefix) else { send(connection, status: 404, body: Data(), head: head); return }
+        guard path.hasPrefix(prefix) else {
+            send(connection, status: 404, body: Data(), head: head, keepAlive: keepAlive, remainder: remainder); return
+        }
         let name = String(path.dropFirst(prefix.count))
         guard name == "live.m3u8" || (name.hasPrefix("segment-") && name.hasSuffix(".ts") &&
             name.dropFirst(8).dropLast(3).allSatisfy(\.isNumber)) else {
-            send(connection, status: 404, body: Data(), head: head); return
+            send(connection, status: 404, body: Data(), head: head, keepAlive: keepAlive, remainder: remainder); return
         }
-        let rangeHeader = lines.first(where: { $0.lowercased().hasPrefix("range:") }).map {
+        let rangeHeader = lines.dropFirst().first(where: { $0.lowercased().hasPrefix("range:") }).map {
             String($0.dropFirst("range:".count)).trimmingCharacters(in: .whitespaces)
         }
         Task {
@@ -252,11 +294,14 @@ final class LiveTimeshiftServer: @unchecked Sendable {
                 if name == "live.m3u8" {
                     let data = try await recorder.playlist()
                     self.queue.async {
-                        self.send(connection, status: 200, body: data, head: head, type: "application/vnd.apple.mpegurl")
+                        self.send(connection, status: 200, body: data, head: head,
+                                  type: "application/vnd.apple.mpegurl", keepAlive: keepAlive, remainder: remainder)
                     }
                 } else {
                     guard let (handle, length) = try await recorder.openSegment(named: name) else {
-                        self.queue.async { self.send(connection, status: 410, body: Data(), head: head) }
+                        self.queue.async {
+                            self.send(connection, status: 410, body: Data(), head: head, keepAlive: keepAlive, remainder: remainder)
+                        }
                         return
                     }
                     self.queue.async {
@@ -267,7 +312,8 @@ final class LiveTimeshiftServer: @unchecked Sendable {
                             guard let requested = Self.range(header, length: length) else {
                                 self.release(handle, named: name)
                                 self.send(connection, status: 416, body: Data(), head: head,
-                                          extra: "Content-Range: bytes */\(length)\r\n")
+                                          extra: "Content-Range: bytes */\(length)\r\n",
+                                          keepAlive: keepAlive, remainder: remainder)
                                 return
                             }
                             range = requested
@@ -277,29 +323,32 @@ final class LiveTimeshiftServer: @unchecked Sendable {
                         catch { self.teardownConnection(connection); return }
                         let extra = rangeHeader == nil ? "" : "Content-Range: bytes \(range.lowerBound)-\(range.upperBound - 1)/\(length)\r\n"
                         let header = Self.header(status: rangeHeader == nil ? 200 : 206, type: "video/mp2t",
-                                                 length: range.count, extra: extra)
+                                                 length: range.count, extra: extra, keepAlive: keepAlive)
                         let headerOnly = head || range.isEmpty
+                        let finalFrame = headerOnly && !keepAlive
                         connection.send(
                             content: header,
-                            contentContext: headerOnly ? .finalMessage : .defaultMessage,
-                            isComplete: headerOnly,
+                            contentContext: finalFrame ? .finalMessage : .defaultMessage,
+                            isComplete: finalFrame,
                             completion: .contentProcessed { error in
                                 if error != nil {
                                     self.teardownConnection(connection)
                                     return
                                 }
                                 if headerOnly {
-                                    self.finishConnection(connection)
+                                    self.completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
                                     return
                                 }
                                 self.scheduleIdleTimeout(for: connection, seconds: Self.idleTimeoutSeconds)
-                                self.sendFile(connection, remaining: range.count)
+                                self.sendFile(connection, remaining: range.count, keepAlive: keepAlive, remainder: remainder)
                             }
                         )
                     }
                 }
             } catch {
-                self.queue.async { self.send(connection, status: 503, body: Data(), head: head) }
+                self.queue.async {
+                    self.send(connection, status: 503, body: Data(), head: head, keepAlive: keepAlive, remainder: remainder)
+                }
             }
         }
     }
@@ -318,11 +367,14 @@ final class LiveTimeshiftServer: @unchecked Sendable {
         return start..<(min(last, length - 1) + 1)
     }
 
-    private static func header(status: Int, type: String, length: Int, extra: String) -> Data {
+    private static func header(status: Int, type: String, length: Int, extra: String, keepAlive: Bool) -> Data {
         let reasons = [200: "OK", 206: "Partial Content", 400: "Bad Request", 404: "Not Found",
                        405: "Method Not Allowed", 410: "Gone", 416: "Range Not Satisfiable",
                        431: "Request Header Fields Too Large", 503: "Service Unavailable"]
-        return Data("HTTP/1.1 \(status) \(reasons[status] ?? "Error")\r\nContent-Type: \(type)\r\nContent-Length: \(length)\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\(extra)\r\n".utf8)
+        let connHeader = keepAlive
+            ? "Connection: keep-alive\r\nKeep-Alive: timeout=\(Int(idleTimeoutSeconds))\r\n"
+            : "Connection: close\r\n"
+        return Data("HTTP/1.1 \(status) \(reasons[status] ?? "Error")\r\nContent-Type: \(type)\r\nContent-Length: \(length)\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\n\(connHeader)\(extra)\r\n".utf8)
     }
 
     private func closeFile(_ identifier: ObjectIdentifier) {
@@ -334,33 +386,34 @@ final class LiveTimeshiftServer: @unchecked Sendable {
         Task { await recorder.releaseSegment(named: name) }
     }
 
-    private func sendFile(_ connection: NWConnection, remaining: Int) {
+    private func sendFile(_ connection: NWConnection, remaining: Int, keepAlive: Bool, remainder: Data) {
         let identifier = ObjectIdentifier(connection)
         guard remaining > 0, let (handle, _) = handles[identifier] else {
-            finishConnection(connection)
+            completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
             return
         }
         do {
             guard let chunk = try handle.read(upToCount: min(64 * 1024, remaining)), !chunk.isEmpty else {
-                finishConnection(connection)
+                completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
                 return
             }
-            let isFinal = chunk.count == remaining
+            let isLastChunk = chunk.count == remaining
+            let finalFrame = isLastChunk && !keepAlive
             connection.send(
                 content: chunk,
-                contentContext: isFinal ? .finalMessage : .defaultMessage,
-                isComplete: isFinal,
+                contentContext: finalFrame ? .finalMessage : .defaultMessage,
+                isComplete: finalFrame,
                 completion: .contentProcessed { error in
                     if error != nil {
                         self.teardownConnection(connection)
                         return
                     }
-                    if isFinal {
-                        self.finishConnection(connection)
+                    if isLastChunk {
+                        self.completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
                         return
                     }
                     self.scheduleIdleTimeout(for: connection, seconds: Self.idleTimeoutSeconds)
-                    self.sendFile(connection, remaining: remaining - chunk.count)
+                    self.sendFile(connection, remaining: remaining - chunk.count, keepAlive: keepAlive, remainder: remainder)
                 }
             )
         } catch {
@@ -369,31 +422,34 @@ final class LiveTimeshiftServer: @unchecked Sendable {
     }
 
     private func send(_ connection: NWConnection, status: Int, body: Data, head: Bool,
-                      type: String = "application/octet-stream", extra: String = "") {
+                      type: String = "application/octet-stream", extra: String = "",
+                      keepAlive: Bool, remainder: Data) {
         let headerOnly = head || body.isEmpty
+        let headerFinal = headerOnly && !keepAlive
         connection.send(
-            content: Self.header(status: status, type: type, length: body.count, extra: extra),
-            contentContext: headerOnly ? .finalMessage : .defaultMessage,
-            isComplete: headerOnly,
+            content: Self.header(status: status, type: type, length: body.count, extra: extra, keepAlive: keepAlive),
+            contentContext: headerFinal ? .finalMessage : .defaultMessage,
+            isComplete: headerFinal,
             completion: .contentProcessed { error in
                 if error != nil {
                     self.teardownConnection(connection)
                     return
                 }
                 if headerOnly {
-                    self.finishConnection(connection)
+                    self.completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
                     return
                 }
                 self.scheduleIdleTimeout(for: connection, seconds: Self.idleTimeoutSeconds)
+                let bodyFinal = !keepAlive
                 connection.send(
                     content: body,
-                    contentContext: .finalMessage,
-                    isComplete: true,
+                    contentContext: bodyFinal ? .finalMessage : .defaultMessage,
+                    isComplete: bodyFinal,
                     completion: .contentProcessed { error in
                         if error != nil {
                             self.teardownConnection(connection)
                         } else {
-                            self.finishConnection(connection)
+                            self.completeResponse(connection, keepAlive: keepAlive, remainder: remainder)
                         }
                     }
                 )

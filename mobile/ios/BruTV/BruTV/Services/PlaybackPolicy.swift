@@ -680,3 +680,91 @@ struct NetworkPathRecoveryPolicy: Equatable, Sendable {
         return true
     }
 }
+
+/// Pure helpers for collision-free media track IDs and language preference matching.
+public enum MediaTrackMatcher {
+    public struct TrackDescriptor: Equatable, Sendable {
+        public let index: Int
+        public let displayName: String
+        public let languageTag: String?
+        public let characteristics: [String]
+        public let isForced: Bool
+
+        public init(
+            index: Int,
+            displayName: String,
+            languageTag: String? = nil,
+            characteristics: [String] = [],
+            isForced: Bool = false
+        ) {
+            self.index = index
+            self.displayName = displayName
+            self.languageTag = languageTag
+            self.characteristics = characteristics
+            self.isForced = isForced
+        }
+    }
+
+    /// Generates a collision-free identifier incorporating track index, language tag, and characteristics.
+    public static func makeTrackID(
+        index: Int,
+        displayName: String,
+        languageTag: String?,
+        characteristics: [String] = []
+    ) -> String {
+        let lang = normalizedLanguageTag(languageTag) ?? ""
+        let chars = characteristics.sorted().joined(separator: ",")
+        return "\(index)|\(lang)|\(chars)|\(displayName)"
+    }
+
+    public static func normalizedLanguageTag(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    public static func baseLanguageCode(_ raw: String?) -> String? {
+        guard let normalized = normalizedLanguageTag(raw) else { return nil }
+        return normalized.split(separator: "-").first.map(String.init)
+    }
+
+    /// Finds the best matching track index for `preferredLanguage` (exact BCP-47 match first, then base language).
+    /// Prefers non-forced tracks unless only forced tracks match.
+    public static func preferredTrackIndex(
+        in tracks: [TrackDescriptor],
+        preferredLanguage: String?
+    ) -> Int? {
+        guard let target = normalizedLanguageTag(preferredLanguage),
+              target != "off",
+              !tracks.isEmpty else {
+            return nil
+        }
+        let targetBase = baseLanguageCode(target)
+
+        // 1. Exact tag match (non-forced first)
+        if let exact = tracks.first(where: { !$0.isForced && normalizedLanguageTag($0.languageTag) == target }) {
+            return exact.index
+        }
+        if let exactForced = tracks.first(where: { normalizedLanguageTag($0.languageTag) == target }) {
+            return exactForced.index
+        }
+
+        // 2. Base language code match (e.g. "pt" matches "pt-BR" or "pt-PT")
+        if let targetBase {
+            if let base = tracks.first(where: { !$0.isForced && baseLanguageCode($0.languageTag) == targetBase }) {
+                return base.index
+            }
+            if let baseForced = tracks.first(where: { baseLanguageCode($0.languageTag) == targetBase }) {
+                return baseForced.index
+            }
+        }
+
+        // 3. Fallback: display name prefix match (some streams omit languageTag)
+        if let byName = tracks.first(where: { !$0.isForced && $0.displayName.lowercased().hasPrefix(target) }) {
+            return byName.index
+        }
+        return nil
+    }
+}

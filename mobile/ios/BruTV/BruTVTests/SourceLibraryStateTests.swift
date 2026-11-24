@@ -69,4 +69,34 @@ final class SourceLibraryStateTests: XCTestCase {
         XCTAssertEqual(library.recentIDs.filter { $0 == 20 }.count, 1)
         XCTAssertFalse(library.recentIDs.contains(5))
     }
+
+    func testWatchProgressStateScopesByProfileResetsOnCompletionAndCapsHistory() throws {
+        let profileA = UUID()
+        let profileB = UUID()
+        var state = WatchProgressState()
+
+        // Positions below 10s are ignored.
+        state.record(sourceID: profileA, item: WatchProgressItem(streamID: 1, kind: "vod", title: "Too Early", position: 5, duration: 3600))
+        XCTAssertNil(state.resumePosition(for: profileA, kind: "vod", streamID: 1))
+
+        // Mid-movie position persists and isolates by profile.
+        state.record(sourceID: profileA, item: WatchProgressItem(streamID: 10, kind: "vod", title: "Inception", position: 1200, duration: 7200))
+        XCTAssertEqual(state.resumePosition(for: profileA, kind: "vod", streamID: 10), 1200)
+        XCTAssertNil(state.resumePosition(for: profileB, kind: "vod", streamID: 10))
+
+        // >= 92% completion resets and removes from continue watching.
+        state.record(sourceID: profileA, item: WatchProgressItem(streamID: 10, kind: "vod", title: "Inception", position: 6700, duration: 7200))
+        XCTAssertNil(state.resumePosition(for: profileA, kind: "vod", streamID: 10))
+        XCTAssertTrue(state.items(for: profileA).isEmpty)
+
+        // Cap at 50 items and verify Codable round-trip.
+        for i in 1...60 {
+            state.record(sourceID: profileB, item: WatchProgressItem(streamID: i, kind: "series", title: "Ep \(i)", position: 120, duration: 2400))
+        }
+        XCTAssertEqual(state.items(for: profileB).count, WatchProgressState.maxItemsPerProfile)
+        XCTAssertEqual(state.items(for: profileB).first?.streamID, 60)
+
+        let decoded = try JSONDecoder().decode(WatchProgressState.self, from: JSONEncoder().encode(state))
+        XCTAssertEqual(decoded.resumePosition(for: profileB, kind: "series", streamID: 60), 120)
+    }
 }

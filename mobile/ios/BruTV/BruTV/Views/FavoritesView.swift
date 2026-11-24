@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct FavoritesView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var playingStreamID: Int? = PlaybackManager.shared.currentStream?.id
@@ -125,7 +126,9 @@ public struct FavoritesView: View {
                                 ForEach(filteredFavoriteStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
-                                        isSelected: playingStreamID == stream.id
+                                        isSelected: playingStreamID == stream.id,
+                                        isFavorite: true,
+                                        onToggleFavorite: { favorites.toggleFavorite(channelID: stream.id) }
                                     ) {
                                         PlaybackManager.shared.play(stream: stream, from: filteredFavoriteStreams)
                                     }
@@ -185,7 +188,9 @@ public struct FavoritesView: View {
                                 ForEach(filteredRecentStreams) { stream in
                                     ChannelCardView(
                                         stream: stream,
-                                        isSelected: playingStreamID == stream.id
+                                        isSelected: playingStreamID == stream.id,
+                                        isFavorite: favorites.favoriteChannelIDs.contains(stream.id),
+                                        onToggleFavorite: { favorites.toggleFavorite(channelID: stream.id) }
                                     ) {
                                         PlaybackManager.shared.play(stream: stream, from: filteredRecentStreams)
                                     }
@@ -204,6 +209,9 @@ public struct FavoritesView: View {
         .task {
             await loadStreams()
         }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadStreams() }
+        }
         .onChange(of: favorites.favoriteChannelIDs) { _, _ in
             Task { await loadStreams() }
         }
@@ -214,8 +222,7 @@ public struct FavoritesView: View {
 
     private func loadStreams() async {
         do {
-            let all = try await client.fetchLiveStreams()
-            let streamMap = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+            let streamMap = try await client.liveStreamIndex()
 
             await MainActor.run {
                 self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }

@@ -37,7 +37,7 @@ struct TransportStreamSegment: Equatable, Sendable {
     }
 }
 
-/// Cuts a continuous MPEG-TS stream into HLS segments.
+/// Cuts a continuous MPEG-TS stream into HLS segments without per-packet heap allocations.
 ///
 /// Each segment starts at a video keyframe and begins with a copy of the stream's PAT and
 /// PMT, so a player can start decoding at any segment. Durations come from the PES
@@ -51,14 +51,82 @@ struct MPEGTSSegmenter {
     private static let maxPendingVideoPackets = 16
     private static let maxPendingTotalPackets = 96
 
+    /// Inline 3-byte tail to detect 0x00 0x00 0x01 start codes crossing packet boundaries with zero heap allocation.
+    private struct StartCodeTail {
+        var b0: UInt8 = 0
+        var b1: UInt8 = 0
+        var b2: UInt8 = 0
+        var count: Int = 0
+
+        @inline(__always)
+        subscript(index: Int) -> UInt8 {
+            switch index {
+            case 0: return b0
+            case 1: return b1
+            default: return b2
+            }
+        }
+
+        mutating func update(from packet: UnsafeBufferPointer<UInt8>, start: Int) {
+            guard start < MPEGTSSegmenter.packetSize else { return }
+            let sliceCount = MPEGTSSegmenter.packetSize - start
+            if sliceCount >= 3 {
+                let end = MPEGTSSegmenter.packetSize
+                b0 = packet[end - 3]
+                b1 = packet[end - 2]
+                b2 = packet[end - 1]
+                count = 3
+            } else {
+                var combined: (UInt8, UInt8, UInt8, UInt8, UInt8) = (0, 0, 0, 0, 0)
+                var total = 0
+                for i in 0..<count {
+                    Self.set(&combined, at: total, to: self[i])
+                    total += 1
+                }
+                for i in start..<MPEGTSSegmenter.packetSize {
+                    Self.set(&combined, at: total, to: packet[i])
+                    total += 1
+                }
+                let keep = min(3, total)
+                let base = total - keep
+                count = keep
+                b0 = keep > 0 ? Self.get(combined, at: base) : 0
+                b1 = keep > 1 ? Self.get(combined, at: base + 1) : 0
+                b2 = keep > 2 ? Self.get(combined, at: base + 2) : 0
+            }
+        }
+
+        @inline(__always)
+        private static func set(_ t: inout (UInt8, UInt8, UInt8, UInt8, UInt8), at idx: Int, to val: UInt8) {
+            switch idx {
+            case 0: t.0 = val
+            case 1: t.1 = val
+            case 2: t.2 = val
+            case 3: t.3 = val
+            default: t.4 = val
+            }
+        }
+
+        @inline(__always)
+        private static func get(_ t: (UInt8, UInt8, UInt8, UInt8, UInt8), at idx: Int) -> UInt8 {
+            switch idx {
+            case 0: return t.0
+            case 1: return t.1
+            case 2: return t.2
+            case 3: return t.3
+            default: return t.4
+            }
+        }
+    }
+
     private struct PendingVideoPES {
         let pts: Int64
         /// Duration to emit for the in-progress segment if this PES is a keyframe (nil if no segment is open).
         let cutDuration: Double?
-        var packets: [[UInt8]]
+        var packets: Data
+        var packetCount: Int
         var videoPacketsScanned: Int
-        /// Up to the last 3 bytes of the previous video ES payload to catch start codes across packet boundaries.
-        var tail: [UInt8]
+        var tail: StartCodeTail
     }
 
     let targetDuration: Double
@@ -68,18 +136,20 @@ struct MPEGTSSegmenter {
     let maximumSegmentBytes: Int
 
     private var pending = Data()
-    private var pat: [UInt8]?
-    private var pmt: [UInt8]?
+    private var pat: Data?
+    private var pmt: Data?
     private var pmtPID: Int?
     private var timingPID: Int?
     private var timingIsVideo = false
     private var videoStreamType: UInt8 = 0
-    private var current: [UInt8] = []
+    private var current = Data()
     private var currentStartPTS: Int64?
     private var currentMaxPTS: Int64?
     private var pendingPES: PendingVideoPES?
     private var pendingDiscontinuity = false
     private var hasEmittedSegment = false
+    /// Reusable 188-byte scratch buffer used only when H.264 AUD reordering is needed.
+    private var reorderScratch = [UInt8](repeating: 0, count: MPEGTSSegmenter.packetSize)
 
     init(
         targetDuration: Double = 2,
@@ -101,27 +171,51 @@ struct MPEGTSSegmenter {
     }
 
     mutating func append(_ data: Data) -> [TransportStreamSegment] {
-        pending.append(data)
+        guard !data.isEmpty else { return [] }
         var segments: [TransportStreamSegment] = []
-        var offset = pending.startIndex
-        let end = pending.endIndex
-        while end - offset >= Self.packetSize {
-            // Resynchronize on a sync byte that the next packet confirms.
-            guard pending[offset] == 0x47,
-                  end - offset < Self.packetSize * 2 || pending[offset + Self.packetSize] == 0x47 else {
-                offset += 1
-                continue
+
+        if pending.isEmpty {
+            // Fast zero-copy path: scan incoming chunk directly without copying into `pending`.
+            let consumed = processBuffer(data, segments: &segments)
+            if consumed < data.count {
+                pending.append(data[(data.startIndex + consumed)...])
             }
-            let packet = [UInt8](pending[offset..<(offset + Self.packetSize)])
-            if let segment = process(packet) { segments.append(segment) }
-            offset += Self.packetSize
+            return segments
         }
-        pending = Data(pending[offset..<end])
+
+        pending.append(data)
+        let buffer = pending
+        pending = Data()
+        let consumed = processBuffer(buffer, segments: &segments)
+        if consumed < buffer.count {
+            pending.append(buffer[(buffer.startIndex + consumed)...])
+        }
         return segments
     }
 
-    private mutating func process(_ packet: [UInt8]) -> TransportStreamSegment? {
-        var p = packet
+    private mutating func processBuffer(_ data: Data, segments: inout [TransportStreamSegment]) -> Int {
+        var offset = 0
+        let count = data.count
+        data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            while count - offset >= Self.packetSize {
+                // Resynchronize on a sync byte that the next packet confirms.
+                guard base[offset] == 0x47,
+                      count - offset < Self.packetSize * 2 || base[offset + Self.packetSize] == 0x47 else {
+                    offset += 1
+                    continue
+                }
+                let packet = UnsafeBufferPointer(start: base + offset, count: Self.packetSize)
+                if let segment = process(packet) {
+                    segments.append(segment)
+                }
+                offset += Self.packetSize
+            }
+        }
+        return offset
+    }
+
+    private mutating func process(_ p: UnsafeBufferPointer<UInt8>) -> TransportStreamSegment? {
         let pid = Int(p[1] & 0x1F) << 8 | Int(p[2])
         let unitStart = p[1] & 0x40 != 0
         let adaptation = (p[3] >> 4) & 0x3
@@ -137,101 +231,64 @@ struct MPEGTSSegmenter {
 
         if pid == 0, unitStart, hasPayload {
             if parsePAT(p, payload: payload) {
-                pat = p
+                pat = Data(buffer: p)
             }
         } else if pid == pmtPID, unitStart, hasPayload {
             if parsePMT(p, payload: payload) {
-                pmt = p
+                pmt = Data(buffer: p)
             }
         } else if pid == timingPID, unitStart, hasPayload {
             flushPendingPES()
             if let pts = Self.presentationTime(p, payload: payload) {
-                if timingIsVideo && videoStreamType == 0x1B {
-                    Self.moveAccessUnitDelimiterFirst(&p, payload: payload)
-                }
-                let immediateKeyframe = !timingIsVideo || randomAccess || containsKeyframe(p, payload: payload)
-                let esStart = payload + 9 <= Self.packetSize ? payload + 9 + Int(p[payload + 8]) : Self.packetSize
-                if let start = currentStartPTS {
-                    let deltaTicks = Self.signedPTSDelta(from: start, to: pts)
-                    let deltaSeconds = Double(deltaTicks) / 90_000
-                    if abs(deltaSeconds) > 60 {
-                        // True timeline jump (forward or backward > 60s). Start again at the next keyframe.
-                        resetCurrent()
-                        if hasEmittedSegment {
-                            pendingDiscontinuity = true
-                        }
-                        if immediateKeyframe {
-                            startSegment(at: pts)
-                        } else if timingIsVideo, pat != nil, pmt != nil {
-                            pendingPES = PendingVideoPES(
-                                pts: pts,
-                                cutDuration: nil,
-                                packets: [p],
-                                videoPacketsScanned: 1,
-                                tail: Self.tailBytes(p, from: esStart)
-                            )
-                            return nil
-                        }
-                    } else {
-                        // Open-GOP B-frame reordering can yield small negative deltas relative to start.
-                        // Preserve the segment and track maxPTS in the current segment for duration.
-                        let previousMaxPTS = currentMaxPTS ?? start
-                        let maxDeltaTicks = max(deltaTicks, Self.signedPTSDelta(from: start, to: previousMaxPTS))
-                        let duration = Double(max(0, maxDeltaTicks)) / 90_000
-                        if (immediateKeyframe && duration >= targetDuration) || duration >= maximumDuration {
-                            if duration >= 0.25 {
-                                emitted = emitCurrentSegment(duration: duration)
-                            }
-                            startSegment(at: pts)
-                        } else if timingIsVideo, !immediateKeyframe, duration >= targetDuration {
-                            // Hold this PES briefly while scanning continuation packets for SPS/IDR
-                            // (e.g. when a large SEI/AUD precedes the keyframe NAL unit).
-                            pendingPES = PendingVideoPES(
-                                pts: pts,
-                                cutDuration: duration,
-                                packets: [p],
-                                videoPacketsScanned: 1,
-                                tail: Self.tailBytes(p, from: esStart)
-                            )
-                            return nil
-                        } else if Self.signedPTSDelta(from: previousMaxPTS, to: pts) > 0 {
-                            currentMaxPTS = pts
-                        }
+                // Only copy into the reusable scratch buffer when H.264 AUD reordering is actually required.
+                var useScratch = false
+                if timingIsVideo && videoStreamType == 0x1B && Self.needsAccessUnitDelimiterReorder(p, payload: payload) {
+                    for i in 0..<Self.packetSize {
+                        reorderScratch[i] = p[i]
                     }
-                } else if immediateKeyframe {
-                    startSegment(at: pts)
-                } else if timingIsVideo, pat != nil, pmt != nil {
-                    pendingPES = PendingVideoPES(
+                    Self.moveAccessUnitDelimiterFirst(&reorderScratch, payload: payload)
+                    useScratch = true
+                }
+                if useScratch {
+                    return reorderScratch.withUnsafeBufferPointer { scratchPtr in
+                        processTimingUnitStart(
+                            scratchPtr,
+                            pts: pts,
+                            payload: payload,
+                            randomAccess: randomAccess
+                        )
+                    }
+                } else {
+                    return processTimingUnitStart(
+                        p,
                         pts: pts,
-                        cutDuration: nil,
-                        packets: [p],
-                        videoPacketsScanned: 1,
-                        tail: Self.tailBytes(p, from: esStart)
+                        payload: payload,
+                        randomAccess: randomAccess
                     )
-                    return nil
                 }
             }
         } else if pid == timingPID, !unitStart, hasPayload, var pending = pendingPES {
-            if containsKeyframeBytes(p[payload..<Self.packetSize], prefix: pending.tail) {
+            if containsKeyframeBytes(p, start: payload, prefix: pending.tail) {
                 pendingPES = nil
                 if let cutDuration = pending.cutDuration, currentStartPTS != nil, cutDuration >= 0.25 {
                     emitted = emitCurrentSegment(duration: cutDuration)
                 }
                 startSegment(at: pending.pts)
                 if currentStartPTS != nil {
-                    for buffered in pending.packets {
-                        appendPacketToCurrent(buffered)
+                    appendDataToCurrent(pending.packets)
+                    if currentStartPTS != nil {
+                        appendPacketToCurrent(p)
                     }
-                    appendPacketToCurrent(p)
                 }
                 return emitted
             }
             pending.packets.append(p)
+            pending.packetCount += 1
             pending.videoPacketsScanned += 1
-            pending.tail = Self.tailBytes(p, from: payload, previousTail: pending.tail)
+            pending.tail.update(from: p, start: payload)
             pendingPES = pending
             if pending.videoPacketsScanned >= Self.maxPendingVideoPackets
-                || pending.packets.count >= Self.maxPendingTotalPackets {
+                || pending.packetCount >= Self.maxPendingTotalPackets {
                 flushPendingPES()
             }
             return nil
@@ -239,8 +296,9 @@ struct MPEGTSSegmenter {
 
         if var pending = pendingPES {
             pending.packets.append(p)
+            pending.packetCount += 1
             pendingPES = pending
-            if pending.packets.count >= Self.maxPendingTotalPackets {
+            if pending.packetCount >= Self.maxPendingTotalPackets {
                 flushPendingPES()
             }
             return nil
@@ -252,8 +310,85 @@ struct MPEGTSSegmenter {
         return emitted
     }
 
+    private mutating func processTimingUnitStart(
+        _ p: UnsafeBufferPointer<UInt8>,
+        pts: Int64,
+        payload: Int,
+        randomAccess: Bool
+    ) -> TransportStreamSegment? {
+        var emitted: TransportStreamSegment?
+        let immediateKeyframe = !timingIsVideo || randomAccess || containsKeyframe(p, payload: payload)
+        let esStart = payload + 9 <= Self.packetSize ? payload + 9 + Int(p[payload + 8]) : Self.packetSize
+        if let start = currentStartPTS {
+            let deltaTicks = Self.signedPTSDelta(from: start, to: pts)
+            let deltaSeconds = Double(deltaTicks) / 90_000
+            if abs(deltaSeconds) > 60 {
+                // True timeline jump (forward or backward > 60s). Start again at the next keyframe.
+                resetCurrent()
+                if hasEmittedSegment {
+                    pendingDiscontinuity = true
+                }
+                if immediateKeyframe {
+                    startSegment(at: pts)
+                } else if timingIsVideo, pat != nil, pmt != nil {
+                    pendingPES = makePendingPES(pts: pts, cutDuration: nil, packet: p, esStart: esStart)
+                    return nil
+                }
+            } else {
+                // Open-GOP B-frame reordering can yield small negative deltas relative to start.
+                // Preserve the segment and track maxPTS in the current segment for duration.
+                let previousMaxPTS = currentMaxPTS ?? start
+                let maxDeltaTicks = max(deltaTicks, Self.signedPTSDelta(from: start, to: previousMaxPTS))
+                let duration = Double(max(0, maxDeltaTicks)) / 90_000
+                if (immediateKeyframe && duration >= targetDuration) || duration >= maximumDuration {
+                    if duration >= 0.25 {
+                        emitted = emitCurrentSegment(duration: duration)
+                    }
+                    startSegment(at: pts)
+                } else if timingIsVideo, !immediateKeyframe, duration >= targetDuration {
+                    // Hold this PES briefly while scanning continuation packets for SPS/IDR
+                    // (e.g. when a large SEI/AUD precedes the keyframe NAL unit).
+                    pendingPES = makePendingPES(pts: pts, cutDuration: duration, packet: p, esStart: esStart)
+                    return nil
+                } else if Self.signedPTSDelta(from: previousMaxPTS, to: pts) > 0 {
+                    currentMaxPTS = pts
+                }
+            }
+        } else if immediateKeyframe {
+            startSegment(at: pts)
+        } else if timingIsVideo, pat != nil, pmt != nil {
+            pendingPES = makePendingPES(pts: pts, cutDuration: nil, packet: p, esStart: esStart)
+            return nil
+        }
+
+        if currentStartPTS != nil {
+            appendPacketToCurrent(p)
+        }
+        return emitted
+    }
+
+    private func makePendingPES(
+        pts: Int64,
+        cutDuration: Double?,
+        packet: UnsafeBufferPointer<UInt8>,
+        esStart: Int
+    ) -> PendingVideoPES {
+        var buffer = Data(capacity: Self.packetSize * 8)
+        buffer.append(packet)
+        var tail = StartCodeTail()
+        tail.update(from: packet, start: esStart)
+        return PendingVideoPES(
+            pts: pts,
+            cutDuration: cutDuration,
+            packets: buffer,
+            packetCount: 1,
+            videoPacketsScanned: 1,
+            tail: tail
+        )
+    }
+
     private mutating func resetCurrent() {
-        current = []
+        current.removeAll(keepingCapacity: false)
         currentStartPTS = nil
         currentMaxPTS = nil
         pendingPES = nil
@@ -267,15 +402,14 @@ struct MPEGTSSegmenter {
            Self.signedPTSDelta(from: previousMaxPTS, to: pending.pts) > 0 {
             currentMaxPTS = pending.pts
         }
-        for packet in pending.packets {
-            appendPacketToCurrent(packet)
-            if currentStartPTS == nil { return }
-        }
+        appendDataToCurrent(pending.packets)
     }
 
     private mutating func emitCurrentSegment(duration: Double) -> TransportStreamSegment {
+        let data = current
+        current = Data()
         let segment = TransportStreamSegment(
-            data: Data(current),
+            data: data,
             duration: duration,
             discontinuity: pendingDiscontinuity
         )
@@ -284,32 +418,46 @@ struct MPEGTSSegmenter {
         return segment
     }
 
-    private mutating func appendPacketToCurrent(_ packet: [UInt8]) {
-        if current.count + packet.count > maximumSegmentBytes {
+    private mutating func appendPacketToCurrent(_ packet: UnsafeBufferPointer<UInt8>) {
+        if current.count + Self.packetSize > maximumSegmentBytes {
             resetCurrent()
             if hasEmittedSegment {
                 pendingDiscontinuity = true
             }
             return
         }
-        current.append(contentsOf: packet)
+        current.append(packet)
+    }
+
+    private mutating func appendDataToCurrent(_ bytes: Data) {
+        if current.count + bytes.count > maximumSegmentBytes {
+            resetCurrent()
+            if hasEmittedSegment {
+                pendingDiscontinuity = true
+            }
+            return
+        }
+        current.append(bytes)
     }
 
     private mutating func startSegment(at pts: Int64) {
         guard let pat, let pmt else { return }
-        current = pat + pmt
-        current.reserveCapacity(min(1024 * 1024, maximumSegmentBytes))
+        let reserve = min(512 * 1024, maximumSegmentBytes)
+        current = Data(capacity: reserve)
+        current.append(pat)
+        current.append(pmt)
         currentStartPTS = pts
         currentMaxPTS = pts
     }
 
     /// Start of the section after the pointer field, or nil when it does not fit.
-    private static func sectionStart(_ p: [UInt8], payload: Int) -> Int? {
+    @inline(__always)
+    private static func sectionStart(_ p: UnsafeBufferPointer<UInt8>, payload: Int) -> Int? {
         let start = payload + 1 + Int(p[payload])
         return start + 3 < packetSize ? start : nil
     }
 
-    private mutating func parsePAT(_ p: [UInt8], payload: Int) -> Bool {
+    private mutating func parsePAT(_ p: UnsafeBufferPointer<UInt8>, payload: Int) -> Bool {
         guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x00 else { return false }
         let sectionLength = Int(p[s + 1] & 0x0F) << 8 | Int(p[s + 2])
         guard sectionLength >= 9 else { return false }
@@ -332,7 +480,7 @@ struct MPEGTSSegmenter {
         return false
     }
 
-    private mutating func parsePMT(_ p: [UInt8], payload: Int) -> Bool {
+    private mutating func parsePMT(_ p: UnsafeBufferPointer<UInt8>, payload: Int) -> Bool {
         guard let s = Self.sectionStart(p, payload: payload), p[s] == 0x02, s + 12 <= Self.packetSize else { return false }
         let sectionLength = Int(p[s + 1] & 0x0F) << 8 | Int(p[s + 2])
         guard sectionLength >= 13 else { return false }
@@ -382,10 +530,45 @@ struct MPEGTSSegmenter {
     }
 
     static func presentationTime(_ p: [UInt8], payload q: Int) -> Int64? {
+        p.withUnsafeBufferPointer { presentationTime($0, payload: q) }
+    }
+
+    @inline(__always)
+    static func presentationTime(_ p: UnsafeBufferPointer<UInt8>, payload q: Int) -> Int64? {
         guard q + 14 <= packetSize, p[q] == 0, p[q + 1] == 0, p[q + 2] == 1, p[q + 7] & 0x80 != 0 else { return nil }
         let pts = Int64(p[q + 9] & 0x0E) << 29 | Int64(p[q + 10]) << 22 | Int64(p[q + 11] & 0xFE) << 14
             | Int64(p[q + 12]) << 7 | Int64(p[q + 13]) >> 1
         return pts
+    }
+
+    /// Fast read-only check before copying a packet into the scratch buffer for AUD reordering.
+    private static func needsAccessUnitDelimiterReorder(_ p: UnsafeBufferPointer<UInt8>, payload q: Int) -> Bool {
+        guard q + 9 <= packetSize else { return false }
+        let esStart = q + 9 + Int(p[q + 8])
+        guard esStart < packetSize else { return false }
+        var seenParamSet = false
+        var seenAUD = false
+        var index = esStart
+        while index + 3 < packetSize {
+            if p[index] == 0, p[index + 1] == 0, p[index + 2] == 1 {
+                let nalType = p[index + 3] & 0x1F
+                if seenAUD {
+                    return true
+                }
+                if nalType == 9 {
+                    if !seenParamSet { return false }
+                    seenAUD = true
+                } else if nalType == 7 || nalType == 8 {
+                    seenParamSet = true
+                } else {
+                    return false
+                }
+                index += 3
+            } else {
+                index += 1
+            }
+        }
+        return false
     }
 
     /// Some providers send H.264 keyframes as SPS, PPS, AUD, SEI, IDR. The standard puts the
@@ -415,25 +598,52 @@ struct MPEGTSSegmenter {
               audIndex + 1 < starts.count,
               starts[..<audIndex].allSatisfy({ $0.type == 7 || $0.type == 8 }) else { return }
         let first = starts[0].begin
-        let aud = Array(p[starts[audIndex].begin..<starts[audIndex + 1].begin])
-        let parameterSets = Array(p[first..<starts[audIndex].begin])
-        p.replaceSubrange(first..<starts[audIndex + 1].begin, with: aud + parameterSets)
+        let audStart = starts[audIndex].begin
+        let audEnd = starts[audIndex + 1].begin
+        // Rotate [first..<audStart] and [audStart..<audEnd] in place using three reversals (zero heap allocation).
+        reverseRange(&p, from: first, to: audStart)
+        reverseRange(&p, from: audStart, to: audEnd)
+        reverseRange(&p, from: first, to: audEnd)
+    }
+
+    @inline(__always)
+    private static func reverseRange(_ buffer: inout [UInt8], from start: Int, to end: Int) {
+        var lo = start
+        var hi = end - 1
+        while lo < hi {
+            buffer.swapAt(lo, hi)
+            lo += 1
+            hi -= 1
+        }
     }
 
     /// Looks for a keyframe start in the first packet of a video PES.
-    private func containsKeyframe(_ p: [UInt8], payload q: Int) -> Bool {
+    private func containsKeyframe(_ p: UnsafeBufferPointer<UInt8>, payload q: Int) -> Bool {
         guard q + 9 <= Self.packetSize else { return false }
         let esStart = q + 9 + Int(p[q + 8])
         guard esStart < Self.packetSize else { return false }
-        return containsKeyframeBytes(p[esStart..<Self.packetSize], prefix: [])
+        return containsKeyframeBytes(p, start: esStart, prefix: StartCodeTail())
     }
 
-    private func containsKeyframeBytes(_ slice: ArraySlice<UInt8>, prefix: [UInt8]) -> Bool {
-        let bytes = prefix.isEmpty ? Array(slice) : prefix + slice
+    private func containsKeyframeBytes(
+        _ p: UnsafeBufferPointer<UInt8>,
+        start: Int,
+        prefix: StartCodeTail
+    ) -> Bool {
+        let prefixCount = prefix.count
+        let sliceCount = Self.packetSize - start
+        let total = prefixCount + sliceCount
+        guard total >= 4 else { return false }
+
+        @inline(__always)
+        func byte(at idx: Int) -> UInt8 {
+            idx < prefixCount ? prefix[idx] : p[start + idx - prefixCount]
+        }
+
         var index = 0
-        while index + 3 < bytes.count {
-            if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
-                let header = bytes[index + 3]
+        while index + 3 < total {
+            if byte(at: index) == 0, byte(at: index + 1) == 0, byte(at: index + 2) == 1 {
+                let header = byte(at: index + 3)
                 switch videoStreamType {
                 case 0x1B: // H.264: IDR slice or sequence parameter set
                     let type = header & 0x1F
@@ -450,15 +660,6 @@ struct MPEGTSSegmenter {
             }
         }
         return false
-    }
-
-    private static func tailBytes(_ p: [UInt8], from start: Int, previousTail: [UInt8] = []) -> [UInt8] {
-        guard start < packetSize else { return previousTail }
-        let slice = p[start..<packetSize]
-        if slice.count >= 3 {
-            return Array(slice.suffix(3))
-        }
-        return Array((previousTail + slice).suffix(3))
     }
 }
 

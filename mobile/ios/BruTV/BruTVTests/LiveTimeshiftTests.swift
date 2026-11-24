@@ -463,6 +463,49 @@ extension LiveTimeshiftTests {
         // Active recorder can still stop cleanly without losing its directory prematurely.
         await recorder.stop()
     }
+
+    func testRingO1EvictionHeadCompactionAndFileIndexLookup() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ring-o1-\(UUID().uuidString)")
+        let ring = try LiveTimeshiftRing(
+            directory: directory,
+            limits: LiveTimeshiftLimits(seconds: 20, bytes: 100 * 1024, segmentBytes: 1024, segmentCount: 400)
+        )
+        defer { ring.stop() }
+
+        // Append 150 segments so head-index compaction triggers multiple times.
+        for seq in 0..<150 {
+            try ring.append(segment(Int64(seq), duration: 2), data: Data(repeating: UInt8(seq & 0xFF), count: 64), target: 2, now: Double(seq * 2))
+        }
+        XCTAssertEqual(ring.entries.count, 10)
+        XCTAssertEqual(ring.activeDuration, 20, accuracy: 0.001)
+        XCTAssertEqual(ring.activeBytes, 640)
+        XCTAssertEqual(ring.snapshot.duration, 20, accuracy: 0.001)
+        XCTAssertNotNil(ring.file(named: "segment-149.ts"))
+        XCTAssertNil(ring.file(named: "segment-0.ts"))
+        XCTAssertEqual(ring.entries.first?.name, "segment-140.ts")
+    }
+
+    func testRecorderWaitForFirstSegmentWakesImmediatelyOnArrival() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("wait-ready-\(UUID().uuidString)")
+        let source = MovingHLSFixture(head: 5, window: 2)
+        let recorder = try LiveTimeshiftRecorder(
+            directory: directory,
+            fetch: { try await source.fetch($0, maximumBytes: $1) }
+        )
+        defer { Task { await recorder.stop() } }
+
+        let waiter = Task {
+            try await recorder.waitForFirstSegment(timeout: 5.0)
+        }
+        try await Task.sleep(nanoseconds: 40_000_000)
+        _ = try await recorder.capture(URL(string: "https://provider.example/live.m3u8")!)
+
+        let started = Date()
+        let snap = try await waiter.value
+        XCTAssertGreaterThan(snap.duration, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+        await recorder.stop()
+    }
 }
 
 private final class TestableClock: @unchecked Sendable {

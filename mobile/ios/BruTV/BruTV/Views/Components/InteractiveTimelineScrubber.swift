@@ -16,6 +16,10 @@ public struct InteractiveTimelineScrubber: View {
     @State private var isDragging: Bool = false
     @State private var dragLocationX: CGFloat = 0
     @State private var dragValue: Double = 0
+    #if os(tvOS)
+    @FocusState private var isFocused: Bool
+    @State private var tvScrubCommitTask: Task<Void, Never>?
+    #endif
 
     public init(
         value: Double,
@@ -50,10 +54,15 @@ public struct InteractiveTimelineScrubber: View {
 
             let hoverFraction = min(max(0, hoverLocationX / width), 1.0)
             let hoverTime = range.lowerBound + hoverFraction * span
-            let tooltipTime = isDragging ? dragValue : hoverTime
-            let targetX = isDragging ? dragLocationX : hoverLocationX
+            #if os(tvOS)
+            let tvFocused = isFocused
+            #else
+            let tvFocused = false
+            #endif
+            let tooltipTime = isDragging ? dragValue : (tvFocused ? activeValue : hoverTime)
+            let targetX = isDragging ? dragLocationX : (tvFocused ? progressWidth : hoverLocationX)
             let tooltipX = min(max(32, targetX), width - 32)
-            let isActive = isHovering || isDragging
+            let isActive = isHovering || isDragging || tvFocused
             let trackHeight: CGFloat = isActive ? 7 : 5
 
             ZStack(alignment: .leading) {
@@ -70,7 +79,7 @@ public struct InteractiveTimelineScrubber: View {
                         .fill(Color.white.opacity(0.18))
                         .overlay(
                             Capsule()
-                                .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                                .stroke(tvFocused ? Color.cyan.opacity(0.7) : Color.white.opacity(0.08), lineWidth: tvFocused ? 1.5 : 0.5)
                         )
                         .frame(height: trackHeight)
 
@@ -105,8 +114,8 @@ public struct InteractiveTimelineScrubber: View {
                 Circle()
                     .fill(Color.white)
                     .frame(
-                        width: isDragging ? 16 : (isHovering ? 14 : 12),
-                        height: isDragging ? 16 : (isHovering ? 14 : 12)
+                        width: (isDragging || tvFocused) ? 16 : (isHovering ? 14 : 12),
+                        height: (isDragging || tvFocused) ? 16 : (isHovering ? 14 : 12)
                     )
                     .overlay(
                         Circle().stroke(Color.cyan, lineWidth: 2)
@@ -118,7 +127,7 @@ public struct InteractiveTimelineScrubber: View {
                     .position(x: min(max(0, progressWidth), width), y: 16)
                     .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isActive)
 
-                // Floating Time Tooltip on Hover or Drag
+                // Floating Time Tooltip on Hover, Drag, or tvOS Focus
                 if isActive {
                     HStack(spacing: 3) {
                         Text(formatTime(tooltipTime))
@@ -142,7 +151,33 @@ public struct InteractiveTimelineScrubber: View {
                 }
             }
             .frame(height: 32)
-            #if !os(tvOS)
+            #if os(tvOS)
+            .focusable(true)
+            .focused($isFocused)
+            .onMoveCommand { direction in
+                let step = max(10.0, min(60.0, span * 0.02))
+                switch direction {
+                case .left:
+                    adjustTVScrub(delta: -step, span: span, width: width)
+                case .right:
+                    adjustTVScrub(delta: step, span: span, width: width)
+                default:
+                    if isDragging {
+                        commitTVScrub()
+                    }
+                }
+            }
+            .onTapGesture {
+                if isDragging {
+                    commitTVScrub()
+                }
+            }
+            .onChange(of: isFocused) { _, focused in
+                if !focused && isDragging {
+                    commitTVScrub()
+                }
+            }
+            #else
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
@@ -165,8 +200,6 @@ public struct InteractiveTimelineScrubber: View {
                         onSeek(time)
                     }
             )
-            #endif
-            #if !os(tvOS)
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let location):
@@ -180,4 +213,32 @@ public struct InteractiveTimelineScrubber: View {
         }
         .frame(height: 32)
     }
+
+    #if os(tvOS)
+    private func adjustTVScrub(delta: Double, span: Double, width: CGFloat) {
+        let base = isDragging ? dragValue : value
+        let target = min(range.upperBound, max(range.lowerBound, base + delta))
+        isDragging = true
+        dragValue = target
+        let frac = min(max(0, (target - range.lowerBound) / span), 1.0)
+        dragLocationX = frac * width
+        onScrubbingChanged?(true, target)
+        tvScrubCommitTask?.cancel()
+        tvScrubCommitTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled else { return }
+            commitTVScrub()
+        }
+    }
+
+    private func commitTVScrub() {
+        tvScrubCommitTask?.cancel()
+        tvScrubCommitTask = nil
+        guard isDragging else { return }
+        let target = dragValue
+        isDragging = false
+        onScrubbingChanged?(false, target)
+        onSeek(target)
+    }
+    #endif
 }

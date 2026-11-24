@@ -196,6 +196,32 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertEqual(settings.defaultAspectRatio, .fill)
         XCTAssertTrue(settings.showStatsHUD)
         XCTAssertTrue(settings.liveRewind)
+        XCTAssertTrue(settings.autoPlayNextEpisode)
+        XCTAssertNil(settings.preferredAudioLanguage)
+        XCTAssertNil(settings.preferredSubtitleLanguage)
+    }
+
+    func testMediaTrackMatcherCollisionFreeIDsAndLanguagePreferenceMatching() {
+        let id0 = MediaTrackMatcher.makeTrackID(index: 0, displayName: "English", languageTag: "en-US", characteristics: [])
+        let id1 = MediaTrackMatcher.makeTrackID(index: 1, displayName: "English", languageTag: "en-US", characteristics: ["cc"])
+        XCTAssertNotEqual(id0, id1)
+
+        let tracks = [
+            MediaTrackMatcher.TrackDescriptor(index: 0, displayName: "Portuguese (Forced)", languageTag: "pt-BR", isForced: true),
+            MediaTrackMatcher.TrackDescriptor(index: 1, displayName: "English", languageTag: "en-US", isForced: false),
+            MediaTrackMatcher.TrackDescriptor(index: 2, displayName: "Portuguese (Brazil)", languageTag: "pt-BR", isForced: false),
+            MediaTrackMatcher.TrackDescriptor(index: 3, displayName: "Spanish", languageTag: "es", isForced: false),
+        ]
+
+        // Exact BCP-47 prefers non-forced track over forced track.
+        XCTAssertEqual(MediaTrackMatcher.preferredTrackIndex(in: tracks, preferredLanguage: "pt-BR"), 2)
+        // Base language matches regional tag.
+        XCTAssertEqual(MediaTrackMatcher.preferredTrackIndex(in: tracks, preferredLanguage: "pt"), 2)
+        XCTAssertEqual(MediaTrackMatcher.preferredTrackIndex(in: tracks, preferredLanguage: "en"), 1)
+        // "off" returns nil.
+        XCTAssertNil(MediaTrackMatcher.preferredTrackIndex(in: tracks, preferredLanguage: "off"))
+        // Missing language returns nil.
+        XCTAssertNil(MediaTrackMatcher.preferredTrackIndex(in: tracks, preferredLanguage: "fr"))
     }
 
     func testSettingsRoundTripThroughUserDefaults() throws {

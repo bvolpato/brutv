@@ -16,14 +16,14 @@ public struct LoginQRCodeView: View {
     @ObservedObject private var localization = LocalizationManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
+    @State private var qrImage: UIImage?
+
+    private static let sharedCIContext = CIContext()
 
     public init(link: LoginLink, title: String) {
         self.link = link
         self.title = title
-    }
-
-    private var qrImage: UIImage? {
-        Self.makeQRCode(from: link.universalURL.absoluteString)
+        _qrImage = State(initialValue: Self.makeQRCode(from: link.universalURL.absoluteString))
     }
 
     public var body: some View {
@@ -143,7 +143,7 @@ public struct LoginQRCodeView: View {
         filter.message = Data(string.utf8)
         filter.correctionLevel = "M"
         guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: scale, y: scale)),
-              let cgImage = CIContext().createCGImage(output, from: output.extent)
+              let cgImage = sharedCIContext.createCGImage(output, from: output.extent)
         else { return nil }
         return UIImage(cgImage: cgImage)
     }

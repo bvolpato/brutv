@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct HomeView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var watchProgress = WatchProgressStore.shared
     @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
@@ -30,9 +31,19 @@ public struct HomeView: View {
                 // Top Header / Welcome
                 welcomeHeader
 
+                // Surface network errors cleanly with retry
+                if let errorMessage {
+                    errorBanner(message: errorMessage)
+                }
+
                 // Featured Hero Banner (if high rated movie/series available)
                 if let featured = featuredMovie {
                     heroBanner(movie: featured)
+                }
+
+                // Continue Watching Shelf (VOD & Series resume)
+                if !watchProgress.items.isEmpty {
+                    continueWatchingSection
                 }
 
                 // Recently Watched Channels
@@ -71,6 +82,9 @@ public struct HomeView: View {
         .task {
             await loadHomeContent()
         }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadHomeContent(forceRefresh: false) }
+        }
         .onChange(of: favorites.favoriteChannelIDs) { _, _ in
             Task { await refreshChannels() }
         }
@@ -81,6 +95,172 @@ public struct HomeView: View {
             if let movie = featuredMovie {
                 loadFeaturedExcerpt(for: movie)
             }
+        }
+    }
+
+    // MARK: - Error Banner
+    private func errorBanner(message: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.orange)
+                .font(.system(size: 16))
+            Text(message)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.9))
+                .lineLimit(2)
+            Spacer()
+            Button {
+                Task { await loadHomeContent(forceRefresh: true) }
+            } label: {
+                Label("Retry".localized, systemImage: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.cyan)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.orange.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+                )
+        )
+    }
+
+    // MARK: - Continue Watching
+    private var continueWatchingSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "play.circle.fill")
+                    .foregroundColor(.cyan)
+                    .font(.system(size: 15, weight: .semibold))
+                Text("Continue Watching".localized)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+
+                Text("\(watchProgress.items.count)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Capsule())
+                Spacer()
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(watchProgress.items) { item in
+                        continueWatchingCard(item: item)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func continueWatchingCard(item: WatchProgressItem) -> some View {
+        Button {
+            resumeWatchProgress(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .bottomLeading) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(white: 0.12))
+                        .frame(width: 192, height: 110)
+
+                    CachedAsyncImage(url: item.imageURL, targetPixelSize: 320) {
+                        Image(systemName: item.kind == "series" ? "play.tv" : "film")
+                            .font(.system(size: 24))
+                            .foregroundColor(.gray)
+                    }
+                    .frame(width: 192, height: 110)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    LinearGradient(
+                        colors: [Color.clear, Color.black.opacity(0.82)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.black)
+                                .frame(width: 24, height: 24)
+                                .background(Circle().fill(Color.cyan))
+
+                            Spacer()
+
+                            if item.remainingSeconds >= 60 {
+                                Text("\(Int(item.remainingSeconds / 60))m \("left".localized)")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.black.opacity(0.65))
+                                    .clipShape(Capsule())
+                            }
+                        }
+
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(Color.white.opacity(0.24))
+                                .overlay(alignment: .leading) {
+                                    Capsule()
+                                        .fill(Color.cyan)
+                                        .frame(width: max(4, geo.size.width * CGFloat(item.progressFraction)))
+                                }
+                        }
+                        .frame(height: 4)
+                    }
+                    .padding(8)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+                Text(item.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .frame(width: 192, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func resumeWatchProgress(_ item: WatchProgressItem) {
+        if item.kind == "series" {
+            let ep = SeriesEpisode(
+                id: item.streamID,
+                episodeNum: item.episodeNum ?? 1,
+                title: item.title,
+                containerExtension: item.containerExtension,
+                season: item.season ?? 1,
+                info: SeriesEpisodeInfo(movieImage: item.imageURLString)
+            )
+            PlaybackManager.shared.playEpisode(episode: ep, seriesName: item.subtitle ?? "")
+        } else {
+            let vod = VODStream(
+                id: item.streamID,
+                name: item.title,
+                iconURLString: item.imageURLString,
+                rating: item.subtitle,
+                containerExtension: item.containerExtension,
+                streamType: "movie"
+            )
+            PlaybackManager.shared.playVOD(vod: vod)
         }
     }
 
@@ -154,26 +334,26 @@ public struct HomeView: View {
                     )
 
                 if let url = movie.iconURL {
-                    CachedAsyncImage(url: url) {
+                    CachedAsyncImage(url: url, targetPixelSize: 256) {
                         Color.clear
                     }
                     .aspectRatio(contentMode: .fill)
                     .frame(maxWidth: .infinity, maxHeight: 240)
-                    .blur(radius: 22)
                     .clipped()
-                    .opacity(0.32)
+                    .opacity(0.22)
                 }
 
                 LinearGradient(
                     colors: [
-                        Color(hex: "#060a12").opacity(0.3),
-                        Color(hex: "#060a12").opacity(0.75),
-                        Color(hex: "#060a12").opacity(0.95)
+                        Color(hex: "#060a12").opacity(0.45),
+                        Color(hex: "#060a12").opacity(0.82),
+                        Color(hex: "#060a12").opacity(0.97)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             }
+            .drawingGroup()
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -186,7 +366,7 @@ public struct HomeView: View {
                     Button {
                         selectedMovie = movie
                     } label: {
-                        CachedAsyncImage(url: url) {
+                        CachedAsyncImage(url: url, targetPixelSize: 384) {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.white.opacity(0.08))
                         }
@@ -545,7 +725,7 @@ public struct HomeView: View {
                             .fill(Color(white: 0.12))
                             .frame(width: 54, height: 54)
 
-                        CachedAsyncImage(url: stream.iconURL) {
+                        CachedAsyncImage(url: stream.iconURL, targetPixelSize: 128) {
                             Image(systemName: "tv")
                                 .font(.system(size: 20))
                                 .foregroundColor(.cyan)
@@ -622,7 +802,7 @@ public struct HomeView: View {
                             .fill(Color(white: 0.12))
                             .frame(width: 130, height: 185)
 
-                        CachedAsyncImage(url: movie.iconURL) {
+                        CachedAsyncImage(url: movie.iconURL, targetPixelSize: 320) {
                             Image(systemName: "film")
                                 .font(.system(size: 24))
                                 .foregroundColor(.gray)
@@ -699,7 +879,7 @@ public struct HomeView: View {
                         .fill(Color(white: 0.12))
                         .frame(width: 130, height: 185)
 
-                    CachedAsyncImage(url: series.coverURL) {
+                    CachedAsyncImage(url: series.coverURL, targetPixelSize: 320) {
                         Image(systemName: "play.tv")
                             .font(.system(size: 24))
                             .foregroundColor(.gray)
@@ -782,73 +962,105 @@ public struct HomeView: View {
     // MARK: - Data Loading
     private func loadHomeContent(forceRefresh: Bool = false) async {
         if forceRefresh {
-            client.clearCache()
+            client.clearCache(includeDisk: true)
         }
         isLoading = true
+        errorMessage = nil
         defer { isLoading = false }
 
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                let allLive = (try? await client.fetchLiveStreams()) ?? []
-                let streamMap = Dictionary(uniqueKeysWithValues: allLive.map { ($0.id, $0) })
-                await MainActor.run {
-                    self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
-                    self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
-                    TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
-                }
-            }
+        var firstError: String?
 
-            group.addTask {
-                let allVOD = (try? await client.fetchVODStreams()) ?? []
-                let ratedMovies = allVOD
-                    .map { (movie: $0, score: Self.parseRating($0.rating)) }
-                    .sorted { $0.score > $1.score }
-                let filteredRatedMovies = ratedMovies.filter { $0.score > 0 }.prefix(20).map(\.movie)
-                let topMovies = !filteredRatedMovies.isEmpty ? Array(filteredRatedMovies) : Array(allVOD.prefix(20))
-
-                await MainActor.run {
-                    self.topRatedMovies = topMovies
-                    self.featuredMovie = topMovies.first
-                    if let first = topMovies.first {
-                        self.loadFeaturedExcerpt(for: first)
-                    }
-                }
-            }
-
-            group.addTask {
-                let allSeries = (try? await client.fetchSeries()) ?? []
-                let ratedSeries = allSeries
-                    .map { (series: $0, score: Self.parseRating($0.rating)) }
-                    .sorted { $0.score > $1.score }
-                let filteredRatedSeries = ratedSeries.filter { $0.score > 0 }.prefix(20).map(\.series)
-                let topSeries = !filteredRatedSeries.isEmpty ? Array(filteredRatedSeries) : Array(allSeries.prefix(20))
-
-                await MainActor.run {
-                    self.topRatedSeries = topSeries
-                }
-            }
+        // 1. Prioritize Live channels first so above-the-fold recents & favorites appear immediately.
+        do {
+            let streamMap = try await client.liveStreamIndex()
+            self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
+            self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
+            TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
+        } catch is CancellationError {
+            return
+        } catch {
+            firstError = error.localizedDescription
         }
+
+        // Skip VOD/Series in M3U playlist mode.
+        guard !client.isPlaylistMode else {
+            self.errorMessage = firstError
+            return
+        }
+
+        // 2. Load VOD sequentially after Live so uncached launches don't contend on 3 simultaneous multi-MB downloads.
+        do {
+            let allVOD = try await client.fetchVODStreams()
+            let topMovies = await Task.detached(priority: .userInitiated) {
+                Self.selectTopRated(allVOD, limit: 20, rating: \.ratingValue)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.topRatedMovies = topMovies
+            self.featuredMovie = topMovies.first
+            if let first = topMovies.first {
+                self.loadFeaturedExcerpt(for: first)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            if firstError == nil { firstError = error.localizedDescription }
+        }
+
+        // 3. Load Series afterwards (instant from disk cache when warm).
+        do {
+            let allSeries = try await client.fetchSeries()
+            let topSeries = await Task.detached(priority: .userInitiated) {
+                Self.selectTopRated(allSeries, limit: 20, rating: \.ratingValue)
+            }.value
+            guard !Task.isCancelled else { return }
+            self.topRatedSeries = topSeries
+        } catch is CancellationError {
+            return
+        } catch {
+            if firstError == nil { firstError = error.localizedDescription }
+        }
+
+        self.errorMessage = firstError
     }
 
     private func refreshChannels() async {
         do {
-            let all = try await client.fetchLiveStreams()
-            let streamMap = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
-
-            await MainActor.run {
-                self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
-                self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
-                TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
-            }
+            let streamMap = try await client.liveStreamIndex()
+            self.recentStreams = favorites.recentChannelIDs.compactMap { streamMap[$0] }
+            self.favoriteStreams = favorites.favoriteChannelIDs.compactMap { streamMap[$0] }
+            TopShelfStore.shared.updateFavorites(channels: self.favoriteStreams)
         } catch {
             print("Failed to refresh home channels: \(error)")
         }
     }
 
-    private nonisolated static func parseRating(_ raw: String?) -> Double {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
-        let cleaned = raw.components(separatedBy: "/").first ?? raw
-        return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    /// O(N) top-K selection (avoids sorting 50,000+ items just to display 20 cards).
+    private nonisolated static func selectTopRated<T>(
+        _ items: [T],
+        limit: Int,
+        rating: KeyPath<T, Double>
+    ) -> [T] {
+        guard limit > 0, !items.isEmpty else { return [] }
+        var top: [(item: T, score: Double)] = []
+        top.reserveCapacity(limit + 1)
+
+        for item in items {
+            let score = item[keyPath: rating]
+            guard score > 0 else { continue }
+            if top.count < limit {
+                let idx = top.firstIndex { score > $0.score } ?? top.count
+                top.insert((item, score), at: idx)
+            } else if let last = top.last, score > last.score {
+                let idx = top.firstIndex { score > $0.score } ?? top.count
+                top.insert((item, score), at: idx)
+                top.removeLast()
+            }
+        }
+
+        if !top.isEmpty {
+            return top.map(\.item)
+        }
+        return Array(items.prefix(limit))
     }
 
     private func loadFeaturedExcerpt(for movie: VODStream) {

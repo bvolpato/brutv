@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct SeriesView: View {
+    @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var categories: [SeriesCategory] = []
@@ -17,33 +18,57 @@ public struct SeriesView: View {
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedSeries: [SeriesItem] = []
     @State private var showSideMenu: Bool = false
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadGeneration: UInt64 = 0
+    @State private var filterTask: Task<Void, Never>?
+    @State private var filterGeneration: UInt64 = 0
 
     private let client = AccountStore.shared.client
 
     public init() {}
 
-    private func recomputeFilteredSeries() {
-        let base: [SeriesItem]
-        if searchText.isEmpty {
-            base = seriesList
-        } else {
-            base = seriesList.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    private func scheduleFilter(debounce: Bool) {
+        filterTask?.cancel()
+        filterGeneration &+= 1
+        let generation = filterGeneration
+        let sourceSeries = seriesList
+        let rawQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let order = sortOrder
+
+        if rawQuery.isEmpty && order == .defaultOrder {
+            filteredSeries = sourceSeries
+            return
         }
 
-        switch sortOrder {
-        case .defaultOrder:
-            filteredSeries = base
-        case .topRated:
-            filteredSeries = base.sorted { parseRating($0.rating) > parseRating($1.rating) }
-        case .alphabetical:
-            filteredSeries = base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let delayNs: UInt64 = (debounce && !rawQuery.isEmpty) ? 160_000_000 : 0
+        filterTask = Task {
+            if delayNs > 0 {
+                try? await Task.sleep(nanoseconds: delayNs)
+                guard !Task.isCancelled else { return }
+            }
+            let normalizedQuery = ChannelTextHelper.normalizedSearchText(rawQuery)
+            let result = await Task.detached(priority: .userInitiated) { () -> [SeriesItem] in
+                let base: [SeriesItem]
+                if normalizedQuery.isEmpty {
+                    base = sourceSeries
+                } else {
+                    base = sourceSeries.filter { $0.normalizedSearchText.contains(normalizedQuery) }
+                }
+                switch order {
+                case .defaultOrder:
+                    return base
+                case .topRated:
+                    return base.sorted { $0.ratingValue > $1.ratingValue }
+                case .alphabetical:
+                    return base.sorted { $0.normalizedSearchText < $1.normalizedSearchText }
+                }
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.filterGeneration == generation else { return }
+                self.filteredSeries = result
+            }
         }
-    }
-
-    private func parseRating(_ raw: String?) -> Double {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
-        let cleaned = raw.components(separatedBy: "/").first ?? raw
-        return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     private var currentCategoryName: String {
@@ -111,8 +136,11 @@ public struct SeriesView: View {
         .sheet(item: $selectedSeries) { series in
             SeriesDetailView(series: series, selectedSeries: $selectedSeries)
         }
-        .onChange(of: searchText) { _, _ in recomputeFilteredSeries() }
-        .onChange(of: sortOrder) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: sortOrder) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadCategories() }
+        }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
             recomputeMenuItems()
@@ -158,8 +186,11 @@ public struct SeriesView: View {
         .sheet(item: $selectedSeries) { series in
             SeriesDetailView(series: series, selectedSeries: $selectedSeries)
         }
-        .onChange(of: searchText) { _, _ in recomputeFilteredSeries() }
-        .onChange(of: sortOrder) { _, _ in recomputeFilteredSeries() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: sortOrder) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadCategories() }
+        }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
             recomputeMenuItems()
@@ -345,7 +376,7 @@ public struct SeriesView: View {
                                         .fill(Color(white: 0.12))
                                         .aspectRatio(2/3, contentMode: .fit)
 
-                                    CachedAsyncImage(url: item.coverURL) {
+                                    CachedAsyncImage(url: item.coverURL, targetPixelSize: 320) {
                                         Image(systemName: "play.tv")
                                             .font(.system(size: 28))
                                             .foregroundColor(.gray)
@@ -422,28 +453,30 @@ public struct SeriesView: View {
     }
 
     private func loadSeries(categoryID: String) {
+        loadTask?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isLoading = true
         errorMessage = nil
-        Task {
+        loadTask = Task {
             do {
                 let catArg = categoryID == "all" ? nil : categoryID
                 let items = try await client.fetchSeries(categoryID: catArg)
-                await MainActor.run {
-                    self.seriesList = items
-                    self.isLoading = false
-
-                    if categoryID == "all" {
-                        self.allLoadedSeries = items
-                    }
-
-                    var icons = self.categoryIcons
-                    var counts = self.categoryCounts
+                try Task.checkCancellation()
+                let existingIcons = await MainActor.run { self.categoryIcons }
+                let existingCounts = await MainActor.run { self.categoryCounts }
+                let metadata = await Task.detached(priority: .userInitiated) { () -> (icons: [String: URL], counts: [String: Int]) in
+                    var icons = existingIcons
+                    // Reset counts when loading ALL so category totals never double on refresh.
+                    var counts: [String: Int] = categoryID == "all" ? [:] : existingCounts
 
                     if icons["all"] == nil, let first = items.first(where: { $0.coverURL != nil })?.coverURL {
                         icons["all"] = first
                     }
                     if categoryID == "all" {
                         counts["all"] = items.count
+                    } else {
+                        counts[categoryID] = items.count
                     }
 
                     for series in items {
@@ -454,13 +487,28 @@ public struct SeriesView: View {
                             icons[series.categoryId] = icon
                         }
                     }
-                    self.categoryIcons = icons
-                    self.categoryCounts = counts
-                    self.recomputeFilteredSeries()
+                    return (icons, counts)
+                }.value
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
+                    self.seriesList = items
+                    self.isLoading = false
+
+                    if categoryID == "all" {
+                        self.allLoadedSeries = items
+                    }
+
+                    self.categoryIcons = metadata.icons
+                    self.categoryCounts = metadata.counts
+                    self.scheduleFilter(debounce: false)
                     self.recomputeMenuItems()
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
@@ -469,7 +517,7 @@ public struct SeriesView: View {
     }
 
     private func reloadAll() async {
-        client.clearCache()
+        client.clearCache(includeDisk: true)
         await loadCategories()
     }
 }
@@ -588,7 +636,7 @@ public struct SeriesDetailView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(white: 0.15))
                     .frame(width: 120, height: 180)
-                CachedAsyncImage(url: series.coverURL) {
+                CachedAsyncImage(url: series.coverURL, targetPixelSize: 512) {
                     Image(systemName: "play.tv")
                         .font(.system(size: 32))
                         .foregroundColor(.gray)
@@ -747,7 +795,7 @@ public struct SeriesDetailView: View {
                         .frame(width: 110, height: 62)
 
                     if let imageURL = episodeImageURL(episode) {
-                        CachedAsyncImage(url: imageURL) {
+                        CachedAsyncImage(url: imageURL, targetPixelSize: 256) {
                             Image(systemName: "play.tv")
                                 .foregroundColor(.gray)
                         }
@@ -809,8 +857,7 @@ public struct SeriesDetailView: View {
     }
 
     private func episodeImageURL(_ episode: SeriesEpisode) -> URL? {
-        guard let img = episode.info?.movieImage, !img.isEmpty else { return nil }
-        return URL(string: img)
+        MediaURL.parse(episode.info?.movieImage)
     }
 
     private func episodeDuration(_ episode: SeriesEpisode) -> String? {

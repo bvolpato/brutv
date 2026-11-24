@@ -75,9 +75,13 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
     public var defaultAspectRatio: VideoAspectRatio
     public var showStatsHUD: Bool
     public var autoPlayNextChannel: Bool
-    public var hardwareAcceleration: Bool
+    public var autoPlayNextEpisode: Bool
     /// Records live channels on the device so people can pause and rewind adaptively.
     public var liveRewind: Bool
+    /// Preferred audio language tag (BCP-47 or ISO-639, e.g. "pt-BR", "en").
+    public var preferredAudioLanguage: String?
+    /// Preferred subtitle language tag, or `"off"` to keep subtitles disabled.
+    public var preferredSubtitleLanguage: String?
 
     public init(
         bufferProfile: BufferProfile = .balanced,
@@ -85,16 +89,20 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
         defaultAspectRatio: VideoAspectRatio = .fit,
         showStatsHUD: Bool = false,
         autoPlayNextChannel: Bool = true,
-        hardwareAcceleration: Bool = true,
-        liveRewind: Bool = true
+        autoPlayNextEpisode: Bool = true,
+        liveRewind: Bool = true,
+        preferredAudioLanguage: String? = nil,
+        preferredSubtitleLanguage: String? = nil
     ) {
         self.bufferProfile = bufferProfile
         self.preferredFormat = preferredFormat
         self.defaultAspectRatio = defaultAspectRatio
         self.showStatsHUD = showStatsHUD
         self.autoPlayNextChannel = autoPlayNextChannel
-        self.hardwareAcceleration = hardwareAcceleration
+        self.autoPlayNextEpisode = autoPlayNextEpisode
         self.liveRewind = liveRewind
+        self.preferredAudioLanguage = preferredAudioLanguage
+        self.preferredSubtitleLanguage = preferredSubtitleLanguage
     }
 
     /// Missing keys use the defaults, so settings saved by an older version still load.
@@ -106,8 +114,10 @@ public struct PlayerSettings: Codable, Equatable, Sendable {
         defaultAspectRatio = (try? container.decodeIfPresent(VideoAspectRatio.self, forKey: .defaultAspectRatio)) ?? defaults.defaultAspectRatio
         showStatsHUD = (try? container.decodeIfPresent(Bool.self, forKey: .showStatsHUD)) ?? defaults.showStatsHUD
         autoPlayNextChannel = (try? container.decodeIfPresent(Bool.self, forKey: .autoPlayNextChannel)) ?? defaults.autoPlayNextChannel
-        hardwareAcceleration = (try? container.decodeIfPresent(Bool.self, forKey: .hardwareAcceleration)) ?? defaults.hardwareAcceleration
+        autoPlayNextEpisode = (try? container.decodeIfPresent(Bool.self, forKey: .autoPlayNextEpisode)) ?? defaults.autoPlayNextEpisode
         liveRewind = (try? container.decodeIfPresent(Bool.self, forKey: .liveRewind)) ?? defaults.liveRewind
+        preferredAudioLanguage = try? container.decodeIfPresent(String.self, forKey: .preferredAudioLanguage)
+        preferredSubtitleLanguage = try? container.decodeIfPresent(String.self, forKey: .preferredSubtitleLanguage)
     }
 
     private static let storageKey = "brutv.playerSettings"

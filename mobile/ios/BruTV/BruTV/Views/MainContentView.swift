@@ -393,7 +393,7 @@ private struct MiniPlayerBarView: View {
                 HStack(spacing: 12) {
                     if let stream = playback.currentStream {
                         miniPlayerThumbnail {
-                            CachedAsyncImage(url: stream.iconURL) {
+                            CachedAsyncImage(url: stream.iconURL, targetPixelSize: 128) {
                                 Image(systemName: "tv")
                                     .foregroundColor(.cyan)
                             }
@@ -405,20 +405,15 @@ private struct MiniPlayerBarView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            if playback.settings.showStatsHUD {
-                                Text("\("Live".localized) • \(playback.telemetry.bufferDurationFormatted) \("buffered".localized)")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.cyan)
-                            } else {
-                                Text("Live TV".localized)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.cyan.opacity(0.85))
-                            }
+                            MiniPlayerLiveSubtitleView(
+                                showStatsHUD: playback.settings.showStatsHUD,
+                                telemetryModel: playback.telemetryModel
+                            )
                         }
                     } else if let vod = playback.currentVOD {
                         miniPlayerThumbnail {
                             if let iconURL = vod.iconURL {
-                                CachedAsyncImage(url: iconURL) {
+                                CachedAsyncImage(url: iconURL, targetPixelSize: 128) {
                                     Image(systemName: vod.streamType == "series" ? "play.tv" : "film")
                                         .foregroundColor(.cyan)
                                 }
@@ -433,18 +428,11 @@ private struct MiniPlayerBarView: View {
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
-                            let statusLabel = vod.streamType == "series"
-                                ? (playback.isPlaybackRequested ? "Series Playing".localized : "Paused".localized)
-                                : (playback.isPlaybackRequested ? "Movie Playing".localized : "Paused".localized)
-                            if playback.vodDuration > 0 {
-                                Text("\(statusLabel) • \(formatMiniTime(playback.vodCurrentTime)) / \(formatMiniTime(playback.vodDuration))")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.gray)
-                            } else {
-                                Text(statusLabel)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.gray)
-                            }
+                            MiniPlayerVODSubtitleView(
+                                isSeries: vod.streamType == "series",
+                                isPlaying: playback.isPlaybackRequested,
+                                clock: playback.clock
+                            )
                         }
                     }
 
@@ -512,5 +500,52 @@ private struct MiniPlayerBarView: View {
                 )
                 .shadow(color: .black.opacity(0.5), radius: 12, x: 0, y: 6)
         )
+    }
+}
+
+private struct MiniPlayerLiveSubtitleView: View {
+    let showStatsHUD: Bool
+    @ObservedObject var telemetryModel: PlaybackTelemetryModel
+
+    var body: some View {
+        if showStatsHUD {
+            Text("\("Live".localized) • \(telemetryModel.telemetry.bufferDurationFormatted) \("buffered".localized)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.cyan)
+        } else {
+            Text("Live TV".localized)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.cyan.opacity(0.85))
+        }
+    }
+}
+
+private struct MiniPlayerVODSubtitleView: View {
+    let isSeries: Bool
+    let isPlaying: Bool
+    @ObservedObject var clock: PlaybackClockModel
+
+    private func formatMiniTime(_ seconds: Double) -> String {
+        guard !seconds.isNaN && !seconds.isInfinite && seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
+    var body: some View {
+        let statusLabel = isSeries
+            ? (isPlaying ? "Series Playing".localized : "Paused".localized)
+            : (isPlaying ? "Movie Playing".localized : "Paused".localized)
+        if clock.vodDuration > 0 {
+            Text("\(statusLabel) • \(formatMiniTime(clock.vodCurrentTime)) / \(formatMiniTime(clock.vodDuration))")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.gray)
+        } else {
+            Text(statusLabel)
+                .font(.system(size: 11))
+                .foregroundColor(.gray)
+        }
     }
 }

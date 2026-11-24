@@ -65,11 +65,35 @@ public struct MediaTrackOption: Identifiable, Hashable, Sendable {
     }
 }
 
+/// High-frequency playhead and timeshift timeline state, isolated from `PlaybackManager`
+/// so root views (`PlayerView`, `SettingsView`, `MainContentView`) do not re-render at 1 Hz.
+@MainActor
+public final class PlaybackClockModel: ObservableObject {
+    @Published public var vodCurrentTime: Double = 0
+    @Published public var vodDuration: Double = 0
+    @Published var liveBuffer = LiveTimeshiftSnapshot()
+    @Published public var liveBehindSeconds: Double = 0
+    @Published public var liveSeekStart: Double = 0
+    @Published public var liveSeekEnd: Double = 0
+    @Published public var livePlayhead: Double = 0
+    @Published public var canSeekLive: Bool = false
+    @Published public var shouldShowGoLive: Bool = false
+}
+
+/// High-frequency stream telemetry isolated so only visible HUD/buffer bars re-render at 1 Hz.
+@MainActor
+public final class PlaybackTelemetryModel: ObservableObject {
+    @Published public var telemetry: StreamTelemetry = StreamTelemetry()
+}
+
 @MainActor
 public final class PlaybackManager: ObservableObject {
     public static let shared = PlaybackManager()
     private static var hasCleanedLiveBuffers = false
     private nonisolated static let audioSessionQueue = DispatchQueue(label: "com.bvolpato.brutv.audio-session")
+
+    public let clock = PlaybackClockModel()
+    public let telemetryModel = PlaybackTelemetryModel()
 
     @Published public private(set) var player: AVPlayer
     @Published public private(set) var currentStream: LiveStream?
@@ -89,15 +113,31 @@ public final class PlaybackManager: ObservableObject {
             }
         }
     }
-    @Published public private(set) var isPlaybackRequested = false
-    @Published public private(set) var telemetry: StreamTelemetry = StreamTelemetry()
+    @Published public private(set) var isPlaybackRequested = false {
+        didSet { syncLiveSeekFlags() }
+    }
+    public var telemetry: StreamTelemetry {
+        get { telemetryModel.telemetry }
+        set {
+            if telemetryModel.telemetry != newValue {
+                telemetryModel.telemetry = newValue
+            }
+        }
+    }
 
     private var diagnosticKind: PlaybackHealthSummary.Kind? {
         if currentStream != nil { return .live }
         if currentVOD != nil { return .video }
         return nil
     }
-    @Published public var aspectRatio: VideoAspectRatio = .fit
+    @Published public var aspectRatio: VideoAspectRatio = .fit {
+        didSet {
+            guard aspectRatio != oldValue else { return }
+            if settings.defaultAspectRatio != aspectRatio {
+                settings.defaultAspectRatio = aspectRatio
+            }
+        }
+    }
     @Published public var settings: PlayerSettings = PlayerSettings.load() {
         didSet {
             guard settings != oldValue else { return }
@@ -108,8 +148,14 @@ public final class PlaybackManager: ObservableObject {
     @Published public var isMuted: Bool = false {
         didSet { player.isMuted = isMuted }
     }
-    @Published public private(set) var vodCurrentTime: Double = 0
-    @Published public private(set) var vodDuration: Double = 0
+    public var vodCurrentTime: Double {
+        get { clock.vodCurrentTime }
+        set { clock.vodCurrentTime = newValue }
+    }
+    public var vodDuration: Double {
+        get { clock.vodDuration }
+        set { clock.vodDuration = newValue }
+    }
     @Published public private(set) var availableAudioTracks: [MediaTrackOption] = []
     @Published public private(set) var selectedAudioTrackID: String?
     @Published public private(set) var availableSubtitles: [MediaTrackOption] = []
@@ -118,15 +164,46 @@ public final class PlaybackManager: ObservableObject {
         didSet { player.volume = volume }
     }
 
-    @Published private(set) var liveBuffer = LiveTimeshiftSnapshot()
+    var liveBuffer: LiveTimeshiftSnapshot {
+        get { clock.liveBuffer }
+        set {
+            if clock.liveBuffer != newValue {
+                clock.liveBuffer = newValue
+            }
+            syncLiveSeekFlags()
+        }
+    }
     @Published private(set) var liveBufferUnavailable: String?
     @Published public private(set) var isRecoveringLiveBuffer = false
     @Published public private(set) var activeFormatLabel: String = "HLS (.m3u8)"
-    @Published private(set) var liveBehindSeconds: Double = 0
-    @Published private(set) var liveSeekStart: Double = 0
-    @Published private(set) var liveSeekEnd: Double = 0
-    @Published private(set) var livePlayhead: Double = 0
-    private var liveRecorder: LiveTimeshiftRecorder?
+    var liveBehindSeconds: Double {
+        get { clock.liveBehindSeconds }
+        set {
+            clock.liveBehindSeconds = newValue
+            syncLiveSeekFlags()
+        }
+    }
+    var liveSeekStart: Double {
+        get { clock.liveSeekStart }
+        set {
+            clock.liveSeekStart = newValue
+            syncLiveSeekFlags()
+        }
+    }
+    var liveSeekEnd: Double {
+        get { clock.liveSeekEnd }
+        set {
+            clock.liveSeekEnd = newValue
+            syncLiveSeekFlags()
+        }
+    }
+    var livePlayhead: Double {
+        get { clock.livePlayhead }
+        set { clock.livePlayhead = newValue }
+    }
+    private var liveRecorder: LiveTimeshiftRecorder? {
+        didSet { syncLiveSeekFlags() }
+    }
     private var liveServer: LiveTimeshiftServer?
     private var liveCaptureTask: Task<Void, Never>?
     private var liveRecoveryTask: Task<Void, Never>?
@@ -146,13 +223,16 @@ public final class PlaybackManager: ObservableObject {
     private var pausedLivePosition: Double?
     private var pendingLiveRecordedPosition: Double?
     private var pendingLiveDate: Date?
-    private var explicitlyRewound = false
+    private var explicitlyRewound = false {
+        didSet { syncLiveSeekFlags() }
+    }
     private var liveJumpInProgress = false
     private var originalLiveURL: URL?
     private var codecFallback = LiveTimeshiftCodecFallback()
     private var progressWatchdog = PlaybackProgressWatchdog(isLive: true)
     private var resumeAfterAudioInterruption = false
     private var backgroundedWithLocalServer = false
+    private var lastSavedProgressUptime: TimeInterval = 0
 
     var canSeekLive: Bool {
         guard currentStream != nil, settings.liveRewind else { return false }
@@ -162,6 +242,17 @@ public final class PlaybackManager: ObservableObject {
         return (liveSeekEnd - liveSeekStart) >= 1.5
     }
     var shouldShowGoLive: Bool { canSeekLive && (liveBehindSeconds > 15 || ((!isPlaybackRequested || explicitlyRewound) && liveBehindSeconds > 1)) }
+
+    private func syncLiveSeekFlags() {
+        let canSeek = canSeekLive
+        if clock.canSeekLive != canSeek {
+            clock.canSeekLive = canSeek
+        }
+        let showGoLive = shouldShowGoLive
+        if clock.shouldShowGoLive != showGoLive {
+            clock.shouldShowGoLive = showGoLive
+        }
+    }
 
     // Active playlist for fast zapping
     @Published public private(set) var activePlaylist: [LiveStream] = []
@@ -175,6 +266,9 @@ public final class PlaybackManager: ObservableObject {
     private var mediaTracksTask: Task<Void, Never>?
     private var audioSelectionGroup: AVMediaSelectionGroup?
     private var subtitleSelectionGroup: AVMediaSelectionGroup?
+    private var audioOptionMap: [String: AVMediaSelectionOption] = [:]
+    private var subtitleOptionMap: [String: AVMediaSelectionOption] = [:]
+    private var appliedPreferredTracksForItem = false
     private var accountObserver: AnyCancellable?
     private var nowPlayingObserver: AnyCancellable?
     #if os(tvOS)
@@ -205,6 +299,7 @@ public final class PlaybackManager: ObservableObject {
     public init() {
         self.player = AVPlayer()
         self.player.automaticallyWaitsToMinimizeStalling = true
+        self.aspectRatio = settings.defaultAspectRatio
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--ui-fixtures") && arguments.contains("--ui-disable-live-rewind") {
@@ -627,6 +722,9 @@ public final class PlaybackManager: ObservableObject {
     /// chosen, a local recorder captures the HLS stream first. Otherwise AVPlayer reads the
     /// provider's HLS directly.
     private func handleSettingsChanged(from oldValue: PlayerSettings, to newValue: PlayerSettings) {
+        if oldValue.defaultAspectRatio != newValue.defaultAspectRatio, aspectRatio != newValue.defaultAspectRatio {
+            aspectRatio = newValue.defaultAspectRatio
+        }
         if oldValue.preferredFormat != newValue.preferredFormat || oldValue.liveRewind != newValue.liveRewind {
             liveTransportMemory.removeAll()
         }
@@ -832,45 +930,35 @@ public final class PlaybackManager: ObservableObject {
                 }
                 serverRef.server = server
                 self.liveServer = server
+                // Start the local HTTP server upfront in parallel with stream capture so no listener
+                // startup delay is paid after the first keyframe segment lands.
+                let localURL = try await server.start()
+                guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else {
+                    server.stop()
+                    return
+                }
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
                         await recorder.captureTransportStream(relayURL)
                     }
                     group.addTask { @MainActor [weak self] in
                         guard let self else { return }
-                        var ready = false
-                        var firstSegmentAt: Date?
                         // Cold-start Xtream channels behind reverse proxies can need >6s for 1st keyframe+segment.
-                        let deadline = Date().addingTimeInterval(12)
+                        let initialSnapshot = try await recorder.waitForFirstSegment(timeout: 12)
+                        guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else {
+                            return
+                        }
+                        self.liveBuffer = initialSnapshot
+                        relayLog.info("relay ready on first segment (\(initialSnapshot.duration, privacy: .public)s buffered)")
+                        self.managedLocalPlaylistURL = localURL
+                        self.prepareAndPlay(url: localURL)
+
+                        var lastRecordedEnd = initialSnapshot.recordedEnd
                         while !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder {
-                            if let failure = await recorder.transportStreamFailure() {
-                                throw failure
-                            }
-                            let snapshot = await recorder.snapshot()
+                            let updated = try await recorder.waitForSnapshotUpdate(afterRecordedEnd: lastRecordedEnd, timeout: 2.0)
                             guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else { return }
-                            self.liveBuffer = snapshot
-                            if !ready, snapshot.duration > 0 {
-                                if firstSegmentAt == nil {
-                                    firstSegmentAt = Date()
-                                }
-                                let waitedSinceFirst = firstSegmentAt.map { Date().timeIntervalSince($0) } ?? 0
-                                let closeToDeadline = deadline.timeIntervalSinceNow <= 3.0
-                                // Wait briefly for ~3.5s buffered (e.g. 2x2s or 1x4s segment) to tolerate jitter,
-                                // while still starting fast if the 2nd segment is slow.
-                                if snapshot.duration >= 3.5 || waitedSinceFirst >= 2.5 || closeToDeadline {
-                                    let localURL = try await server.start()
-                                    guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else {
-                                        server.stop()
-                                        return
-                                    }
-                                    ready = true
-                                    relayLog.info("relay ready with \(snapshot.duration, privacy: .public)s buffered")
-                                    self.managedLocalPlaylistURL = localURL
-                                    self.prepareAndPlay(url: localURL)
-                                }
-                            }
-                            if !ready, Date() > deadline { throw LiveTimeshiftError.startupTimeout }
-                            try await Task.sleep(nanoseconds: ready ? 1_000_000_000 : 250_000_000)
+                            self.liveBuffer = updated
+                            lastRecordedEnd = updated.recordedEnd
                         }
                     }
                     defer { group.cancelAll() }
@@ -948,7 +1036,8 @@ public final class PlaybackManager: ObservableObject {
             imageURLString: vod.iconURLString,
             kind: "vod"
         )
-        prepareAndPlay(url: url)
+        let savedPosition = WatchProgressStore.shared.resumePosition(kind: "vod", streamID: vod.id)
+        prepareAndPlay(url: url, resumePosition: savedPosition)
     }
 
     public func playEpisode(episode: SeriesEpisode, seriesName: String, seasonEpisodes: [SeriesEpisode] = []) {
@@ -1003,7 +1092,8 @@ public final class PlaybackManager: ObservableObject {
             imageURLString: episode.info?.movieImage,
             kind: "series"
         )
-        prepareAndPlay(url: url)
+        let savedPosition = WatchProgressStore.shared.resumePosition(kind: "series", streamID: episode.id)
+        prepareAndPlay(url: url, resumePosition: savedPosition)
     }
 
     public var hasPreviousEpisode: Bool {
@@ -1027,6 +1117,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func beginPlaybackSession(diagnosticKind: PlaybackHealthSummary.Kind) {
+        persistVODWatchProgress(force: true)
         let hadRemoteLive = currentStream != nil && (
             liveRecorder != nil || liveCaptureTask != nil ||
             (currentPlaybackURL != nil && currentPlaybackURL?.isFileURL == false)
@@ -1090,6 +1181,11 @@ public final class PlaybackManager: ObservableObject {
                 }
                 serverRef.server = server
                 self.liveServer = server
+                let localURL = try await server.start()
+                guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else {
+                    server.stop()
+                    return
+                }
                 var pollDelay: Double = 1
                 var failures = 0
                 // Past this, escalate to alternate transport instead of waiting indefinitely.
@@ -1107,11 +1203,6 @@ public final class PlaybackManager: ObservableObject {
                         self.liveBuffer = snapshot
                         self.liveBufferUnavailable = nil
                         if !ready, snapshot.duration > 0 {
-                            let localURL = try await server.start()
-                            guard !Task.isCancelled, self.sessionGeneration == session, self.liveRecorder === recorder else {
-                                server.stop()
-                                return
-                            }
                             ready = true
                             self.managedLocalPlaylistURL = localURL
                             self.prepareAndPlay(url: localURL)
@@ -1234,7 +1325,6 @@ public final class PlaybackManager: ObservableObject {
         HLSBufferEngine.shared.configurePlayerItem(
             playerItem,
             with: settings.bufferProfile,
-            hardwareAccelerated: settings.hardwareAcceleration,
             liveRewindEnabled: settings.liveRewind
         )
         if quality.peakBitRate > 0 {
@@ -1382,6 +1472,14 @@ public final class PlaybackManager: ObservableObject {
                    PlaybackPolicy.retriesAtEnd(isLive: self.currentStream != nil, url: self.currentPlaybackURL) {
                     self.handlePlaybackFailure(.transient, item: playerItem, session: session, generation: generation)
                     return
+                }
+                if let vod = self.currentVOD {
+                    let kind = vod.streamType == "series" ? "series" : "vod"
+                    WatchProgressStore.shared.markCompleted(kind: kind, streamID: vod.id)
+                    if vod.streamType == "series", self.settings.autoPlayNextEpisode, self.hasNextEpisode {
+                        self.nextEpisode()
+                        return
+                    }
                 }
                 PlaybackDiagnosticsStore.shared.finish(outcome: .ended)
                 self.isPlaybackRequested = false
@@ -1745,6 +1843,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     private func pausePlaybackIntent() {
+        persistVODWatchProgress(force: true)
         if (liveRecorder != nil || canSeekLive), pausedLivePosition == nil,
            pendingResumePosition == nil, player.currentItem?.status == .readyToPlay {
             pausedLivePosition = CMTimeGetSeconds(player.currentTime())
@@ -1760,6 +1859,42 @@ public final class PlaybackManager: ObservableObject {
         playbackState = .paused
     }
 
+    private func persistVODWatchProgress(force: Bool) {
+        guard let vod = currentVOD else { return }
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if !force, uptime - lastSavedProgressUptime < 5.0 { return }
+        let position: Double
+        if let item = player.currentItem, item.status == .readyToPlay {
+            let t = CMTimeGetSeconds(item.currentTime())
+            position = (t.isFinite && !t.isNaN && t > 0) ? t : lastVODPosition
+        } else {
+            position = lastVODPosition
+        }
+        guard position.isFinite && position > 0 else { return }
+        let duration: Double
+        if let item = player.currentItem {
+            let d = CMTimeGetSeconds(item.duration)
+            duration = (d.isFinite && !d.isNaN && d > 0) ? d : vodDuration
+        } else {
+            duration = vodDuration
+        }
+        lastSavedProgressUptime = uptime
+        let isSeries = vod.streamType == "series"
+        let currentEpisode = isSeries && activeEpisodeIndex < activeEpisodeList.count ? activeEpisodeList[activeEpisodeIndex] : nil
+        WatchProgressStore.shared.record(
+            streamID: vod.id,
+            kind: isSeries ? "series" : "vod",
+            title: vod.name,
+            subtitle: isSeries ? (activeSeriesName.isEmpty ? nil : activeSeriesName) : vod.rating,
+            imageURLString: vod.iconURLString,
+            containerExtension: vod.containerExtension,
+            season: currentEpisode?.season ?? Int(vod.categoryId),
+            episodeNum: currentEpisode?.episodeNum,
+            position: position,
+            duration: duration
+        )
+    }
+
     /// After repeated stalls, caps the peak bitrate so AVPlayer switches to a lower variant.
     /// Streams with one variant (most Xtream channels) have nothing lower to switch to.
     private func stepDownQualityAfterStall(_ item: AVPlayerItem) {
@@ -1769,6 +1904,7 @@ public final class PlaybackManager: ObservableObject {
     }
 
     public func stop() {
+        persistVODWatchProgress(force: true)
         cancelLiveBufferRecovery()
         stopLiveBuffer()
         liveRecoveryBlockedForSession = false
@@ -1855,6 +1991,7 @@ public final class PlaybackManager: ObservableObject {
                     if self.currentVOD != nil,
                        let position = PlaybackPolicy.vodResumePosition(mediaTime) {
                         self.lastVODPosition = position
+                        self.persistVODWatchProgress(force: false)
                     }
                 } else {
                     self.recovery.recordInterruption()
@@ -2025,6 +2162,7 @@ public final class PlaybackManager: ObservableObject {
                       self.isCurrent(item, session: session, generation: generation),
                       self.vodSeekGeneration == seekGeneration else { return }
                 self.lastVODPosition = target
+                self.persistVODWatchProgress(force: true)
             }
         }
     }
@@ -2046,6 +2184,10 @@ public final class PlaybackManager: ObservableObject {
                   self.isCurrent(item, session: session, generation: generation) else { return }
             self.audioSelectionGroup = groups.0
             self.subtitleSelectionGroup = groups.1
+            if !self.appliedPreferredTracksForItem {
+                self.appliedPreferredTracksForItem = true
+                self.applyPreferredTrackLanguages(for: item)
+            }
             self.applyMediaTracks(for: item)
         }
     }
@@ -2055,21 +2197,83 @@ public final class PlaybackManager: ObservableObject {
         mediaTracksTask = nil
         audioSelectionGroup = nil
         subtitleSelectionGroup = nil
+        audioOptionMap.removeAll()
+        subtitleOptionMap.removeAll()
+        appliedPreferredTracksForItem = false
         availableAudioTracks = []
         selectedAudioTrackID = nil
         availableSubtitles = []
         selectedSubtitleID = nil
     }
 
+    private static func trackCharacteristics(for option: AVMediaSelectionOption) -> [String] {
+        var tags: [String] = []
+        if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) { tags.append("forced") }
+        if option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility) { tags.append("sdh") }
+        if option.hasMediaCharacteristic(.transcribesSpokenDialogForAccessibility) { tags.append("cc") }
+        if option.hasMediaCharacteristic(.describesVideoForAccessibility) { tags.append("ad") }
+        return tags
+    }
+
+    private func applyPreferredTrackLanguages(for item: AVPlayerItem) {
+        if let audioGroup = audioSelectionGroup, let prefAudio = settings.preferredAudioLanguage {
+            let descriptors = audioGroup.options.enumerated().map { idx, option in
+                MediaTrackMatcher.TrackDescriptor(
+                    index: idx,
+                    displayName: option.displayName,
+                    languageTag: option.extendedLanguageTag ?? option.locale?.identifier,
+                    characteristics: Self.trackCharacteristics(for: option),
+                    isForced: false
+                )
+            }
+            if let matchIdx = MediaTrackMatcher.preferredTrackIndex(in: descriptors, preferredLanguage: prefAudio),
+               matchIdx < audioGroup.options.count {
+                item.select(audioGroup.options[matchIdx], in: audioGroup)
+            }
+        }
+
+        if let subGroup = subtitleSelectionGroup, let prefSub = settings.preferredSubtitleLanguage {
+            if MediaTrackMatcher.normalizedLanguageTag(prefSub) == "off" {
+                item.select(nil, in: subGroup)
+            } else {
+                let descriptors = subGroup.options.enumerated().map { idx, option in
+                    MediaTrackMatcher.TrackDescriptor(
+                        index: idx,
+                        displayName: option.displayName,
+                        languageTag: option.extendedLanguageTag ?? option.locale?.identifier,
+                        characteristics: Self.trackCharacteristics(for: option),
+                        isForced: option.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
+                    )
+                }
+                if let matchIdx = MediaTrackMatcher.preferredTrackIndex(in: descriptors, preferredLanguage: prefSub),
+                   matchIdx < subGroup.options.count {
+                    item.select(subGroup.options[matchIdx], in: subGroup)
+                }
+            }
+        }
+    }
+
     private func applyMediaTracks(for item: AVPlayerItem) {
         selectedAudioTrackID = nil
         selectedSubtitleID = nil
-        // Audio tracks
+        audioOptionMap.removeAll()
+        subtitleOptionMap.removeAll()
+
+        // Audio tracks (collision-free IDs incorporating track index & characteristics)
         if let audioGroup = audioSelectionGroup {
             let currentSelected = item.currentMediaSelection.selectedMediaOption(in: audioGroup)
             var audioTracks: [MediaTrackOption] = []
-            for option in audioGroup.options {
-                let id = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+            audioTracks.reserveCapacity(audioGroup.options.count)
+            for (idx, option) in audioGroup.options.enumerated() {
+                let langTag = option.extendedLanguageTag ?? option.locale?.identifier
+                let chars = Self.trackCharacteristics(for: option)
+                let id = MediaTrackMatcher.makeTrackID(
+                    index: idx,
+                    displayName: option.displayName,
+                    languageTag: langTag,
+                    characteristics: chars
+                )
+                audioOptionMap[id] = option
                 let isSel = (currentSelected == option)
                 audioTracks.append(MediaTrackOption(
                     id: id,
@@ -2091,8 +2295,17 @@ public final class PlaybackManager: ObservableObject {
         if let subGroup = subtitleSelectionGroup {
             let currentSelected = item.currentMediaSelection.selectedMediaOption(in: subGroup)
             var subTracks: [MediaTrackOption] = []
-            for option in subGroup.options {
-                let id = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
+            subTracks.reserveCapacity(subGroup.options.count)
+            for (idx, option) in subGroup.options.enumerated() {
+                let langTag = option.extendedLanguageTag ?? option.locale?.identifier
+                let chars = Self.trackCharacteristics(for: option)
+                let id = MediaTrackMatcher.makeTrackID(
+                    index: idx,
+                    displayName: option.displayName,
+                    languageTag: langTag,
+                    characteristics: chars
+                )
+                subtitleOptionMap[id] = option
                 let isSel = (currentSelected == option)
                 subTracks.append(MediaTrackOption(
                     id: id,
@@ -2113,34 +2326,30 @@ public final class PlaybackManager: ObservableObject {
 
     public func selectAudioTrack(id: String) {
         guard let item = player.currentItem,
-              let audioGroup = audioSelectionGroup else { return }
-        for option in audioGroup.options {
-            let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
-            if optionID == id {
-                item.select(option, in: audioGroup)
-                selectedAudioTrackID = id
-                applyMediaTracks(for: item)
-                break
-            }
+              let audioGroup = audioSelectionGroup,
+              let option = audioOptionMap[id] else { return }
+        item.select(option, in: audioGroup)
+        selectedAudioTrackID = id
+        if let langTag = MediaTrackMatcher.normalizedLanguageTag(option.extendedLanguageTag ?? option.locale?.identifier) {
+            settings.preferredAudioLanguage = langTag
         }
+        applyMediaTracks(for: item)
     }
 
     public func selectSubtitle(id: String?) {
         guard let item = player.currentItem,
               let subGroup = subtitleSelectionGroup else { return }
-        if let id {
-            for option in subGroup.options {
-                let optionID = option.displayName + "_" + (option.extendedLanguageTag ?? option.locale?.identifier ?? "")
-                if optionID == id {
-                    item.select(option, in: subGroup)
-                    selectedSubtitleID = id
-                    applyMediaTracks(for: item)
-                    break
-                }
+        if let id, let option = subtitleOptionMap[id] {
+            item.select(option, in: subGroup)
+            selectedSubtitleID = id
+            if let langTag = MediaTrackMatcher.normalizedLanguageTag(option.extendedLanguageTag ?? option.locale?.identifier) {
+                settings.preferredSubtitleLanguage = langTag
             }
+            applyMediaTracks(for: item)
         } else {
             item.select(nil, in: subGroup)
             selectedSubtitleID = nil
+            settings.preferredSubtitleLanguage = "off"
             applyMediaTracks(for: item)
         }
     }

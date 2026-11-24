@@ -84,3 +84,105 @@ public final class FavoritesStore: ObservableObject {
         updateLibrary { $0.recentIDs.removeAll() }
     }
 }
+
+/// Persists per-profile VOD & Series watch positions so users can resume across launches.
+@MainActor
+public final class WatchProgressStore: ObservableObject {
+    public static let shared = WatchProgressStore()
+
+    @Published public private(set) var items: [WatchProgressItem] = []
+
+    private let defaults: UserDefaults
+    private let storageKey = "brutv.watchProgress.state"
+    private var sourceID: UUID?
+    private var state = WatchProgressState()
+
+    public init(userDefaults: UserDefaults = .standard, sourceID: UUID? = nil) {
+        self.defaults = userDefaults
+        if let data = userDefaults.data(forKey: storageKey),
+           let stored = try? JSONDecoder().decode(WatchProgressState.self, from: data) {
+            state = stored
+        }
+        let persistedProfile = userDefaults.data(forKey: "brutv.account.currentProfile")
+            .flatMap { try? JSONDecoder().decode(ServerProfile.self, from: $0) }
+        self.sourceID = sourceID ?? persistedProfile?.id
+        publishItems()
+    }
+
+    public func selectSource(_ sourceID: UUID?) {
+        self.sourceID = sourceID
+        publishItems()
+    }
+
+    public func resumePosition(kind: String, streamID: Int) -> Double? {
+        state.resumePosition(for: sourceID, kind: kind, streamID: streamID)
+    }
+
+    public func record(
+        streamID: Int,
+        kind: String,
+        title: String,
+        subtitle: String? = nil,
+        imageURLString: String? = nil,
+        containerExtension: String = "mp4",
+        season: Int? = nil,
+        episodeNum: Int? = nil,
+        position: Double,
+        duration: Double
+    ) {
+        guard let sourceID else { return }
+        let item = WatchProgressItem(
+            streamID: streamID,
+            kind: kind,
+            title: title,
+            subtitle: subtitle,
+            imageURLString: imageURLString,
+            containerExtension: containerExtension,
+            season: season,
+            episodeNum: episodeNum,
+            position: position,
+            duration: duration,
+            updatedAt: Date()
+        )
+        if state.record(sourceID: sourceID, item: item) {
+            persistState()
+            publishItems()
+        }
+    }
+
+    public func markCompleted(kind: String, streamID: Int) {
+        guard let sourceID else { return }
+        state.markCompleted(sourceID: sourceID, kind: kind, streamID: streamID)
+        persistState()
+        publishItems()
+    }
+
+    public func remove(kind: String, streamID: Int) {
+        guard let sourceID else { return }
+        state.remove(sourceID: sourceID, kind: kind, streamID: streamID)
+        persistState()
+        publishItems()
+    }
+
+    public func clearCurrentProfile() {
+        guard let sourceID else { return }
+        state.clear(sourceID: sourceID)
+        persistState()
+        publishItems()
+    }
+
+    public func clear(sourceID: UUID) {
+        state.clear(sourceID: sourceID)
+        persistState()
+        publishItems()
+    }
+
+    private func publishItems() {
+        items = state.items(for: sourceID)
+    }
+
+    private func persistState() {
+        guard let data = try? JSONEncoder().encode(state) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+}
