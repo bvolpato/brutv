@@ -4,26 +4,40 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+const iosUnit = { name: 'iOS unit tests', target: 'ios-unit', action: 'test', scheme: 'BruTV', simulator: 'iPhone 18 Pro', tests: 'BruTVTests' };
+const tvosBuild = { name: 'tvOS simulator build', target: 'tvos', action: 'build', scheme: 'BruTV-tvOS', destination: 'generic/platform=tvOS Simulator', tests: '' };
+const catalystBuild = { name: 'Mac Catalyst build', target: 'catalyst', action: 'build', scheme: 'BruTV', destination: 'generic/platform=macOS,variant=Mac Catalyst', tests: '' };
+const iphoneSmokeTests = 'BruTVUITests/BruTVUITests/testAppLaunchAndLoginScreen BruTVUITests/BruTVUITests/testDemoLoginButton BruTVUITests/BruTVUITests/testSectionNavigation';
+
 const appleRoutine = [
-  { name: 'iOS unit tests', target: 'ios-unit', action: 'test', scheme: 'BruTV', simulator: 'iPhone 18 Pro', tests: 'BruTVTests' },
-  { name: 'iPhone UI smoke', target: 'iphone-smoke', action: 'test', scheme: 'BruTV', simulator: 'iPhone 18 Pro', tests: 'BruTVUITests/BruTVUITests/testAppLaunchAndLoginScreen BruTVUITests/BruTVUITests/testDemoLoginButton BruTVUITests/BruTVUITests/testSectionNavigation' },
-  { name: 'tvOS simulator build', target: 'tvos', action: 'build', scheme: 'BruTV-tvOS', destination: 'generic/platform=tvOS Simulator', tests: '' },
-  { name: 'Mac Catalyst build', target: 'catalyst', action: 'build', scheme: 'BruTV', destination: 'generic/platform=macOS,variant=Mac Catalyst', tests: '' },
+  {
+    name: 'iOS unit and iPhone UI smoke',
+    target: 'ios-unit-smoke',
+    action: 'build-and-test',
+    scheme: 'BruTV',
+    simulator: 'iPhone 18 Pro',
+    tests: 'BruTVTests',
+    ui_tests: iphoneSmokeTests,
+  },
+  tvosBuild,
+  catalystBuild,
 ];
 
 const appleFull = [
-  appleRoutine[0],
+  iosUnit,
   { name: 'iPhone UI tests', target: 'iphone-ui', action: 'test', scheme: 'BruTV', simulator: 'iPhone 18 Pro', tests: 'BruTVUITests' },
   { name: 'iPad UI tests', target: 'ipad-ui', action: 'test', scheme: 'BruTV', simulator: 'iPad Pro 13-inch (M5)', tests: 'BruTVUITests' },
   { name: 'iPhone Duo UI tests', target: 'duo-ui', action: 'test', scheme: 'BruTV', simulator: 'iPhone Duo', runtime: 'com.apple.CoreSimulator.SimRuntime.iOS-27-1', tests: 'BruTVUITests' },
-  appleRoutine[2],
-  appleRoutine[3],
+  tvosBuild,
+  catalystBuild,
 ];
 
-const platforms = ['core', 'apple', 'android', 'vega', 'ps5', 'web', 'release_tools'];
-const scopes = new Set(['changed', 'apple', 'android', 'vega', 'ps5', 'web', 'full']);
+const platforms = ['core', 'apple', 'android', 'vega', 'ps5', 'ps5_native', 'web', 'release_tools'];
+const scopes = new Set(['changed', 'apple', 'android', 'vega', 'ps5', 'ps5-native', 'web', 'full']);
 const emptyFlags = () => Object.fromEntries(platforms.map((key) => [key, false]));
-const allFlags = () => Object.fromEntries(platforms.map((key) => [key, true]));
+// Native PS5 cross-compile depends on external BlackBearReloaded archives/repos that may be
+// unavailable on hosted runners, so keep ps5_native explicit via workflow_dispatch scope.
+const allFlags = () => ({ ...Object.fromEntries(platforms.map((key) => [key, true])), ps5_native: false });
 const normalize = (file) => file.replaceAll('\\', '/').replace(/^\.\//, '');
 const isDocumentation = (file) => {
   const base = file.split('/').at(-1).toLowerCase();
@@ -44,6 +58,8 @@ export function planChangedPaths(paths, { scope = 'changed' } = {}) {
   if (scope === 'full') {
     Object.assign(flags, allFlags());
     fullAppleUI = true;
+  } else if (scope === 'ps5-native') {
+    flags.ps5_native = true;
   } else if (scope !== 'changed') {
     flags[scope] = true;
     if (scope === 'apple') flags.core = true;
@@ -54,7 +70,10 @@ export function planChangedPaths(paths, { scope = 'changed' } = {}) {
 
       if (file === '.github/workflows/ci.yml' || /^tools\/ci-plan\.(mjs|test\.mjs)$/.test(file)) {
         Object.assign(flags, allFlags());
-      } else if (file === 'tools/join-page.test.mjs' || file.startsWith('docs/')) {
+      } else if (file === '.github/workflows/ios-native-archive.yml' || file === '.github/workflows/ios-testflight.yml') {
+        flags.apple = true;
+        flags.release_tools = true;
+      } else if (file === 'tools/join-page.test.mjs' || file === 'tools/timeshift-fixture.mjs' || file.startsWith('docs/')) {
         flags.web = true;
       } else if (file.startsWith('mobile/android/')) {
         flags.android = true;
@@ -70,6 +89,9 @@ export function planChangedPaths(paths, { scope = 'changed' } = {}) {
           flags.core = true;
         }
       } else if (['build.sh', 'release.sh', 'capture-screenshots.sh', 'tools/brutv-login-qr.py', 'uv.toml'].includes(file)) {
+        flags.release_tools = true;
+      } else if (/^tools\/macos-capture-[^/]+\.swift$/.test(file)) {
+        flags.apple = true;
         flags.release_tools = true;
       } else if (/^tools\/make-[^/]+\.swift$/.test(file)) {
         flags.apple = true;

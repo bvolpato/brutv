@@ -18,6 +18,7 @@ val releaseStoreFile = releaseSigningValues["storeFile"]
 val productionSigningConfigured = releaseSigningValues.values.all(String::isNotBlank) &&
     releaseStoreFile?.isFile == true
 val brutvMinimumSdk = providers.gradleProperty("brutvMinSdk").orNull?.toInt() ?: 23
+val allowUnsignedRelease = providers.gradleProperty("brutvAllowUnsignedRelease").orNull == "true"
 
 plugins {
     id("com.android.application")
@@ -85,7 +86,8 @@ gradle.taskGraph.whenReady {
         "signReleaseBundle",
     )
     if (allTasks.any { it.path.startsWith(":app:") && it.name in releasePackagingTasks } &&
-        !productionSigningConfigured
+        !productionSigningConfigured &&
+        !allowUnsignedRelease
     ) {
         throw GradleException(
             "Production signing is required for Android release packages. Configure " +

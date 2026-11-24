@@ -18,6 +18,7 @@ on:
           - android
           - vega
           - ps5
+          - ps5-native
           - web
           - full
           - macos-screenshots
@@ -43,7 +44,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.scope || 'auto' }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -57,6 +58,7 @@ jobs:
       android: ${{ steps.plan.outputs.android }}
       vega: ${{ steps.plan.outputs.vega }}
       ps5: ${{ steps.plan.outputs.ps5 }}
+      ps5_native: ${{ steps.plan.outputs.ps5_native }}
       web: ${{ steps.plan.outputs.web }}
       release_tools: ${{ steps.plan.outputs.release_tools }}
       apple_matrix: ${{ steps.plan.outputs.apple_matrix }}
@@ -165,7 +167,9 @@ jobs:
         with:
           node-version: 22
       - name: Test sign-in link initialization and QR privacy
-        run: node --test tools/join-page.test.mjs
+        run: |
+          node --test tools/join-page.test.mjs
+          node --check tools/timeshift-fixture.mjs
 
   release-tooling:
     name: Apple release tooling tests
@@ -218,12 +222,22 @@ jobs:
             echo "error: the selected Xcode does not include the iOS 27.2 SDK" >&2
             exit 1
           fi
+      - name: Cache Xcode module cache and SwiftPM packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/apple-derived-data/ModuleCache.noindex
+            ${{ runner.temp }}/apple-derived-data/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: apple-xcode-27.2-27B52-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('mobile/ios/BruTV/BruTV.xcodeproj/project.pbxproj', 'mobile/ios/BruTV/Package.swift', 'mobile/ios/BruTV/**/Package.resolved') }}
+          restore-keys: |
+            apple-xcode-27.2-27B52-${{ runner.arch }}-${{ matrix.target }}-
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        if: matrix.target == 'ios-unit'
+        if: matrix.target == 'ios-unit-smoke' || matrix.target == 'ios-unit'
         with:
           version: '0.13.4'
       - name: Validate generated Apple asset catalogs
-        if: matrix.target == 'ios-unit'
+        if: matrix.target == 'ios-unit-smoke' || matrix.target == 'ios-unit'
         run: uv run --python 3.12 mobile/ios/BruTV/tests/test_prepare_xtool.py
       - name: Prepare Apple destination
         id: destination
@@ -232,6 +246,10 @@ jobs:
           APPLE_DESTINATION: ${{ matrix.destination }}
           APPLE_SIMULATOR_RUNTIME: ${{ matrix.runtime || 'com.apple.CoreSimulator.SimRuntime.iOS-27-2' }}
         run: |
+          # Remove orphaned simulator device pairs (such as watchOS-27-0) across all Apple jobs
+          # so actool/ibtoold never crashes on invalid CoreSimulator devicePair entries.
+          xcrun simctl delete unavailable || true
+          xcrun simctl shutdown all || true
           if [[ -n "$APPLE_SIMULATOR" ]]; then
             devices=$(xcrun simctl list devices available --json)
             simulator_id=$(jq -r --arg name "$APPLE_SIMULATOR" --arg runtime "$APPLE_SIMULATOR_RUNTIME" \
@@ -256,6 +274,7 @@ jobs:
           APPLE_SCHEME: ${{ matrix.scheme }}
           APPLE_TARGET: ${{ matrix.target }}
           APPLE_TEST_TARGETS: ${{ matrix.tests }}
+          APPLE_UI_TEST_TARGETS: ${{ matrix.ui_tests }}
           APPLE_UI_SCOPE: ${{ inputs.apple_ui_scope || 'all' }}
           APPLE_DESTINATION: ${{ steps.destination.outputs.destination }}
         run: |
@@ -266,28 +285,57 @@ jobs:
               exit 1
               ;;
           esac
-          arguments=(
+          base_args=(
             -project mobile/ios/BruTV/BruTV.xcodeproj
             -scheme "$APPLE_SCHEME"
             -destination "$APPLE_DESTINATION"
             -derivedDataPath "$RUNNER_TEMP/apple-derived-data"
-            -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET.xcresult"
           )
-          if [[ -n "$APPLE_TEST_TARGETS" ]]; then
-            read -r -a test_targets <<<"$APPLE_TEST_TARGETS"
-            for test_target in "${test_targets[@]}"; do
+          build_settings=(CODE_SIGNING_ALLOWED=NO)
+          if [[ "$APPLE_DESTINATION" == *Simulator* ]]; then
+            build_settings+=("ARCHS=$(uname -m)" "ONLY_ACTIVE_ARCH=YES")
+          fi
+          build_test_args() {
+            local raw_targets="$1"
+            local test_target
+            local raw_list
+            parsed_test_args=()
+            read -r -a raw_list <<<"$raw_targets"
+            for test_target in "${raw_list[@]}"; do
               if [[ "$test_target" == BruTVUITests && "$APPLE_UI_SCOPE" == regressions ]]; then
-                arguments+=(
+                parsed_test_args+=(
                   -only-testing:BruTVUITests/BruTVUITests/testLiveRewindSettingPersistsAcrossLaunches
                   -only-testing:BruTVUITests/BruTVUITests/testLogoutReturnsToLoginScreen
                 )
               else
-                arguments+=("-only-testing:$test_target")
+                parsed_test_args+=("-only-testing:$test_target")
               fi
             done
-            arguments+=(-parallel-testing-enabled NO)
+            parsed_test_args+=(-parallel-testing-enabled NO)
+          }
+          if [[ "$APPLE_ACTION" == build-and-test ]]; then
+            xcodebuild build-for-testing "${base_args[@]}" "${build_settings[@]}"
+            build_test_args "$APPLE_TEST_TARGETS"
+            xcodebuild test-without-building "${base_args[@]}" \
+              -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET-unit.xcresult" \
+              "${parsed_test_args[@]}" "${build_settings[@]}"
+            if [[ -n "$APPLE_UI_TEST_TARGETS" ]]; then
+              build_test_args "$APPLE_UI_TEST_TARGETS"
+              xcodebuild test-without-building "${base_args[@]}" \
+                -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET-ui.xcresult" \
+                "${parsed_test_args[@]}" "${build_settings[@]}"
+            fi
+          else
+            arguments=(
+              "${base_args[@]}"
+              -resultBundlePath "$RUNNER_TEMP/BruTV-$APPLE_TARGET.xcresult"
+            )
+            if [[ -n "$APPLE_TEST_TARGETS" ]]; then
+              build_test_args "$APPLE_TEST_TARGETS"
+              arguments+=("${parsed_test_args[@]}")
+            fi
+            xcodebuild "$APPLE_ACTION" "${arguments[@]}" "${build_settings[@]}"
           fi
-          xcodebuild "$APPLE_ACTION" "${arguments[@]}" CODE_SIGNING_ALLOWED=NO
       - name: Upload Apple test results
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -311,20 +359,56 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
-          cache-dependency-path: |
-            mobile/android/**/*.gradle*
-            mobile/android/gradle/wrapper/gradle-wrapper.properties
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
         with:
           accept-android-sdk-licenses: true
           packages: ''
-      - name: Install Android API 37 and platform tools
-        run: sdkmanager --install 'platform-tools' 'platforms;android-37.0'
-      - name: Run Android tests and lint
-        run: ./mobile/android/test.sh --no-daemon --max-workers=2 --console=plain
-      - name: Build debug and preview APKs
-        run: ./mobile/android/gradlew --no-daemon --max-workers=2 --console=plain -p mobile/android :app:assembleDebug :app:assemblePreview
+      - name: Resolve Android SDK path
+        id: android-sdk-path
+        run: echo "android_home=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_OUTPUT"
+      - name: Cache Android API 37 SDK platform
+        id: android-sdk-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.android-sdk-path.outputs.android_home }}/platforms/android-37.0
+          key: android-sdk-${{ runner.os }}-api-37.0-v2
+      - name: Install Android API 37 platform
+        if: steps.android-sdk-cache.outputs.cache-hit != 'true'
+        run: sdkmanager --install 'platforms;android-37.0'
+      - name: Run Android tests, lint, and APK builds
+        run: |
+          ./mobile/android/gradlew --no-daemon --build-cache --max-workers=4 --console=plain -p mobile/android \
+            :app:testDebugUnitTest :app:lintDebug :app:lintPreview :app:lintRelease :app:assembleDebug :app:assemblePreview
+      - name: Build Android release APK and AAB for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          signing_dir="$RUNNER_TEMP/android-signing"
+          trap 'rm -rf "$signing_dir"' EXIT
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_STORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEY_PASSWORD" ]]; then
+            mkdir -p "$signing_dir"
+            chmod 700 "$signing_dir"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$signing_dir/release.jks"
+            chmod 600 "$signing_dir/release.jks"
+            printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$signing_dir/release.jks" \
+              "$ANDROID_STORE_PASSWORD" \
+              "$ANDROID_KEY_ALIAS" \
+              "$ANDROID_KEY_PASSWORD" > "$signing_dir/keystore.properties"
+            chmod 600 "$signing_dir/keystore.properties"
+            BRUTV_ANDROID_SIGNING_PROPERTIES="$signing_dir/keystore.properties" \
+              ./mobile/android/gradlew --no-daemon --build-cache --max-workers=4 --console=plain \
+              -p mobile/android :app:assembleRelease :app:bundleRelease
+          else
+            echo "Android release signing secrets are not configured; building unsigned release APK and AAB."
+            ./mobile/android/gradlew --no-daemon --build-cache --max-workers=4 --console=plain \
+              -p mobile/android -PbrutvAllowUnsignedRelease=true :app:assembleRelease :app:bundleRelease
+          fi
       - name: Upload Android failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -344,6 +428,16 @@ jobs:
             mobile/android/app/build/outputs/apk/debug/*.apk
             mobile/android/app/build/outputs/apk/preview/*.apk
           retention-days: 7
+          if-no-files-found: error
+      - name: Upload Android release APK and AAB
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-release-artifacts
+          path: |
+            mobile/android/app/build/outputs/apk/release/*.apk
+            mobile/android/app/build/outputs/bundle/release/*.aab
+          retention-days: 30
           if-no-files-found: error
 
   vega:
@@ -366,20 +460,66 @@ jobs:
           cache-dependency-path: mobile/vega/package-lock.json
       - name: Verify preinstalled Python 3.12
         run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+      - name: Check runner npm version
+        id: npm-version
+        run: |
+          current=$(npm --version)
+          echo "Runner npm version: $current"
+          if node -e 'const [maj, min, pat] = process.argv[1].split(".").map(Number); process.exit(maj > 11 || (maj === 11 && (min > 21 || (min === 21 && pat >= 0))) ? 0 : 1)' "$current"; then
+            echo "satisfies=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "satisfies=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Cache pinned npm 11.21.0
+        if: steps.npm-version.outputs.satisfies != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/npm-11.21.0
+          key: vega-npm-11.21.0-${{ runner.os }}-${{ runner.arch }}
       - name: Install pinned npm and lockfile dependencies
         run: |
-          npm install --global npm@11.21.0
+          if [[ "${{ steps.npm-version.outputs.satisfies }}" != "true" ]]; then
+            if [[ ! -x "$RUNNER_TEMP/npm-11.21.0/bin/npm" ]]; then
+              npm install --prefix "$RUNNER_TEMP/npm-11.21.0" --global npm@11.21.0
+            fi
+            echo "$RUNNER_TEMP/npm-11.21.0/bin" >> "$GITHUB_PATH"
+            export PATH="$RUNNER_TEMP/npm-11.21.0/bin:$PATH"
+          fi
+          npm --version
           npm ci --ignore-scripts
+      - name: Cache built Amazon-patched Shaka
+        id: shaka-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mobile/vega/src/media/shaka
+          key: vega-shaka-${{ runner.os }}-${{ hashFiles('mobile/vega/scripts/build-shaka.sh', 'mobile/vega/vendor/amazon/**', 'mobile/vega/package-lock.json') }}
       - name: Build pinned Amazon-patched Shaka
+        if: steps.shaka-cache.outputs.cache-hit != 'true'
         run: npm run setup:shaka
       - name: Test and typecheck Vega sources
         run: |
           npm test
           npm run typecheck
       - name: Build production Vega JavaScript bundle
-        run: npm run bundle -- --entry-file index.js --platform kepler --dev false --bundle-output "$RUNNER_TEMP/brutv-vega.bundle" --assets-dest "$RUNNER_TEMP/brutv-vega-assets" --max-workers 2
+        run: |
+          mkdir -p "$RUNNER_TEMP/brutv-vega-assets"
+          npm run bundle -- --entry-file index.js --platform kepler --dev false --bundle-output "$RUNNER_TEMP/brutv-vega.bundle" --assets-dest "$RUNNER_TEMP/brutv-vega-assets" --max-workers 2
       - name: Check high severity dependency advisories
         run: npm audit --audit-level=high
+      - name: Record Vega production bundle checksum
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        run: (cd "$RUNNER_TEMP" && sha256sum brutv-vega.bundle > brutv-vega.bundle.sha256)
+      - name: Upload Vega production bundle
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vega-production-bundle
+          path: |
+            ${{ runner.temp }}/brutv-vega.bundle
+            ${{ runner.temp }}/brutv-vega.bundle.sha256
+            ${{ runner.temp }}/brutv-vega-assets
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 30 || 7 }}
+          if-no-files-found: error
 
   ps5-desktop:
     name: PS5 desktop build and media tests
@@ -387,6 +527,11 @@ jobs:
     if: needs.changes.outputs.ps5 == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      CCACHE_COMPRESS: '1'
+      CCACHE_MAXSIZE: '500M'
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -394,13 +539,66 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Cache ccache for PS5 desktop build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache-ps5-desktop
+          key: ps5-desktop-ccache-${{ runner.os }}-${{ hashFiles('mobile/ps5/CMakeLists.txt', 'mobile/ps5/include/**', 'mobile/ps5/src/**', 'mobile/ps5/tests/**') }}
+          restore-keys: |
+            ps5-desktop-ccache-${{ runner.os }}-
       - name: Install desktop build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            build-essential cmake ninja-build pkg-config \
+            build-essential ccache cmake ninja-build pkg-config \
             libsdl2-dev libgl-dev libavformat-dev libavcodec-dev libavutil-dev \
             libswscale-dev libswresample-dev libcurl4-openssl-dev \
             nlohmann-json3-dev ffmpeg xvfb
       - name: Build and test desktop player
-        run: ./mobile/ps5/test.sh
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache-ps5-desktop
+        run: |
+          ccache -z
+          ./mobile/ps5/test.sh
+          ccache -s
+
+  ps5-native:
+    name: PS5 native cross-compile and package audit
+    needs: changes
+    if: needs.changes.outputs.ps5_native == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native PS5 cross-compile dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake ninja-build pkg-config \
+            clang-18 lld-18 llvm-18 libclang-rt-18-dev \
+            curl jq ripgrep unzip zip zlib1g-dev
+      - name: Cache PS5 native SDK and toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/brutv-ps5-cache
+          key: ps5-native-sdk-${{ runner.os }}-${{ hashFiles('mobile/ps5/tools/bootstrap.sh', 'mobile/ps5/tools/native-tooling.patch', 'mobile/ps5/cmake/PS5Dependencies.cmake') }}
+      - name: Build, audit, and package native PS5 title
+        env:
+          BRUTV_PS5_CACHE: ${{ runner.temp }}/brutv-ps5-cache
+        run: |
+          ./mobile/ps5/tools/build-ps5.sh
+          ./mobile/ps5/tools/package-ps5.sh
+          (cd mobile/ps5/build/ps5 && sha256sum --check --strict SHA256SUMS)
+      - name: Upload PS5 native title archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ps5-native-title
+          path: |
+            mobile/ps5/build/ps5/PPSA99241.zip
+            mobile/ps5/build/ps5/SHA256SUMS
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 30 || 7 }}
+          if-no-files-found: error

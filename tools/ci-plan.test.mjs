@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { planChangedPaths } from './ci-plan.mjs';
 
 const flags = (plan) => Object.fromEntries(
-  ['core', 'apple', 'android', 'vega', 'ps5', 'web', 'release_tools'].map((key) => [key, plan[key]]),
+  ['core', 'apple', 'android', 'vega', 'ps5', 'ps5_native', 'web', 'release_tools'].map((key) => [key, plan[key]]),
 );
-const none = { core: false, apple: false, android: false, vega: false, ps5: false, web: false, release_tools: false };
-const all = Object.fromEntries(Object.keys(none).map((key) => [key, true]));
+const none = { core: false, apple: false, android: false, vega: false, ps5: false, ps5_native: false, web: false, release_tools: false };
+const all = { ...Object.fromEntries(Object.keys(none).map((key) => [key, true])), ps5_native: false };
 
 test('empty and documentation or repository metadata changes skip app jobs', () => {
   assert.deepEqual(flags(planChangedPaths([])), none);
@@ -34,17 +34,23 @@ test('platform source paths route only to their platform', () => {
   for (const [file, key] of [
     ['mobile/android/app/src/main/MainActivity.kt', 'android'],
     ['mobile/vega/src/player.ts', 'vega'],
-    ['mobile/ps5/src/player.cpp', 'ps5'],
-    ['mobile/ps5/CMakeLists.txt', 'ps5'],
   ]) assert.deepEqual(flags(planChangedPaths([file])), { ...none, [key]: true });
+
+  for (const file of ['mobile/ps5/src/player.cpp', 'mobile/ps5/CMakeLists.txt', 'mobile/ps5/tools/bootstrap.sh']) {
+    assert.deepEqual(flags(planChangedPaths([file])), { ...none, ps5: true }, file);
+  }
 });
 
-test('iOS source and deletions route to core and the four-job routine matrix', () => {
+test('iOS source and deletions route to core and the three-job routine matrix', () => {
   const plan = planChangedPaths(['mobile/ios/BruTV/BruTV/AppRootView.swift']);
   assert.deepEqual(flags(plan), { ...none, core: true, apple: true });
-  assert.deepEqual(plan.apple_matrix.include.map(({ target }) => target), ['ios-unit', 'iphone-smoke', 'tvos', 'catalyst']);
+  assert.deepEqual(plan.apple_matrix.include.map(({ target }) => target), ['ios-unit-smoke', 'tvos', 'catalyst']);
+  assert.equal(plan.apple_matrix.include[0].action, 'build-and-test');
   assert.equal(plan.apple_matrix.include[0].tests, 'BruTVTests');
-  assert.equal(plan.apple_matrix.include[1].tests, 'BruTVUITests/BruTVUITests/testAppLaunchAndLoginScreen BruTVUITests/BruTVUITests/testDemoLoginButton BruTVUITests/BruTVUITests/testSectionNavigation');
+  assert.equal(
+    plan.apple_matrix.include[0].ui_tests,
+    'BruTVUITests/BruTVUITests/testAppLaunchAndLoginScreen BruTVUITests/BruTVUITests/testDemoLoginButton BruTVUITests/BruTVUITests/testSectionNavigation',
+  );
   assert.deepEqual(flags(planChangedPaths(['mobile/android/app/src/main/Deleted.kt'])), { ...none, android: true });
 });
 
@@ -55,30 +61,45 @@ test('iOS support scripts, tests, and Linux tools route only to release tooling'
   ]) assert.deepEqual(flags(planChangedPaths([file])), { ...none, release_tools: true }, file);
 });
 
-test('root release helpers and Swift generators have narrow routes', () => {
+test('root release helpers, Apple workflows, capture scripts, and timeshift fixture have narrow routes', () => {
   for (const file of ['build.sh', 'release.sh', 'capture-screenshots.sh', 'tools/brutv-login-qr.py', 'uv.toml']) {
     assert.deepEqual(flags(planChangedPaths([file])), { ...none, release_tools: true }, file);
   }
   assert.deepEqual(flags(planChangedPaths(['test.sh'])), { ...none, core: true, release_tools: true });
   assert.deepEqual(flags(planChangedPaths(['tools/make-preview.swift'])), { ...none, apple: true });
+  for (const file of [
+    '.github/workflows/ios-native-archive.yml',
+    '.github/workflows/ios-testflight.yml',
+    'tools/macos-capture-display.swift',
+    'tools/macos-capture-export.swift',
+  ]) {
+    const plan = planChangedPaths([file]);
+    assert.deepEqual(flags(plan), { ...none, apple: true, release_tools: true }, file);
+    assert.equal(plan.apple_matrix.include.length, 3, file);
+  }
+  assert.deepEqual(flags(planChangedPaths(['tools/timeshift-fixture.mjs'])), { ...none, web: true });
 });
 
 test('CI planner changes trigger all routine checks; unknown source is conservative', () => {
   for (const file of ['.github/workflows/ci.yml', 'tools/ci-plan.mjs', 'tools/ci-plan.test.mjs', 'new-source.js', 'requirements.txt', '.gitmodules']) {
     const plan = planChangedPaths([file]);
     assert.deepEqual(flags(plan), all, file);
-    assert.equal(plan.apple_matrix.include.length, 4, file);
+    assert.equal(plan.apple_matrix.include.length, 3, file);
   }
 });
 
 test('manual scopes select their named platform and full selects all six Apple rows', () => {
-  for (const scope of ['android', 'vega', 'ps5', 'web']) {
+  for (const scope of ['android', 'vega', 'web']) {
     assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope })), { ...none, [scope]: true });
   }
+  assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope: 'ps5' })), { ...none, ps5: true });
+  assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope: 'ps5-native' })), { ...none, ps5_native: true });
   assert.deepEqual(flags(planChangedPaths([], { scope: 'apple' })), { ...none, core: true, apple: true });
   const full = planChangedPaths([], { scope: 'full' });
   assert.deepEqual(flags(full), all);
   assert.deepEqual(full.apple_matrix.include.map(({ target }) => target), ['ios-unit', 'iphone-ui', 'ipad-ui', 'duo-ui', 'tvos', 'catalyst']);
+  assert.equal(full.apple_matrix.include[0].action, 'test');
+  assert.equal(full.apple_matrix.include[0].tests, 'BruTVTests');
   assert.equal(full.apple_matrix.include[1].simulator, 'iPhone 18 Pro');
   assert.equal(full.apple_matrix.include[2].simulator, 'iPad Pro 13-inch (M5)');
   assert.equal(full.apple_matrix.include[3].simulator, 'iPhone Duo');
