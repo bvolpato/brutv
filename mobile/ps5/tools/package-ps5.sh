@@ -11,7 +11,7 @@ build="$root/build/ps5"
 tool="$native/build/host/ps5-native-tool"
 input="$build/brutv"
 [[ -s $input && -x $tool ]] || { echo 'Build the native PS5 target first' >&2; exit 2; }
-if llvm-readelf-18 --dynamic "$input" | rg -q 'libScePosixForWebKit|libSceRandom|RPATH|RUNPATH'; then
+if llvm-readelf-18 --dynamic "$input" | grep -Eq 'libScePosixForWebKit|libSceRandom|RPATH|RUNPATH'; then
     echo 'Native import audit failed: unavailable WebKit POSIX/Random module or build-host runpath' >&2
     exit 2
 fi

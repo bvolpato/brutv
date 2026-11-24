@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
 #include "brutv/http.hpp"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <curl/curl.h>
@@ -22,6 +24,7 @@ struct Response {
   std::string body;
   std::size_t limit;
 };
+
 std::size_t writeBody(char *data, std::size_t size, std::size_t count,
                       void *context) {
   auto &response = *static_cast<Response *>(context);
@@ -37,6 +40,70 @@ std::size_t writeBody(char *data, std::size_t size, std::size_t count,
     return 0;
   }
 }
+
+struct SharedCurlCache {
+  std::array<std::mutex, CURL_LOCK_DATA_LAST> locks;
+  CURLSH *handle{nullptr};
+
+  static void lockCallback(CURL *, curl_lock_data data, curl_lock_access,
+                           void *userptr) {
+    auto *self = static_cast<SharedCurlCache *>(userptr);
+    if (data >= 0 && data < CURL_LOCK_DATA_LAST)
+      self->locks[static_cast<std::size_t>(data)].lock();
+  }
+
+  static void unlockCallback(CURL *, curl_lock_data data, void *userptr) {
+    auto *self = static_cast<SharedCurlCache *>(userptr);
+    if (data >= 0 && data < CURL_LOCK_DATA_LAST)
+      self->locks[static_cast<std::size_t>(data)].unlock();
+  }
+
+  SharedCurlCache() {
+    handle = curl_share_init();
+    if (handle) {
+      curl_share_setopt(handle, CURLSHOPT_USERDATA, this);
+      curl_share_setopt(handle, CURLSHOPT_LOCKFUNC, lockCallback);
+      curl_share_setopt(handle, CURLSHOPT_UNLOCKFUNC, unlockCallback);
+      curl_share_setopt(handle, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+      curl_share_setopt(handle, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    }
+  }
+
+  ~SharedCurlCache() {
+    if (handle)
+      curl_share_cleanup(handle);
+  }
+};
+
+CURLSH *sharedCurlHandle() {
+  static SharedCurlCache cache;
+  return cache.handle;
+}
+
+struct ThreadCurlHandle {
+  CURL *handle{nullptr};
+
+  CURL *acquire() {
+    if (!handle) {
+      handle = curl_easy_init();
+      if (!handle)
+        throw std::runtime_error("Network request could not start");
+    } else {
+      curl_easy_reset(handle);
+    }
+    return handle;
+  }
+
+  void discard() {
+    if (handle) {
+      curl_easy_cleanup(handle);
+      handle = nullptr;
+    }
+  }
+
+  ~ThreadCurlHandle() { discard(); }
+};
+
 bool isTransientCurlError(CURLcode code) {
   switch (code) {
   case CURLE_COULDNT_RESOLVE_HOST:
@@ -58,10 +125,12 @@ bool isTransientCurlError(CURLcode code) {
     return false;
   }
 }
+
 bool isTransientHttpStatus(long status) {
   return status == 408 || status == 429 || status == 458 ||
          (status >= 500 && status <= 599);
 }
+
 long retryDelayMs(int attempt, long status, curl_off_t retryAfterSeconds) {
   static thread_local std::mt19937 rng(static_cast<std::uint32_t>(
       std::chrono::steady_clock::now().time_since_epoch().count() ^
@@ -76,6 +145,7 @@ long retryDelayMs(int attempt, long status, curl_off_t retryAfterSeconds) {
   }
   return delayMs;
 }
+
 std::string get(const std::string &url, bool artwork) {
   static std::once_flag initialized;
   std::call_once(initialized, [] {
@@ -87,13 +157,15 @@ std::string get(const std::string &url, bool artwork) {
   const int maxAttempts = artwork ? 1 : 3;
   static const std::string ca = std::string(BRUTV_ASSET_DIR) + "/ca-bundle.crt";
   static const bool hasCa = std::ifstream(ca).good();
+  CURLSH *shared = sharedCurlHandle();
+  static thread_local ThreadCurlHandle threadHandle;
   for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-    CURL *handle = curl_easy_init();
-    if (!handle)
-      throw std::runtime_error("Network request could not start");
+    CURL *handle = threadHandle.acquire();
 #ifdef BRUTV_PS5
     console_curl_setup(handle);
 #endif
+    if (shared)
+      curl_easy_setopt(handle, CURLOPT_SHARE, shared);
     Response response{{}, artwork ? 4U * 1024 * 1024 : 64U * 1024 * 1024};
     curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
     curl_easy_setopt(handle, CURLOPT_USERAGENT, "BruTV/1.0 PS5");
@@ -127,11 +199,12 @@ std::string get(const std::string &url, bool artwork) {
     if (result == CURLE_OK && (status == 429 || status == 503))
       curl_easy_getinfo(handle, CURLINFO_RETRY_AFTER, &retryAfter);
 #endif
-    curl_easy_cleanup(handle);
-    if (result == CURLE_WRITE_ERROR || result == CURLE_FILESIZE_EXCEEDED)
+    if (result == CURLE_WRITE_ERROR || result == CURLE_FILESIZE_EXCEEDED) {
+      threadHandle.discard();
       throw std::runtime_error(
           artwork ? "The artwork response exceeded the 4 MiB limit"
                   : "The source response exceeded the 64 MiB limit");
+    }
     const bool hasMoreAttempts = attempt + 1 < maxAttempts;
     if (result != CURLE_OK) {
       if (hasMoreAttempts && isTransientCurlError(result)) {

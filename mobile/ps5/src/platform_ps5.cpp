@@ -240,8 +240,9 @@ public:
         }
         padErrors_ = 0;
         if (count == 0) return input;
-        constexpr std::uint32_t repeatable = 0x00f0 | 0x0100 | 0x0200; // D-pad/stick + L2 + R2
-        const std::uint32_t previousRepeatable = held_ & repeatable;
+        constexpr std::array<std::uint32_t, 6> repeatMasks = {
+            0x0010, 0x0040, 0x0080, 0x0020, 0x0100, 0x0200}; // Up, Down, Left, Right, L2, R2
+        const std::uint32_t previousHeld = held_;
         std::uint32_t pressed = 0;
         for (int i = 0; i < count; ++i) {
             const auto& sample = samples[i];
@@ -259,11 +260,16 @@ public:
             pressed |= (buttons & ~held_);
             held_ = buttons;
         }
-        if ((held_ & repeatable) != previousRepeatable) {
-            repeatAt_ = now + std::chrono::milliseconds(350);
-        } else if ((held_ & repeatable) != 0 && now >= repeatAt_) {
-            pressed |= (held_ & repeatable);
-            repeatAt_ = now + std::chrono::milliseconds(110);
+        for (std::size_t idx = 0; idx < repeatMasks.size(); ++idx) {
+            const std::uint32_t mask = repeatMasks[idx];
+            const bool isHeld = (held_ & mask) != 0;
+            const bool wasHeld = (previousHeld & mask) != 0;
+            if (isHeld && !wasHeld) {
+                repeatAt_[idx] = now + std::chrono::milliseconds(350);
+            } else if (isHeld && now >= repeatAt_[idx]) {
+                pressed |= mask;
+                repeatAt_[idx] = now + std::chrono::milliseconds(110);
+            }
         }
         const auto add = [&](std::uint32_t mask, Key key) { if ((pressed & mask) != 0) input.pressed.push_back(key); };
         add(0x0010, Key::Up); add(0x0040, Key::Down);
@@ -333,7 +339,7 @@ private:
     int width_ = 0, height_ = 0, pad_ = -1, user_ = 0, padErrors_ = 0;
     bool ownsUserService_ = false;
     std::uint32_t held_ = 0;
-    std::chrono::steady_clock::time_point repeatAt_{};
+    std::array<std::chrono::steady_clock::time_point, 6> repeatAt_{};
     std::chrono::steady_clock::time_point padReopenAt_{};
     std::shared_ptr<Ps5Audio> audio_;
 };

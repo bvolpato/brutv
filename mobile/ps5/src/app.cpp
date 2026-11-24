@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "brutv/app.hpp"
 
 #include "brutv/artwork.hpp"
@@ -9,12 +10,18 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
 #include <future>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -23,6 +30,11 @@ namespace {
 
 constexpr float kWidth = 1920.0F;
 constexpr float kHeight = 1080.0F;
+constexpr auto kHudAutoHideDelay = std::chrono::seconds(5);
+constexpr auto kBrowseEpgDebounce = std::chrono::milliseconds(300);
+constexpr auto kEpgSuccessTtl = std::chrono::seconds(120);
+constexpr auto kEpgFailureTtl = std::chrono::seconds(60);
+constexpr auto kResumeSaveInterval = std::chrono::seconds(10);
 
 Color rgb(int r, int g, int b, float a = 1.0F) {
     return {static_cast<float>(r) / 255.0F, static_cast<float>(g) / 255.0F,
@@ -41,10 +53,49 @@ const Color kBlue = rgb(66, 148, 255);
 const Color kGreen = rgb(87, 214, 157);
 const Color kRed = rgb(255, 112, 123);
 
+char asciiLowerChar(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
 std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (char &c : value)
+        c = asciiLowerChar(c);
     return value;
+}
+
+bool caseInsensitiveLess(std::string_view a, std::string_view b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const char ca = asciiLowerChar(a[i]);
+        const char cb = asciiLowerChar(b[i]);
+        if (ca != cb)
+            return ca < cb;
+    }
+    return a.size() < b.size();
+}
+
+// Allocation-free case-insensitive substring search.
+bool containsCaseInsensitive(std::string_view haystack, std::string_view needle) {
+    if (needle.empty())
+        return true;
+    if (needle.size() > haystack.size())
+        return false;
+    const char first = asciiLowerChar(needle[0]);
+    const std::size_t limit = haystack.size() - needle.size();
+    for (std::size_t i = 0; i <= limit; ++i) {
+        if (asciiLowerChar(haystack[i]) != first)
+            continue;
+        bool match = true;
+        for (std::size_t j = 1; j < needle.size(); ++j) {
+            if (asciiLowerChar(haystack[i + j]) != asciiLowerChar(needle[j])) {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return true;
+    }
+    return false;
 }
 
 std::string shortened(const std::string &value, std::size_t maxLength) {
@@ -65,6 +116,17 @@ std::string formatTime(double seconds) {
         out << hours << ':' << (minutes < 10 ? "0" : "");
     out << minutes << ':' << (remainder < 10 ? "0" : "") << remainder;
     return out.str();
+}
+
+std::string formatClockHm(std::int64_t epochSeconds) {
+    if (epochSeconds <= 0)
+        return {};
+    const std::time_t ts = static_cast<std::time_t>(epochSeconds);
+    std::tm tmVal{};
+    gmtime_r(&ts, &tmVal);
+    char buf[16]{};
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", tmVal.tm_hour, tmVal.tm_min);
+    return buf;
 }
 
 std::string sourceScopedItemKey(const MediaItem &item) { return item.sourceId + "\n" + item.id; }
@@ -91,25 +153,45 @@ void eraseLastCodepoint(std::string &value) {
     value.erase(position);
 }
 
+// Fast incremental word wrapper without std::istringstream or per-word line copies.
 void wrappedText(Gfx &gfx, const std::string &text, float x, float y, float size, Color color,
                  float maxWidth, int maxLines = 2) {
-    if (text.empty() || maxWidth <= 0)
+    if (text.empty() || maxWidth <= 0 || maxLines <= 0)
         return;
-    std::istringstream words(text);
-    std::string word;
+    const float spaceW = gfx.textWidth(" ", size);
+    const std::string_view view(text);
     std::string line;
+    float lineW = 0.0F;
     int lineIndex = 0;
-    while (words >> word) {
-        const std::string candidate = line.empty() ? word : line + " " + word;
-        if (!line.empty() && gfx.textWidth(candidate, size) > maxWidth) {
+    std::size_t pos = 0;
+    while (pos < view.size()) {
+        while (pos < view.size() && (view[pos] == ' ' || view[pos] == '\t' || view[pos] == '\r' ||
+                                     view[pos] == '\n'))
+            ++pos;
+        if (pos >= view.size())
+            break;
+        std::size_t end = pos;
+        while (end < view.size() && view[end] != ' ' && view[end] != '\t' && view[end] != '\r' &&
+               view[end] != '\n')
+            ++end;
+        const std::string word(view.substr(pos, end - pos));
+        pos = end;
+        const float wordW = gfx.textWidth(word, size);
+        if (!line.empty() && lineW + spaceW + wordW > maxWidth) {
             gfx.text(line, x, y + static_cast<float>(lineIndex) * (size + 8.0F), size, color,
                      maxWidth);
             ++lineIndex;
             if (lineIndex >= maxLines)
                 return;
             line = word;
+            lineW = wordW;
         } else {
-            line = candidate;
+            if (!line.empty()) {
+                line.push_back(' ');
+                lineW += spaceW;
+            }
+            line += word;
+            lineW += wordW;
         }
     }
     if (!line.empty() && lineIndex < maxLines)
@@ -128,6 +210,46 @@ std::string kindName(MediaKind kind) {
         return "Episode";
     }
     return "Media";
+}
+
+struct NowNextEpg {
+    const EpgEntry *now = nullptr;
+    const EpgEntry *next = nullptr;
+};
+
+NowNextEpg findNowNext(const std::vector<EpgEntry> &entries) {
+    NowNextEpg result;
+    if (entries.empty())
+        return result;
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    auto current = std::find_if(entries.begin(), entries.end(), [now](const EpgEntry &entry) {
+        return entry.startEpochSeconds <= now && entry.endEpochSeconds > now;
+    });
+    if (current != entries.end()) {
+        result.now = &(*current);
+        auto nextIt = std::find_if(std::next(current), entries.end(),
+                                   [&](const EpgEntry &entry) {
+                                       return entry.startEpochSeconds >= current->endEpochSeconds ||
+                                              entry.startEpochSeconds > now;
+                                   });
+        if (nextIt != entries.end())
+            result.next = &(*nextIt);
+        return result;
+    }
+    // Fallback when clocks differ or schedule has only upcoming items: pick first entry as now/next.
+    auto upcoming = std::find_if(entries.begin(), entries.end(),
+                                 [now](const EpgEntry &entry) { return entry.startEpochSeconds > now; });
+    if (upcoming != entries.end()) {
+        result.next = &(*upcoming);
+        if (upcoming != entries.begin()) {
+            result.now = &(*std::prev(upcoming));
+        }
+    } else {
+        result.now = &entries.front();
+        if (entries.size() > 1)
+            result.next = &entries[1];
+    }
+    return result;
 }
 
 } // namespace
@@ -163,17 +285,26 @@ struct App::Impl {
         bool ok = true;
     };
 
+    struct CachedEpg {
+        std::vector<EpgEntry> entries;
+        std::chrono::steady_clock::time_point fetchedAt{};
+        bool ok = false;
+    };
+
     Platform &platform;
     Gfx &gfx;
     HttpGet httpGet;
+    std::shared_ptr<CatalogClient> catalogClient;
     ArtworkCache artwork;
     SettingsStore store;
+    std::filesystem::path settingsPath;
     Settings settings;
     Source draft;
     std::string draftIdentity;
     bool preview;
     std::uint64_t sourceGeneration = 0;
     std::unique_ptr<Player> player;
+    VideoFrame activeVideoFrame;
     bool quit = false;
     Tab tab = Tab::Live;
     Tab lastContentTab = Tab::Live;
@@ -182,13 +313,15 @@ struct App::Impl {
     int categoryIndex = 0;
     int itemIndex = 0;
     int settingIndex = 0;
+    int savedSourceIndex = 0;
     int gridColumns = 3;
     bool episodesOpen = false;
     std::string searchQuery;
     std::string banner;
     std::string joinLink;
+
+    // Single-copy catalog storage (pre-sorted on background thread); no duplicated library map.
     std::map<MediaKind, Catalog> catalogs;
-    std::map<std::string, MediaItem> library;
     std::set<MediaKind> catalogLoaded;
     std::set<MediaKind> catalogLoadingKinds;
     std::set<MediaKind> catalogFailed;
@@ -202,6 +335,11 @@ struct App::Impl {
     bool epgJobRunning = false;
     std::string epgInFlightItemId;
     std::uint64_t epgInFlightGeneration = 0;
+    std::unordered_map<std::string, CachedEpg> epgCache;
+    std::string browseEpgTargetKey;
+    std::chrono::steady_clock::time_point browseEpgDueAt{};
+    bool browseEpgScheduled = false;
+
     std::uint64_t catalogDataVersion = 1;
     mutable bool categoriesCacheValid = false;
     mutable Tab cachedCategoriesTab = Tab::Live;
@@ -213,10 +351,21 @@ struct App::Impl {
     mutable std::string cachedVisibleSearch;
     mutable std::string cachedVisibleSourceId;
     mutable std::uint64_t cachedVisibleVersion = 0;
-    mutable std::vector<MediaItem> cachedVisibleItems;
-    bool volumeSavePending = false;
-    std::chrono::steady_clock::time_point volumeSaveAt{};
+    mutable std::vector<const MediaItem *> cachedVisibleItems;
+
+    // Background debounced SettingsStore writer so UI thread never calls fsync() on launch/favorite.
+    std::mutex saveMutex;
+    std::condition_variable saveCv;
+    std::thread saveWorker;
+    Settings pendingSaveSettings;
+    bool savePending = false;
+    bool saveStopping = false;
+    std::chrono::steady_clock::time_point saveDueAt{};
+    std::chrono::steady_clock::time_point lastResumeSaveAt{};
+
     std::vector<MediaItem> episodes;
+    std::vector<int> episodeSeasons;
+    int selectedSeasonIndex = 0;
     std::optional<MediaItem> pendingEpisodeSeries;
     std::string selectedSeriesId;
     int episodeIndex = 0;
@@ -226,6 +375,7 @@ struct App::Impl {
     std::optional<MediaItem> playingItem;
     bool playingLive = true;
     bool showPlayerHud = true;
+    std::chrono::steady_clock::time_point hudHideAt{};
     bool hasVideoFrame = false;
     bool playerScreen = false;
     Player::Status playerStatus;
@@ -246,9 +396,22 @@ struct App::Impl {
 
     Impl(Platform &p, Gfx &g, std::string settingsFile, HttpGet get, bool previewMode,
          HttpGet artworkGet)
-        : platform(p), gfx(g), httpGet(std::move(get)), artwork(std::move(artworkGet)),
-          store(std::move(settingsFile)), preview(previewMode),
+        : platform(p), gfx(g), httpGet(std::move(get)),
+          catalogClient(std::make_shared<CatalogClient>(httpGet, true)),
+          artwork(std::move(artworkGet)), store(settingsFile),
+          settingsPath(std::move(settingsFile)), preview(previewMode),
           player(std::make_unique<Player>(platform.audio())) {
+        if (!preview && !settingsPath.empty()) {
+            const auto parent = settingsPath.parent_path().empty()
+                                    ? std::filesystem::path(".")
+                                    : settingsPath.parent_path();
+            const std::string cacheFolder =
+                settingsPath.filename() == "settings.json"
+                    ? "catalog-cache"
+                    : (settingsPath.stem().string() + "-catalog-cache");
+            catalogClient->setCacheDirectory(parent / cacheFolder, std::chrono::seconds(900));
+        }
+        saveWorker = std::thread([this] { runSaveWorker(); });
         try {
             settings = store.load();
         } catch (...) {
@@ -262,19 +425,12 @@ struct App::Impl {
             if (draft.id.empty())
                 draft.id = draftIdentity;
             settings.source = draft;
+            upsertSavedSource(draft);
             sourceAuthenticated = false;
         } else {
             draft.name = "My TV";
             draft.type = SourceType::M3U;
             draftIdentity = computedSourceId(draft);
-        }
-        for (const auto &[sourceKey, recentItems] : settings.recentsBySource) {
-            (void)sourceKey;
-            for (auto item : recentItems) {
-                if (item.sourceId.empty())
-                    item.sourceId = sourceKey;
-                library[sourceScopedItemKey(item)] = std::move(item);
-            }
         }
         if (preview) {
             draft = Source{};
@@ -289,8 +445,15 @@ struct App::Impl {
     }
 
     ~Impl() {
-        if (volumeSavePending)
-            saveSettings();
+        recordCurrentResumePosition(true);
+        flushSettingsSaveSync();
+        {
+            std::lock_guard<std::mutex> lock(saveMutex);
+            saveStopping = true;
+        }
+        saveCv.notify_all();
+        if (saveWorker.joinable())
+            saveWorker.join();
         if (catalogFuture.valid())
             catalogFuture.wait();
         if (episodesFuture.valid())
@@ -299,6 +462,81 @@ struct App::Impl {
             epgFuture.wait();
         if (player)
             player->stop();
+    }
+
+    void runSaveWorker() {
+        for (;;) {
+            Settings snapshot;
+            {
+                std::unique_lock<std::mutex> lock(saveMutex);
+                saveCv.wait(lock, [this] { return saveStopping || savePending; });
+                if (saveStopping && !savePending)
+                    return;
+                while (savePending && !saveStopping &&
+                       std::chrono::steady_clock::now() < saveDueAt) {
+                    saveCv.wait_until(lock, saveDueAt);
+                }
+                if (!savePending) {
+                    if (saveStopping)
+                        return;
+                    continue;
+                }
+                snapshot = pendingSaveSettings;
+                savePending = false;
+            }
+            try {
+                store.save(snapshot);
+            } catch (...) {
+                // Storage failures are best-effort for background saves.
+            }
+        }
+    }
+
+    void scheduleSettingsSave(std::chrono::milliseconds delay = std::chrono::milliseconds(500)) {
+        if (preview)
+            return;
+        settings.volume = std::clamp(settings.volume, 0.0F, 1.0F);
+        {
+            std::lock_guard<std::mutex> lock(saveMutex);
+            pendingSaveSettings = settings;
+            savePending = true;
+            saveDueAt = std::chrono::steady_clock::now() + delay;
+        }
+        saveCv.notify_one();
+    }
+
+    void flushSettingsSaveSync() {
+        if (preview)
+            return;
+        {
+            std::lock_guard<std::mutex> lock(saveMutex);
+            savePending = false;
+        }
+        try {
+            settings.volume = std::clamp(settings.volume, 0.0F, 1.0F);
+            store.save(settings);
+        } catch (...) {
+            banner = "Settings could not be saved. Check available storage.";
+        }
+    }
+
+    void upsertSavedSource(const Source &source) {
+        if (source.url.empty())
+            return;
+        const std::string sid = source.id.empty() ? computedSourceId(source) : source.id;
+        for (auto &existing : settings.savedSources) {
+            const std::string eid = existing.id.empty() ? computedSourceId(existing) : existing.id;
+            if (eid == sid) {
+                existing = source;
+                existing.id = sid;
+                return;
+            }
+        }
+        Source copy = source;
+        copy.id = sid;
+        if (settings.savedSources.size() >= 32)
+            settings.savedSources.erase(settings.savedSources.begin());
+        settings.savedSources.push_back(std::move(copy));
     }
 
     static std::vector<Tab> tabs() {
@@ -365,18 +603,6 @@ struct App::Impl {
         visibleCacheValid = false;
     }
 
-    void saveSettings() {
-        volumeSavePending = false;
-        if (preview)
-            return;
-        try {
-            settings.volume = std::clamp(settings.volume, 0.0F, 1.0F);
-            store.save(settings);
-        } catch (...) {
-            banner = "Settings could not be saved. Check available storage.";
-        }
-    }
-
     void persistDraft() {
         if (preview || (draft.name.empty() && draft.url.empty() && draft.username.empty() &&
                         draft.password.empty()))
@@ -388,6 +614,8 @@ struct App::Impl {
              settings.source->password != draft.password);
         if (connectionChanged) {
             ++sourceGeneration;
+            catalogClient->invalidateCache();
+            epgCache.clear();
             if (player)
                 player->clearFormatCache();
         }
@@ -397,7 +625,7 @@ struct App::Impl {
         draftIdentity = identity;
         settings.source = draft;
         invalidateCatalogCache();
-        saveSettings();
+        flushSettingsSaveSync();
     }
 
     bool hasSource() const { return preview || (settings.source && !settings.source->url.empty()); }
@@ -444,10 +672,13 @@ struct App::Impl {
                 if (kind == MediaKind::Live)
                     item.epgId = item.id;
                 catalog.items.push_back(item);
-                library[sourceScopedItemKey(item)] = item;
                 if (i == 0 || i == 3)
                     settings.favoritesBySource[item.sourceId].insert(item.id);
             }
+            std::stable_sort(catalog.items.begin(), catalog.items.end(),
+                             [](const MediaItem &a, const MediaItem &b) {
+                                 return caseInsensitiveLess(a.title, b.title);
+                             });
             catalogs[kind] = std::move(catalog);
             catalogLoaded.insert(kind);
         }
@@ -458,7 +689,7 @@ struct App::Impl {
         if (preview || !settings.source || catalogJobRunning || kinds.empty())
             return;
         Source source = *settings.source;
-        const HttpGet get = httpGet;
+        auto client = catalogClient;
         const std::string liveFormat = sourceLiveFormat;
         catalogLoadingKinds.clear();
         catalogFailed.clear();
@@ -475,22 +706,27 @@ struct App::Impl {
         banner.clear();
         catalogFuture = std::async(
             std::launch::async,
-            [get, source, requested, authenticateFirst, generation, liveFormat]() {
+            [client, source, requested, authenticateFirst, generation, liveFormat]() {
                 CatalogJobResult result;
                 result.sourceId = source.id.empty() ? brutv::sourceId(source) : source.id;
                 result.sourceIdentity = computedSourceId(source);
                 result.sourceGeneration = generation;
                 try {
-                    CatalogClient client(get);
                     if (!liveFormat.empty())
-                        client.setPreferredLiveFormat(source, liveFormat);
+                        client->setPreferredLiveFormat(source, liveFormat);
                     if (authenticateFirst)
-                        client.authenticate(source);
-                    result.preferredLiveFormat = client.preferredLiveFormat(source);
+                        client->authenticate(source);
+                    result.preferredLiveFormat = client->preferredLiveFormat(source);
                     result.authenticated = true;
                     for (const auto kind : requested) {
                         try {
-                            result.catalogs.emplace(kind, client.load(source, kind));
+                            Catalog loaded = client->load(source, kind);
+                            // Pre-sort on background thread so UI thread never sorts!
+                            std::stable_sort(loaded.items.begin(), loaded.items.end(),
+                                             [](const MediaItem &a, const MediaItem &b) {
+                                                 return caseInsensitiveLess(a.title, b.title);
+                                             });
+                            result.catalogs.emplace(kind, std::move(loaded));
                         } catch (...) {
                             result.failures[kind] = "Catalog unavailable";
                         }
@@ -524,6 +760,8 @@ struct App::Impl {
     void retryCatalogForTab() {
         if (preview || !settings.source)
             return;
+        catalogClient->invalidateCache(
+            settings.source->id.empty() ? sourceId(*settings.source) : settings.source->id);
         if (tab == Tab::Favorites) {
             for (const auto kind : {MediaKind::Live, MediaKind::Movie, MediaKind::Series}) {
                 if (catalogFailed.count(kind) != 0)
@@ -575,7 +813,6 @@ struct App::Impl {
             for (auto &item : catalog.items) {
                 if (item.sourceId.empty() && settings.source)
                     item.sourceId = sourceId(*settings.source);
-                library[sourceScopedItemKey(item)] = item;
             }
             catalogs[kind] = std::move(catalog);
             catalogLoaded.insert(kind);
@@ -600,6 +837,40 @@ struct App::Impl {
         ensureCatalogForTab();
     }
 
+    void rebuildEpisodeSeasons() {
+        episodeSeasons.clear();
+        std::set<int> seasons;
+        for (const auto &ep : episodes) {
+            if (ep.episodeDetails && ep.episodeDetails->seasonNumber)
+                seasons.insert(*ep.episodeDetails->seasonNumber);
+        }
+        for (int s : seasons)
+            episodeSeasons.push_back(s);
+        selectedSeasonIndex = 0;
+        episodeIndex = 0;
+    }
+
+    std::vector<const MediaItem *> filteredEpisodes() const {
+        std::vector<const MediaItem *> out;
+        if (episodes.empty())
+            return out;
+        if (episodeSeasons.size() <= 1 || selectedSeasonIndex < 0 ||
+            selectedSeasonIndex >= static_cast<int>(episodeSeasons.size())) {
+            out.reserve(episodes.size());
+            for (const auto &ep : episodes)
+                out.push_back(&ep);
+            return out;
+        }
+        const int targetSeason = episodeSeasons[static_cast<std::size_t>(selectedSeasonIndex)];
+        for (const auto &ep : episodes) {
+            if (ep.episodeDetails && ep.episodeDetails->seasonNumber &&
+                *ep.episodeDetails->seasonNumber == targetSeason) {
+                out.push_back(&ep);
+            }
+        }
+        return out;
+    }
+
     void startEpisodes(const MediaItem &series) {
         if (preview) {
             banner =
@@ -611,23 +882,25 @@ struct App::Impl {
         selectedSeriesId = series.providerId.empty() ? series.id : series.providerId;
         episodesOpen = true;
         episodeIndex = 0;
+        selectedSeasonIndex = 0;
+        episodeSeasons.clear();
         episodes.clear();
         if (episodesJobRunning) {
             pendingEpisodeSeries = series;
             return;
         }
         const Source source = *settings.source;
-        const HttpGet get = httpGet;
+        auto client = catalogClient;
         const std::string id = selectedSeriesId;
         const auto generation = sourceGeneration;
         episodesJobRunning = true;
         pendingEpisodeSeries.reset();
-        episodesFuture = std::async(std::launch::async, [get, source, id, generation]() {
+        episodesFuture = std::async(std::launch::async, [client, source, id, generation]() {
             EpisodeResult result;
             result.seriesId = id;
             result.sourceGeneration = generation;
             try {
-                result.items = CatalogClient(get).loadEpisodes(source, id);
+                result.items = client->loadEpisodes(source, id);
             } catch (...) {
                 result.ok = false;
             }
@@ -667,33 +940,67 @@ struct App::Impl {
         for (auto &item : episodes) {
             if (item.sourceId.empty() && settings.source)
                 item.sourceId = sourceId(*settings.source);
-            library[sourceScopedItemKey(item)] = item;
         }
-        if (!episodes.empty())
-            invalidateCatalogCache();
+        rebuildEpisodeSeasons();
     }
 
-    void startEpg(const MediaItem &item) {
-        epgEntries.clear();
-        if (preview || !settings.source || settings.source->type != SourceType::Xtream ||
-            item.kind != MediaKind::Live)
+    std::string epgQueryId(const Source &source, const MediaItem &item) const {
+        if (source.type == SourceType::Xtream)
+            return item.providerId.empty() ? item.id : item.providerId;
+        if (source.type == SourceType::M3U && !item.epgId.empty() &&
+            !catalogClient->xmltvUrl(source).empty())
+            return item.epgId;
+        return {};
+    }
+
+    const std::vector<EpgEntry> *cachedEpgFor(const MediaItem &item) const {
+        const auto it = epgCache.find(sourceScopedItemKey(item));
+        if (it == epgCache.end() || !it->second.ok)
+            return nullptr;
+        return &it->second.entries;
+    }
+
+    void startEpg(const MediaItem &item, bool forceRefresh = false) {
+        if (preview || !settings.source || item.kind != MediaKind::Live) {
+            if (playingItem && sourceScopedItemKey(*playingItem) == sourceScopedItemKey(item))
+                epgEntries.clear();
             return;
+        }
+        const std::string itemId = sourceScopedItemKey(item);
+        const auto now = std::chrono::steady_clock::now();
+        if (!forceRefresh) {
+            auto cached = epgCache.find(itemId);
+            if (cached != epgCache.end()) {
+                const auto ttl = cached->second.ok ? kEpgSuccessTtl : kEpgFailureTtl;
+                if (now - cached->second.fetchedAt < ttl) {
+                    if (playingItem && sourceScopedItemKey(*playingItem) == itemId) {
+                        epgEntries = cached->second.ok ? cached->second.entries
+                                                       : std::vector<EpgEntry>{};
+                    }
+                    return;
+                }
+            }
+        }
         const Source source = *settings.source;
-        const HttpGet get = httpGet;
-        const std::string stream = item.providerId.empty() ? item.id : item.providerId;
+        const std::string queryId = epgQueryId(source, item);
+        if (queryId.empty()) {
+            if (playingItem && sourceScopedItemKey(*playingItem) == itemId)
+                epgEntries.clear();
+            return;
+        }
         if (epgJobRunning)
             return;
-        const std::string itemId = sourceScopedItemKey(item);
+        auto client = catalogClient;
         const auto generation = sourceGeneration;
         epgInFlightItemId = itemId;
         epgInFlightGeneration = generation;
         epgJobRunning = true;
-        epgFuture = std::async(std::launch::async, [get, source, stream, itemId, generation]() {
+        epgFuture = std::async(std::launch::async, [client, source, queryId, itemId, generation]() {
             EpgResult result;
             result.itemId = itemId;
             result.sourceGeneration = generation;
             try {
-                result.entries = CatalogClient(get).loadEpg(source, stream);
+                result.entries = client->loadEpg(source, queryId);
             } catch (...) {
                 result.ok = false;
             }
@@ -714,16 +1021,36 @@ struct App::Impl {
             result.sourceGeneration = epgInFlightGeneration;
         }
         epgJobRunning = false;
-        if (!playingItem || !playingLive)
+        if (result.sourceGeneration != sourceGeneration)
             return;
-        const std::string activeKey = sourceScopedItemKey(*playingItem);
-        if (result.sourceGeneration != sourceGeneration || result.itemId != activeKey) {
-            startEpg(*playingItem);
+        if (epgCache.size() >= 128)
+            epgCache.clear();
+        epgCache[result.itemId] = {result.entries, std::chrono::steady_clock::now(), result.ok};
+        if (playingItem && playingLive) {
+            const std::string activeKey = sourceScopedItemKey(*playingItem);
+            if (result.itemId == activeKey) {
+                epgEntries = result.ok ? std::move(result.entries) : std::vector<EpgEntry>{};
+            } else {
+                startEpg(*playingItem);
+            }
+        }
+    }
+
+    void scheduleBrowseEpgForFocusedItem() {
+        if (preview || playerScreen || episodesOpen || focus != Focus::Items || tab == Tab::Settings)
             return;
-        }
-        if (result.ok) {
-            epgEntries = std::move(result.entries);
-        }
+        const auto &items = visibleItems();
+        if (items.empty() || itemIndex < 0 || itemIndex >= static_cast<int>(items.size()))
+            return;
+        const MediaItem &selected = *items[static_cast<std::size_t>(itemIndex)];
+        if (selected.kind != MediaKind::Live)
+            return;
+        const std::string key = sourceScopedItemKey(selected);
+        if (key == browseEpgTargetKey && browseEpgScheduled)
+            return;
+        browseEpgTargetKey = key;
+        browseEpgDueAt = std::chrono::steady_clock::now() + kBrowseEpgDebounce;
+        browseEpgScheduled = true;
     }
 
     void setTab(Tab next) {
@@ -744,6 +1071,7 @@ struct App::Impl {
         itemIndex = 0;
         searchQuery.clear();
         banner.clear();
+        browseEpgScheduled = false;
         ensureCatalogForTab();
     }
 
@@ -770,13 +1098,11 @@ struct App::Impl {
                     seen.insert(category.name).second)
                     cachedCategories.push_back(category.name);
             }
-        }
-        if (cachedCategories.size() == 1) {
-            for (const auto &[key, item] : library) {
-                (void)key;
-                if (item.kind == kind && !item.categoryName.empty() &&
-                    seen.insert(item.categoryName).second)
-                    cachedCategories.push_back(item.categoryName);
+            if (cachedCategories.size() == 1) {
+                for (const auto &item : found->second.items) {
+                    if (!item.categoryName.empty() && seen.insert(item.categoryName).second)
+                        cachedCategories.push_back(item.categoryName);
+                }
             }
         }
         categoriesCacheValid = true;
@@ -785,7 +1111,7 @@ struct App::Impl {
         return cachedCategories;
     }
 
-    const std::vector<MediaItem> &visibleItems() const {
+    const std::vector<const MediaItem *> &visibleItems() const {
         const auto source = currentSource();
         const std::string activeSourceId = source.id.empty() ? sourceId(source) : source.id;
         const auto &categories = categoryNames();
@@ -799,72 +1125,88 @@ struct App::Impl {
             cachedVisibleVersion == catalogDataVersion) {
             return cachedVisibleItems;
         }
-        const auto favoritesIt = settings.favoritesBySource.find(activeSourceId);
-        const std::set<std::string> *favorites =
-            favoritesIt == settings.favoritesBySource.end() ? nullptr : &favoritesIt->second;
+        cachedVisibleItems.clear();
         const std::string selectedCategory =
             categories.empty() ? "All" : categories[static_cast<std::size_t>(clampedCategory)];
-        std::unordered_set<std::string> recentIds;
-        if (tab == Tab::Favorites && selectedCategory == "Recently played") {
-            const auto recent = settings.recentsBySource.find(activeSourceId);
-            if (recent != settings.recentsBySource.end()) {
-                recentIds.reserve(recent->second.size());
-                for (const auto &played : recent->second)
-                    recentIds.insert(played.id);
-            }
-        }
-        const std::string query = lower(searchQuery);
-        std::unordered_set<std::string> seen;
-        std::vector<std::pair<std::string, MediaItem>> sortable;
-        for (const auto &[key, item] : library) {
-            (void)key;
-            if (!source.id.empty() && item.sourceId != source.id)
-                continue;
-            if (source.id.empty() && !item.sourceId.empty() && item.sourceId != activeSourceId)
-                continue;
-            bool kindMatches = false;
-            if (tab == Tab::Live)
-                kindMatches = item.kind == MediaKind::Live;
-            else if (tab == Tab::Movies)
-                kindMatches = item.kind == MediaKind::Movie;
-            else if (tab == Tab::Series)
-                kindMatches = item.kind == MediaKind::Series;
-            else if (tab == Tab::Favorites) {
-                if (selectedCategory == "Recently played") {
-                    kindMatches = recentIds.count(item.id) != 0;
-                } else {
-                    kindMatches = favorites && favorites->count(item.id) != 0;
+        const std::string_view queryView(searchQuery);
+        auto matchesQuery = [&](const MediaItem &item) {
+            if (queryView.empty())
+                return true;
+            return containsCaseInsensitive(item.title, queryView) ||
+                   containsCaseInsensitive(item.categoryName, queryView) ||
+                   containsCaseInsensitive(item.description, queryView);
+        };
+
+        if (tab != Tab::Favorites && tab != Tab::Settings) {
+            // Live / Movies / Series: items are already pre-sorted on the background thread!
+            const auto kind = kindForTab(tab);
+            const auto found = catalogs.find(kind);
+            if (found != catalogs.end()) {
+                const auto &items = found->second.items;
+                cachedVisibleItems.reserve(selectedCategory == "All" && queryView.empty()
+                                               ? items.size()
+                                               : std::min<std::size_t>(items.size(), 1024));
+                for (const auto &item : items) {
+                    if (!source.id.empty() && item.sourceId != source.id)
+                        continue;
+                    if (source.id.empty() && !item.sourceId.empty() &&
+                        item.sourceId != activeSourceId)
+                        continue;
+                    if (selectedCategory != "All" && item.categoryName != selectedCategory)
+                        continue;
+                    if (!matchesQuery(item))
+                        continue;
+                    cachedVisibleItems.push_back(&item);
                 }
             }
-            if (!kindMatches)
-                continue;
-            if (tab == Tab::Favorites && selectedCategory != "All favorites") {
-                if (selectedCategory == "Live TV" && item.kind != MediaKind::Live)
-                    continue;
-                if (selectedCategory == "Movies" && item.kind != MediaKind::Movie)
-                    continue;
-                if (selectedCategory == "Series" && item.kind != MediaKind::Series)
-                    continue;
-            } else if (tab != Tab::Favorites && selectedCategory != "All" &&
-                       item.categoryName != selectedCategory) {
-                continue;
+        } else if (tab == Tab::Favorites) {
+            if (selectedCategory == "Recently played") {
+                const auto recent = settings.recentsBySource.find(activeSourceId);
+                if (recent != settings.recentsBySource.end()) {
+                    for (const auto &item : recent->second) {
+                        if (matchesQuery(item))
+                            cachedVisibleItems.push_back(&item);
+                    }
+                }
+            } else {
+                const auto favoritesIt = settings.favoritesBySource.find(activeSourceId);
+                const std::set<std::string> *favorites =
+                    favoritesIt == settings.favoritesBySource.end() ? nullptr
+                                                                    : &favoritesIt->second;
+                if (favorites && !favorites->empty()) {
+                    std::unordered_set<std::string_view> seenIds;
+                    auto collectFrom = [&](const std::vector<MediaItem> &items) {
+                        for (const auto &item : items) {
+                            if (favorites->count(item.id) == 0)
+                                continue;
+                            if (selectedCategory == "Live TV" && item.kind != MediaKind::Live)
+                                continue;
+                            if (selectedCategory == "Movies" && item.kind != MediaKind::Movie)
+                                continue;
+                            if (selectedCategory == "Series" && item.kind != MediaKind::Series)
+                                continue;
+                            if (!matchesQuery(item))
+                                continue;
+                            if (seenIds.insert(item.id).second)
+                                cachedVisibleItems.push_back(&item);
+                        }
+                    };
+                    for (const auto &[k, cat] : catalogs) {
+                        (void)k;
+                        collectFrom(cat.items);
+                    }
+                    if (const auto rec = settings.recentsBySource.find(activeSourceId);
+                        rec != settings.recentsBySource.end()) {
+                        collectFrom(rec->second);
+                    }
+                    std::stable_sort(cachedVisibleItems.begin(), cachedVisibleItems.end(),
+                                     [](const MediaItem *a, const MediaItem *b) {
+                                         return caseInsensitiveLess(a->title, b->title);
+                                     });
+                }
             }
-            if (!query.empty()) {
-                const std::string haystack =
-                    lower(item.title + " " + item.categoryName + " " + item.description);
-                if (haystack.find(query) == std::string::npos)
-                    continue;
-            }
-            const std::string scoped = sourceScopedItemKey(item);
-            if (seen.insert(scoped).second)
-                sortable.emplace_back(lower(item.title), item);
         }
-        std::stable_sort(sortable.begin(), sortable.end(),
-                         [](const auto &a, const auto &b) { return a.first < b.first; });
-        cachedVisibleItems.clear();
-        cachedVisibleItems.reserve(sortable.size());
-        for (auto &entry : sortable)
-            cachedVisibleItems.push_back(std::move(entry.second));
+
         visibleCacheValid = true;
         cachedVisibleTab = tab;
         cachedVisibleCategory = clampedCategory;
@@ -893,9 +1235,12 @@ struct App::Impl {
         recents.insert(recents.begin(), item);
         if (recents.size() > 30)
             recents.resize(30);
-        invalidateCatalogCache();
-        saveSettings();
-        clampItemSelection();
+        // Only invalidate browse cache when viewing Favorites/Recents (saves full rebuild on Live/Movies/Series).
+        if (tab == Tab::Favorites) {
+            visibleCacheValid = false;
+            clampItemSelection();
+        }
+        scheduleSettingsSave();
     }
 
     void toggleFavorite(const MediaItem &item) {
@@ -910,14 +1255,59 @@ struct App::Impl {
             favorites.erase(found);
             banner = "Removed from favorites";
         }
-        invalidateCatalogCache();
-        saveSettings();
-        clampItemSelection();
+        if (tab == Tab::Favorites) {
+            visibleCacheValid = false;
+            clampItemSelection();
+        }
+        scheduleSettingsSave();
     }
 
     bool isFavorite(const MediaItem &item) const {
         const auto found = settings.favoritesBySource.find(item.sourceId);
         return found != settings.favoritesBySource.end() && found->second.count(item.id) != 0;
+    }
+
+    double savedResumePosition(const MediaItem &item) const {
+        if (item.kind == MediaKind::Live || item.sourceId.empty())
+            return 0.0;
+        const auto srcIt = settings.resumePositionsBySource.find(item.sourceId);
+        if (srcIt == settings.resumePositionsBySource.end())
+            return 0.0;
+        const auto posIt = srcIt->second.find(item.id);
+        return posIt == srcIt->second.end() ? 0.0 : posIt->second;
+    }
+
+    void recordCurrentResumePosition(bool forceSave) {
+        if (preview || !playingItem || playingLive || playingItem->sourceId.empty())
+            return;
+        const double duration = playerStatus.durationSeconds;
+        const double current = playerStatus.currentSeconds;
+        auto &positions = settings.resumePositionsBySource[playingItem->sourceId];
+        if (playerStatus.state == Player::State::Ended ||
+            (duration > 0.0 && current / duration >= 0.95)) {
+            if (positions.erase(playingItem->id) > 0) {
+                if (positions.empty())
+                    settings.resumePositionsBySource.erase(playingItem->sourceId);
+                scheduleSettingsSave();
+            }
+            return;
+        }
+        if (current >= 10.0 && (duration <= 0.0 || current / duration < 0.95)) {
+            const auto now = std::chrono::steady_clock::now();
+            if (!forceSave && now - lastResumeSaveAt < kResumeSaveInterval)
+                return;
+            lastResumeSaveAt = now;
+            if (positions.size() >= 500 && positions.find(playingItem->id) == positions.end()) {
+                positions.erase(positions.begin());
+            }
+            positions[playingItem->id] = current;
+            scheduleSettingsSave();
+        }
+    }
+
+    void touchHud() {
+        showPlayerHud = true;
+        hudHideAt = std::chrono::steady_clock::now() + kHudAutoHideDelay;
     }
 
     void launchItem(const MediaItem &item) {
@@ -935,18 +1325,21 @@ struct App::Impl {
             banner = "This item has no playable stream URL.";
             return;
         }
+        recordCurrentResumePosition(true);
         playingItem = item;
         playbackTitle = item.title;
         playbackSubtitle = item.categoryName;
         playingLive = item.kind == MediaKind::Live;
-        beginPlayback(item.mediaUrl, playingLive, item.requestHeaders);
+        const double startOffset = playingLive ? 0.0 : savedResumePosition(item);
+        beginPlayback(item.mediaUrl, playingLive, item.requestHeaders, startOffset);
         addRecent(item);
         if (playingLive)
             startEpg(item);
     }
 
     void beginPlayback(const std::string &url, bool live,
-                       const std::unordered_map<std::string, std::string> &requestHeaders = {}) {
+                       const std::unordered_map<std::string, std::string> &requestHeaders = {},
+                       double startSeconds = 0.0) {
         if (preview) {
             banner = "Preview only. Playback is disabled.";
             return;
@@ -956,41 +1349,71 @@ struct App::Impl {
             return;
         }
         player->setVolume(settings.volume);
-        player->open(url, live, requestHeaders);
+        player->open(url, live, requestHeaders, startSeconds);
         playerScreen = true;
         playerStatus = player->status();
         hasVideoFrame = false;
-        showPlayerHud = true;
+        lastResumeSaveAt = std::chrono::steady_clock::now();
+        touchHud();
         banner.clear();
+    }
+
+    void zapChannel(int direction) {
+        if (!playingLive || !playingItem || tab == Tab::Settings)
+            return;
+        const auto &items = visibleItems();
+        if (items.size() < 2)
+            return;
+        int currentIdx = -1;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            if (items[i]->id == playingItem->id && items[i]->sourceId == playingItem->sourceId) {
+                currentIdx = static_cast<int>(i);
+                break;
+            }
+        }
+        if (currentIdx < 0)
+            currentIdx = std::clamp(itemIndex, 0, static_cast<int>(items.size()) - 1);
+        const int n = static_cast<int>(items.size());
+        for (int step = 1; step <= n; ++step) {
+            const int candidateIdx = ((currentIdx + direction * step) % n + n) % n;
+            const MediaItem *candidate = items[static_cast<std::size_t>(candidateIdx)];
+            if (candidate->kind == MediaKind::Live && !candidate->mediaUrl.empty()) {
+                itemIndex = candidateIdx;
+                const MediaItem copy = *candidate;
+                launchItem(copy);
+                return;
+            }
+        }
     }
 
     void startSelectedPlayback() {
         if (episodesOpen) {
-            if (episodes.empty() || episodeIndex < 0 ||
-                episodeIndex >= static_cast<int>(episodes.size()))
+            const auto list = filteredEpisodes();
+            if (list.empty() || episodeIndex < 0 || episodeIndex >= static_cast<int>(list.size()))
                 return;
-            const MediaItem selected = episodes[static_cast<std::size_t>(episodeIndex)];
+            const MediaItem selected = *list[static_cast<std::size_t>(episodeIndex)];
             launchItem(selected);
             return;
         }
         const auto &items = visibleItems();
         if (items.empty() || itemIndex < 0 || itemIndex >= static_cast<int>(items.size()))
             return;
-        const MediaItem selected = items[static_cast<std::size_t>(itemIndex)];
+        const MediaItem selected = *items[static_cast<std::size_t>(itemIndex)];
         launchItem(selected);
     }
 
     void toggleSelectedFavorite() {
         if (episodesOpen) {
-            if (episodeIndex >= 0 && episodeIndex < static_cast<int>(episodes.size())) {
-                const MediaItem selected = episodes[static_cast<std::size_t>(episodeIndex)];
+            const auto list = filteredEpisodes();
+            if (episodeIndex >= 0 && episodeIndex < static_cast<int>(list.size())) {
+                const MediaItem selected = *list[static_cast<std::size_t>(episodeIndex)];
                 toggleFavorite(selected);
             }
             return;
         }
         const auto &items = visibleItems();
         if (itemIndex >= 0 && itemIndex < static_cast<int>(items.size())) {
-            const MediaItem selected = items[static_cast<std::size_t>(itemIndex)];
+            const MediaItem selected = *items[static_cast<std::size_t>(itemIndex)];
             toggleFavorite(selected);
         }
     }
@@ -1012,6 +1435,7 @@ struct App::Impl {
             banner = "Preview mode does not connect to IPTV sources.";
             return;
         }
+        recordCurrentResumePosition(true);
         const std::string sourceIdentity = computedSourceId(source);
         const bool retainedIdentity = settings.source && !source.id.empty() &&
                                       source.id == settings.source->id &&
@@ -1024,14 +1448,18 @@ struct App::Impl {
         draft = source;
         draftIdentity = sourceIdentity;
         settings.source = source;
+        upsertSavedSource(source);
         sourceAuthenticated = false;
         sourceLiveFormat.clear();
+        catalogClient->invalidateCache(source.id);
         catalogLoaded.clear();
         catalogs.clear();
         catalogFailed.clear();
-        library.clear();
+        epgCache.clear();
+        browseEpgScheduled = false;
         invalidateCatalogCache();
         episodes.clear();
+        episodeSeasons.clear();
         episodesOpen = false;
         pendingEpisodeSeries.reset();
         selectedSeriesId.clear();
@@ -1040,7 +1468,7 @@ struct App::Impl {
         playerScreen = false;
         playingItem.reset();
         epgEntries.clear();
-        saveSettings();
+        flushSettingsSaveSync();
         tab = Tab::Live;
         lastContentTab = Tab::Live;
         sidebarIndex = indexOf(tab);
@@ -1099,20 +1527,26 @@ struct App::Impl {
         if (!removedSourceId.empty()) {
             settings.favoritesBySource.erase(removedSourceId);
             settings.recentsBySource.erase(removedSourceId);
-            for (auto it = library.begin(); it != library.end();) {
-                if (it->second.sourceId == removedSourceId)
-                    it = library.erase(it);
-                else
-                    ++it;
-            }
+            settings.resumePositionsBySource.erase(removedSourceId);
+            settings.savedSources.erase(
+                std::remove_if(settings.savedSources.begin(), settings.savedSources.end(),
+                               [&](const Source &s) {
+                                   const std::string sid = s.id.empty() ? computedSourceId(s) : s.id;
+                                   return sid == removedSourceId;
+                               }),
+                settings.savedSources.end());
+            catalogClient->invalidateCache(removedSourceId);
         }
         settings.source.reset();
         draft = Source{};
         draft.name = "My TV";
         draftIdentity = computedSourceId(draft);
+        savedSourceIndex = 0;
         catalogLoaded.clear();
         catalogs.clear();
         catalogFailed.clear();
+        epgCache.clear();
+        browseEpgScheduled = false;
         sourceAuthenticated = false;
         sourceLiveFormat.clear();
         invalidateCatalogCache();
@@ -1122,10 +1556,11 @@ struct App::Impl {
         playingItem.reset();
         epgEntries.clear();
         episodes.clear();
+        episodeSeasons.clear();
         episodesOpen = false;
         pendingEpisodeSeries.reset();
         selectedSeriesId.clear();
-        saveSettings();
+        flushSettingsSaveSync();
         banner = "Saved source cleared";
         modal = Modal::None;
         tab = Tab::Settings;
@@ -1210,14 +1645,15 @@ struct App::Impl {
 
     void keyboardMove(Key key) {
         const int rows = static_cast<int>(activeKeyboardRows().size()) + 1;
+        const int rowLen = keyboardRowLength(keyboardRow);
         if (key == Key::Left)
-            keyboardColumn = std::max(0, keyboardColumn - 1);
+            keyboardColumn = (keyboardColumn - 1 + rowLen) % rowLen;
         if (key == Key::Right)
-            keyboardColumn = std::min(keyboardRowLength(keyboardRow) - 1, keyboardColumn + 1);
+            keyboardColumn = (keyboardColumn + 1) % rowLen;
         if (key == Key::Up)
-            keyboardRow = std::max(0, keyboardRow - 1);
+            keyboardRow = (keyboardRow - 1 + rows) % rows;
         if (key == Key::Down)
-            keyboardRow = std::min(rows - 1, keyboardRow + 1);
+            keyboardRow = (keyboardRow + 1) % rows;
         keyboardColumn = std::min(keyboardColumn, keyboardRowLength(keyboardRow) - 1);
     }
 
@@ -1264,11 +1700,7 @@ struct App::Impl {
             keyboardBuffer += text;
         } else if (focus == Focus::Settings && tab == Tab::Settings) {
             const EditField field = fieldForSetting(settingIndex);
-            if (field != EditField::None && field != EditField::Password) {
-                std::string value = fieldValue(field);
-                value += text;
-                setFieldValue(field, std::move(value));
-            } else if (field == EditField::Password) {
+            if (field != EditField::None) {
                 std::string value = fieldValue(field);
                 value += text;
                 setFieldValue(field, std::move(value));
@@ -1322,14 +1754,11 @@ struct App::Impl {
     void changeVolume(float delta) {
         settings.volume = std::clamp(settings.volume + delta, 0.0F, 1.0F);
         player->setVolume(settings.volume);
-        if (!preview) {
-            volumeSavePending = true;
-            volumeSaveAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
-        }
+        scheduleSettingsSave(std::chrono::milliseconds(500));
     }
 
     void handleSettingsKey(Key key) {
-        constexpr int lastRow = 8;
+        const int lastRow = settings.savedSources.empty() ? 8 : 9;
         if (key == Key::Up)
             settingIndex = std::max(0, settingIndex - 1);
         else if (key == Key::Down)
@@ -1340,6 +1769,10 @@ struct App::Impl {
                 persistDraft();
             } else if (settingIndex == 6) {
                 changeVolume(key == Key::Right ? 0.05F : -0.05F);
+            } else if (settingIndex == 9 && !settings.savedSources.empty()) {
+                const int n = static_cast<int>(settings.savedSources.size());
+                savedSourceIndex =
+                    ((savedSourceIndex + (key == Key::Right ? 1 : -1)) % n + n) % n;
             }
         } else if (key == Key::Confirm) {
             if (settingIndex == 0) {
@@ -1360,6 +1793,10 @@ struct App::Impl {
                 } else {
                     banner = "No saved source to clear.";
                 }
+            } else if (settingIndex == 9 && !settings.savedSources.empty()) {
+                const int idx = std::clamp(savedSourceIndex, 0,
+                                           static_cast<int>(settings.savedSources.size()) - 1);
+                connectSource(settings.savedSources[static_cast<std::size_t>(idx)]);
             }
         }
     }
@@ -1375,16 +1812,18 @@ struct App::Impl {
 
     void moveItem(int delta) {
         if (episodesOpen) {
-            if (episodes.empty())
+            const auto list = filteredEpisodes();
+            if (list.empty())
                 return;
             episodeIndex =
-                std::clamp(episodeIndex + delta, 0, static_cast<int>(episodes.size()) - 1);
+                std::clamp(episodeIndex + delta, 0, static_cast<int>(list.size()) - 1);
             return;
         }
         const auto &items = visibleItems();
         if (items.empty())
             return;
         itemIndex = std::clamp(itemIndex + delta, 0, static_cast<int>(items.size()) - 1);
+        scheduleBrowseEpgForFocusedItem();
     }
 
     void handleContentKey(Key key) {
@@ -1393,9 +1832,7 @@ struct App::Impl {
                 setTab(tabAt(indexOf(tab) - 1));
             } else if (key == Key::Down) {
                 setTab(tabAt(indexOf(tab) + 1));
-            } else if (key == Key::Right) {
-                focus = tab == Tab::Settings ? Focus::Settings : Focus::Categories;
-            } else if (key == Key::Confirm) {
+            } else if (key == Key::Right || key == Key::Confirm) {
                 focus = tab == Tab::Settings ? Focus::Settings : Focus::Categories;
             }
         } else if (focus == Focus::Categories) {
@@ -1403,17 +1840,32 @@ struct App::Impl {
                 moveCategory(-1);
             else if (key == Key::Down)
                 moveCategory(1);
+            else if (key == Key::Rewind)
+                moveCategory(-10);
+            else if (key == Key::Forward)
+                moveCategory(10);
             else if (key == Key::Left)
                 focus = Focus::Sidebar;
-            else if (key == Key::Right || key == Key::Confirm)
+            else if (key == Key::Right || key == Key::Confirm) {
                 focus = Focus::Items;
+                scheduleBrowseEpgForFocusedItem();
+            }
         } else if (focus == Focus::Items) {
             if (episodesOpen) {
                 if (key == Key::Up)
                     moveItem(-1);
                 else if (key == Key::Down)
                     moveItem(1);
-                else if (key == Key::Confirm)
+                else if (key == Key::Rewind)
+                    moveItem(-8);
+                else if (key == Key::Forward)
+                    moveItem(8);
+                else if ((key == Key::Left || key == Key::Right) && episodeSeasons.size() > 1) {
+                    const int n = static_cast<int>(episodeSeasons.size());
+                    selectedSeasonIndex =
+                        ((selectedSeasonIndex + (key == Key::Right ? 1 : -1)) % n + n) % n;
+                    episodeIndex = 0;
+                } else if (key == Key::Confirm)
                     startSelectedPlayback();
                 return;
             }
@@ -1428,6 +1880,10 @@ struct App::Impl {
                 moveItem(-gridColumns);
             } else if (key == Key::Down) {
                 moveItem(gridColumns);
+            } else if (key == Key::Rewind) {
+                moveItem(-9);
+            } else if (key == Key::Forward) {
+                moveItem(9);
             } else if (key == Key::Confirm) {
                 if (visibleItems().empty() && !catalogFailed.empty())
                     retryCatalogForTab();
@@ -1441,6 +1897,7 @@ struct App::Impl {
 
     void handlePlayerKey(Key key) {
         if (key == Key::Back) {
+            recordCurrentResumePosition(true);
             player->stop();
             playerStatus = player->status();
             playingItem.reset();
@@ -1449,33 +1906,49 @@ struct App::Impl {
             showPlayerHud = false;
         } else if (key == Key::Confirm) {
             player->togglePause();
-            showPlayerHud = true;
+            recordCurrentResumePosition(true);
+            touchHud();
         } else if (key == Key::Rewind) {
             player->seekRelative(-10.0);
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Forward) {
             player->seekRelative(playingLive ? 10.0 : 30.0);
-            showPlayerHud = true;
+            touchHud();
+        } else if (key == Key::Left) {
+            if (playingLive)
+                zapChannel(-1);
+            else
+                player->seekRelative(-10.0);
+            touchHud();
+        } else if (key == Key::Right) {
+            if (playingLive)
+                zapChannel(1);
+            else
+                player->seekRelative(10.0);
+            touchHud();
         } else if (key == Key::PreviousTab) {
             player->cycleAudioTrack();
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::NextTab) {
             player->cycleSubtitleTrack();
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Search && playingLive) {
             player->goLive();
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Up) {
             changeVolume(0.05F);
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Down) {
             changeVolume(-0.05F);
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Favorite && playingItem) {
             toggleFavorite(*playingItem);
-            showPlayerHud = true;
+            touchHud();
         } else if (key == Key::Options) {
-            showPlayerHud = !showPlayerHud;
+            if (showPlayerHud)
+                showPlayerHud = false;
+            else
+                touchHud();
         } else if (key == Key::Quit) {
             quit = true;
         }
@@ -1498,8 +1971,16 @@ struct App::Impl {
             if (modal == Modal::Keyboard) {
                 if (key == Key::Back) {
                     closeKeyboard();
-                } else if (key == Key::Backspace) {
-                    backspaceCurrent();
+                } else if (key == Key::Backspace || key == Key::Favorite) {
+                    // Square = Delete shortcut on DualSense
+                    eraseLastCodepoint(keyboardBuffer);
+                } else if (key == Key::Search) {
+                    // Triangle = Space shortcut on DualSense
+                    keyboardBuffer.push_back(' ');
+                } else if (key == Key::Options) {
+                    // Options = Done shortcut on DualSense
+                    setFieldValue(editField, keyboardBuffer);
+                    closeKeyboard();
                 } else if (key == Key::Confirm) {
                     acceptKeyboardKey();
                 } else if (key == Key::Up || key == Key::Down || key == Key::Left ||
@@ -1543,9 +2024,11 @@ struct App::Impl {
                 if (episodesOpen) {
                     episodesOpen = false;
                     episodeIndex = 0;
+                    selectedSeasonIndex = 0;
                     banner.clear();
                 } else if (focus == Focus::Items) {
                     focus = Focus::Categories;
+                    browseEpgScheduled = false;
                 } else if (focus == Focus::Categories || focus == Focus::Settings) {
                     focus = Focus::Sidebar;
                 } else if (!searchQuery.empty()) {
@@ -1561,20 +2044,63 @@ struct App::Impl {
     }
 
     void tick() {
-        if (volumeSavePending && std::chrono::steady_clock::now() >= volumeSaveAt) {
-            saveSettings();
-        }
+        const auto now = std::chrono::steady_clock::now();
         pollCatalog();
         pollEpisodes();
         pollEpg();
         ensureCatalogForTab();
+        if (browseEpgScheduled && now >= browseEpgDueAt) {
+            browseEpgScheduled = false;
+            if (!playerScreen && !episodesOpen && focus == Focus::Items && tab != Tab::Settings) {
+                const auto &items = visibleItems();
+                if (itemIndex >= 0 && itemIndex < static_cast<int>(items.size())) {
+                    const MediaItem &selected = *items[static_cast<std::size_t>(itemIndex)];
+                    if (selected.kind == MediaKind::Live &&
+                        sourceScopedItemKey(selected) == browseEpgTargetKey) {
+                        startEpg(selected);
+                    }
+                }
+            }
+        }
         if (player) {
             playerStatus = player->status();
-            VideoFrame frame;
-            if (player->takeFrame(frame) && frame.width > 0 && frame.height > 0 &&
-                !frame.rgba.empty()) {
-                gfx.video(frame.rgba.data(), frame.width, frame.height);
-                hasVideoFrame = true;
+            if (player->takeFrame(activeVideoFrame) && activeVideoFrame.width > 0 &&
+                activeVideoFrame.height > 0) {
+                if (activeVideoFrame.format == VideoFrame::Format::Yuv420p &&
+                    !activeVideoFrame.yPlane.empty() && !activeVideoFrame.uPlane.empty() &&
+                    !activeVideoFrame.vPlane.empty()) {
+                    gfx.videoYuv(activeVideoFrame.yPlane.data(), activeVideoFrame.uPlane.data(),
+                                 activeVideoFrame.vPlane.data(), activeVideoFrame.width,
+                                 activeVideoFrame.height, activeVideoFrame.displayWidth,
+                                 activeVideoFrame.displayHeight,
+                                 static_cast<int>(activeVideoFrame.colorSpace),
+                                 activeVideoFrame.fullRange);
+                    hasVideoFrame = true;
+                } else if (!activeVideoFrame.rgba.empty()) {
+                    gfx.video(activeVideoFrame.rgba.data(), activeVideoFrame.width,
+                              activeVideoFrame.height);
+                    hasVideoFrame = true;
+                }
+            }
+            if (playerScreen) {
+                // Auto-hide HUD after 5s of inactivity while actively playing video.
+                if (showPlayerHud && hasVideoFrame &&
+                    playerStatus.state == Player::State::Playing && now >= hudHideAt) {
+                    showPlayerHud = false;
+                }
+                // Periodic VOD/Series resume tracking and completion clear.
+                if (!playingLive && playingItem) {
+                    recordCurrentResumePosition(playerStatus.state == Player::State::Ended);
+                }
+                // Refresh live EPG automatically when current program expires and cache TTL passed.
+                if (playingLive && playingItem && !epgEntries.empty() && !epgJobRunning) {
+                    const auto nowEpoch = static_cast<std::int64_t>(std::time(nullptr));
+                    const auto nn = findNowNext(epgEntries);
+                    if (nn.now && nn.now->endEpochSeconds > 0 &&
+                        nowEpoch >= nn.now->endEpochSeconds) {
+                        startEpg(*playingItem, false);
+                    }
+                }
             }
         }
     }
@@ -1582,10 +2108,17 @@ struct App::Impl {
     void drawArtwork(const MediaItem &item, float x, float y, float width, float height,
                      bool poster = false) {
         gfx.rect(x, y, width, height, rgb(9, 18, 31), 10);
+        const float inset = poster ? 0.0F : 9.0F;
+        if (!item.logoUrl.empty() && gfx.hasImage(item.logoUrl)) {
+            // Fast GPU cache hit: skip ArtworkCache mutex lookup completely.
+            gfx.image(item.logoUrl, nullptr, 0, 0, x + inset, y + inset, width - inset * 2,
+                      height - inset * 2, poster, 8);
+            return;
+        }
         if (const auto image = artwork.request(item.logoUrl)) {
-            const float inset = poster ? 0.0F : 9.0F;
             gfx.image(item.logoUrl, image->rgba.data(), image->width, image->height, x + inset,
                       y + inset, width - inset * 2, height - inset * 2, poster, 8);
+            artwork.releaseCpu(item.logoUrl);
         } else {
             const auto icon = item.kind == MediaKind::Live    ? Icon::Live
                               : item.kind == MediaKind::Movie ? Icon::Movies
@@ -1695,16 +2228,18 @@ struct App::Impl {
                 const char *prefix;
                 Button button;
             };
-            const std::array<HintButton, 5> buttons{{{"X ", Button::Cross},
+            const std::array<HintButton, 7> buttons{{{"X ", Button::Cross},
                                                      {"O ", Button::Circle},
                                                      {"SQUARE ", Button::Square},
                                                      {"TRIANGLE ", Button::Triangle},
-                                                     {"OPTIONS ", Button::Options}}};
+                                                     {"OPTIONS ", Button::Options},
+                                                     {"L2 ", Button::L2},
+                                                     {"R2 ", Button::R2}}};
             bool drawn = false;
             for (const auto &button : buttons) {
                 const std::string prefix(button.prefix);
                 if (segment.rfind(prefix, 0) == 0) {
-                    x += controlHint(button.button, segment.substr(prefix.size()), x, 998) + 30;
+                    x += controlHint(button.button, segment.substr(prefix.size()), x, 998) + 26;
                     drawn = true;
                     break;
                 }
@@ -1716,10 +2251,10 @@ struct App::Impl {
                 gfx.icon(Icon::Dpad, x, 998, 29, kMuted);
                 const auto label = segment.substr(prefix);
                 gfx.text(label, x + 40, 1001, 19, kMuted);
-                x += 70 + gfx.textWidth(label, 19);
+                x += 66 + gfx.textWidth(label, 19);
             } else {
                 gfx.text(segment, x, 1001, 19, kMuted, 1845 - x);
-                x += gfx.textWidth(segment, 19) + 30;
+                x += gfx.textWidth(segment, 19) + 26;
             }
         }
     }
@@ -1745,21 +2280,43 @@ struct App::Impl {
         renderCategories();
         const float contentX = 610.0F;
         if (episodesOpen) {
-            gfx.text("EPISODES", contentX, 169, 17, kMuted, 230);
+            gfx.text("EPISODES", contentX, 169, 17, kMuted, 200);
+            float listTop = 214.0F;
+            if (episodeSeasons.size() > 1) {
+                float sx = contentX + 130.0F;
+                const int seasonStart =
+                    selectedSeasonIndex >= 6 ? selectedSeasonIndex - 5 : 0;
+                for (int i = seasonStart;
+                     i < static_cast<int>(episodeSeasons.size()) && i < seasonStart + 8; ++i) {
+                    const bool active = i == selectedSeasonIndex;
+                    const std::string label =
+                        "Season " + std::to_string(episodeSeasons[static_cast<std::size_t>(i)]);
+                    const float pillW = std::max(108.0F, gfx.textWidth(label, 16) + 28.0F);
+                    if (sx + pillW > contentX + 1204.0F)
+                        break;
+                    gfx.rect(sx, 160, pillW, 34, active ? kPanelSelected : kPanelRaised, 10);
+                    gfx.text(label, sx + 14, 168, 16, active ? kCyan : kMuted, pillW - 20);
+                    sx += pillW + 10.0F;
+                }
+                listTop = 214.0F;
+            }
+            const auto visibleEps = filteredEpisodes();
             if (episodesJobRunning) {
                 gfx.text("Loading episodes...", contentX, 227, 25, kText, 600);
-            } else if (episodes.empty()) {
+            } else if (visibleEps.empty()) {
                 gfx.text(banner.empty() ? "No episodes available." : banner, contentX, 227, 20,
                          kMuted, 1050);
             } else {
                 const int visible = 8;
+                episodeIndex =
+                    std::clamp(episodeIndex, 0, static_cast<int>(visibleEps.size()) - 1);
                 const int start = episodeIndex >= visible ? episodeIndex - visible + 1 : 0;
-                for (int i = start; i < static_cast<int>(episodes.size()) && i < start + visible;
+                for (int i = start; i < static_cast<int>(visibleEps.size()) && i < start + visible;
                      ++i) {
-                    const float y = 214.0F + static_cast<float>(i - start) * 78.0F;
+                    const float y = listTop + static_cast<float>(i - start) * 78.0F;
                     const bool selected = i == episodeIndex;
                     gfx.rect(contentX, y, 1204, 66, selected ? kPanelSelected : kPanelRaised, 12);
-                    const auto &episode = episodes[static_cast<std::size_t>(i)];
+                    const auto &episode = *visibleEps[static_cast<std::size_t>(i)];
                     drawArtwork(episode, contentX + 10, y + 8, 64, 50, true);
                     std::string prefix;
                     if (episode.episodeDetails) {
@@ -1771,12 +2328,19 @@ struct App::Impl {
                     gfx.text(prefix.empty() ? "EPISODE" : prefix, contentX + 88, y + 22, 17, kCyan,
                              110);
                     gfx.text(shortened(episode.title, 82), contentX + 215, y + 7, 22, kText, 950);
+                    const double resumePos = savedResumePosition(episode);
+                    if (resumePos >= 10.0) {
+                        gfx.text("Resume " + formatTime(resumePos), contentX + 1020, y + 10, 15,
+                                 kCyan, 170);
+                    }
                     if (episode.episodeDetails && !episode.episodeDetails->plot.empty())
                         gfx.text(shortened(episode.episodeDetails->plot, 112), contentX + 215,
                                  y + 37, 18, kMuted, 950);
                 }
             }
-            renderFooter("X Play episode | SQUARE Favorite | D-pad Browse | O Back");
+            renderFooter(episodeSeasons.size() > 1
+                             ? "X Play | LEFT / RIGHT Season | SQUARE Favorite | L2 Page | O Back"
+                             : "X Play episode | SQUARE Favorite | D-pad Browse | O Back");
             return;
         }
 
@@ -1852,7 +2416,7 @@ struct App::Impl {
             const int col = cell % gridColumns;
             const float x = contentX + static_cast<float>(col) * (cardWidth + gapX);
             const float y = 211.0F + static_cast<float>(row) * (cardHeight + gapY);
-            const auto &item = items[static_cast<std::size_t>(index)];
+            const auto &item = *items[static_cast<std::size_t>(index)];
             const bool selected = itemIndex == index;
             if (selected && focus == Focus::Items)
                 gfx.rect(x - 3, y - 3, cardWidth + 6, cardHeight + 6, kCyan, 18);
@@ -1860,6 +2424,13 @@ struct App::Impl {
                      selected && focus == Focus::Items ? kPanelSelected : kPanelRaised, 15);
             const bool live = item.kind == MediaKind::Live;
             drawArtwork(item, x + 15, y + 16, live ? 122 : 104, 144, !live);
+            if (!live) {
+                const double resumePos = savedResumePosition(item);
+                if (resumePos >= 10.0) {
+                    gfx.rect(x + 15, y + 156, 104, 4, rgb(32, 52, 72), 2);
+                    gfx.rect(x + 15, y + 156, 52, 4, kCyan, 2);
+                }
+            }
             const float textX = x + 153;
             wrappedText(gfx, item.title, textX, y + 26, 25, kText, cardWidth - 179, 2);
             gfx.text(item.categoryName.empty() ? kindName(item.kind) : item.categoryName, textX,
@@ -1880,7 +2451,7 @@ struct App::Impl {
                      x + cardWidth - 40, y + 132, 19, selected ? kCyan : kMuted);
         }
 
-        const auto &selected = items[static_cast<std::size_t>(itemIndex)];
+        const auto &selected = *items[static_cast<std::size_t>(itemIndex)];
         const float detailsY = 808.0F;
         gfx.rect(contentX, detailsY, 1206, 133, kPanelRaised, 15);
         drawArtwork(selected, contentX + 17, detailsY + 17, 99, 99,
@@ -1893,15 +2464,31 @@ struct App::Impl {
         if (selected.episodeDetails && selected.episodeDetails->durationSeconds > 0)
             meta +=
                 "  |  " + formatTime(static_cast<double>(selected.episodeDetails->durationSeconds));
+        const double resumePos = savedResumePosition(selected);
+        if (resumePos >= 10.0)
+            meta += "  |  Resume at " + formatTime(resumePos);
         gfx.text(meta, contentX + 138, detailsY + 51, 19, kCyan, 900);
-        wrappedText(
-            gfx, selected.description.empty() ? "Select to open this item." : selected.description,
-            contentX + 138, detailsY + 83, 18, kMuted, 1008, 1);
+        std::string detailLine =
+            selected.description.empty() ? "Select to open this item." : selected.description;
+        if (selected.kind == MediaKind::Live) {
+            if (const auto *entries = cachedEpgFor(selected)) {
+                const auto nn = findNowNext(*entries);
+                if (nn.now) {
+                    detailLine = "NOW: " + nn.now->title;
+                    if (nn.next) {
+                        const auto hm = formatClockHm(nn.next->startEpochSeconds);
+                        detailLine += "   |   NEXT" + (hm.empty() ? std::string{} : " (" + hm + ")") +
+                                      ": " + nn.next->title;
+                    }
+                }
+            }
+        }
+        wrappedText(gfx, detailLine, contentX + 138, detailsY + 83, 18, kMuted, 1008, 1);
         const std::string pageInfo =
             std::to_string(itemIndex + 1) + " / " + std::to_string(items.size());
         gfx.text(pageInfo, contentX + 1084, detailsY + 17, 13, kMuted, 92);
         renderFooter(
-            "X Play / open | SQUARE Favorite | TRIANGLE Search | D-pad Browse | OPTIONS Settings");
+            "X Play | SQUARE Favorite | TRIANGLE Search | L2 Page Up | R2 Page Down | OPTIONS Settings");
     }
 
     void renderSettings() {
@@ -1910,17 +2497,29 @@ struct App::Impl {
         gfx.text("Credentials stay in this device's protected settings file. BruTV does not "
                  "provide channels or subscriptions.",
                  350, 244, 20, kMuted, 1130);
-        const std::array<std::string, 9> labels{"Source type",
-                                                "Source name",
-                                                draft.type == SourceType::M3U ? "Playlist URL"
-                                                                              : "Server URL",
-                                                "Username",
-                                                "Password",
-                                                "BruTV join link",
-                                                "Volume",
-                                                "Connect / save source",
-                                                "Clear saved source"};
-        const std::array<std::string, 9> values{
+        const bool hasSavedSources = !settings.savedSources.empty();
+        const int rowCount = hasSavedSources ? 10 : 9;
+        std::string savedSourceValue = "No saved sources";
+        if (hasSavedSources) {
+            const int idx = std::clamp(savedSourceIndex, 0,
+                                       static_cast<int>(settings.savedSources.size()) - 1);
+            const auto &s = settings.savedSources[static_cast<std::size_t>(idx)];
+            savedSourceValue = s.name + " (" + std::to_string(idx + 1) + "/" +
+                               std::to_string(settings.savedSources.size()) +
+                               ") | Left/Right to select, X to switch";
+        }
+        const std::array<std::string, 10> labels{"Source type",
+                                                 "Source name",
+                                                 draft.type == SourceType::M3U ? "Playlist URL"
+                                                                               : "Server URL",
+                                                 "Username",
+                                                 "Password",
+                                                 "BruTV join link",
+                                                 "Volume",
+                                                 "Connect / save source",
+                                                 "Clear saved source",
+                                                 "Switch saved source"};
+        const std::array<std::string, 10> values{
             draft.type == SourceType::M3U ? "M3U playlist" : "Xtream Codes",
             draft.name.empty() ? "Enter a name" : draft.name,
             draft.url.empty() ? (draft.type == SourceType::M3U ? "https://.../playlist.m3u"
@@ -1934,25 +2533,28 @@ struct App::Impl {
             "Validate source and load catalog",
             preview
                 ? "Preview does not change saved source"
-                : (settings.source ? "Remove saved source from this device" : "No saved source")};
-        for (int i = 0; i < 9; ++i) {
-            const float y = 296.0F + static_cast<float>(i) * 67.0F;
+                : (settings.source ? "Remove saved source from this device" : "No saved source"),
+            savedSourceValue};
+        const float rowStride = hasSavedSources ? 61.0F : 67.0F;
+        const float rowHeight = hasSavedSources ? 52.0F : 56.0F;
+        for (int i = 0; i < rowCount; ++i) {
+            const float y = 290.0F + static_cast<float>(i) * rowStride;
             const bool selected = settingIndex == i && focus == Focus::Settings;
-            gfx.rect(347, y, 1136, 56, selected ? kPanelSelected : kPanelRaised, 11);
-            gfx.text(labels[static_cast<std::size_t>(i)], 367, y + 15, 18,
+            gfx.rect(347, y, 1136, rowHeight, selected ? kPanelSelected : kPanelRaised, 11);
+            gfx.text(labels[static_cast<std::size_t>(i)], 367, y + 14, 18,
                      selected ? kText : kMuted, 252);
             const std::string shownValue =
                 i == 4 && !draft.password.empty()
                     ? maskString(std::min<std::size_t>(draft.password.size(), 22))
                     : values[static_cast<std::size_t>(i)];
-            gfx.text(shortened(shownValue, i == 2 || i == 5 ? 72 : 54), 632, y + 14, 18,
-                     i == 7 ? kCyan : (i == 8 ? kRed : kText), 820);
+            gfx.text(shortened(shownValue, i == 2 || i == 5 ? 72 : 60), 632, y + 13, 18,
+                     i == 7 || i == 9 ? kCyan : (i == 8 ? kRed : kText), 820);
             if (selected)
-                gfx.rect(1464, y + 12, 3, 32, kCyan, 2);
+                gfx.rect(1464, y + 10, 3, rowHeight - 20, kCyan, 2);
         }
         if (banner.empty()) {
             gfx.text("Select a field, then press Cross to open its keyboard. Left / right adjusts "
-                     "type or volume.",
+                     "type, volume, or saved source.",
                      350, 919, 17, kMuted, 1100);
         } else {
             gfx.text(shortened(banner, 128), 350, 919, 18,
@@ -1962,7 +2564,7 @@ struct App::Impl {
                      1100);
         }
         renderFooter(
-            "X Edit / connect | TRIANGLE Search | LEFT / RIGHT Type or volume | OPTIONS Return");
+            "X Edit / connect | TRIANGLE Search | LEFT / RIGHT Adjust | OPTIONS Return");
     }
 
     std::string playerStateText() const {
@@ -2041,18 +2643,7 @@ struct App::Impl {
         }
         const std::string message = !playerStatus.rewindMessage.empty()
             ? playerStatus.rewindMessage : playerStatus.message;
-        const auto currentEpg = [&]() -> const EpgEntry * {
-            if (!playingLive || epgEntries.empty())
-                return nullptr;
-            const auto now = static_cast<std::int64_t>(std::time(nullptr));
-            auto current =
-                std::find_if(epgEntries.begin(), epgEntries.end(), [now](const EpgEntry &entry) {
-                    return entry.startEpochSeconds <= now && entry.endEpochSeconds > now;
-                });
-            if (current == epgEntries.end())
-                current = epgEntries.begin();
-            return &(*current);
-        };
+        const auto nn = playingLive ? findNowNext(epgEntries) : NowNextEpg{};
         if (playerStatus.durationSeconds > 0.0 && !playingLive) {
             const float progress = static_cast<float>(
                 std::clamp(playerStatus.currentSeconds / playerStatus.durationSeconds, 0.0, 1.0));
@@ -2062,11 +2653,17 @@ struct App::Impl {
                          formatTime(playerStatus.durationSeconds),
                      80, 897, 18, kMuted, 300);
         } else if (playingLive && playerStatus.liveRewind) {
-            if (const auto *entry = currentEpg()) {
-                gfx.text("NOW", 80, 845, 17, kCyan, 70);
-                gfx.text(shortened(entry->title, 70), 140, 844, 20, kText, 1200);
-                if (message.empty() && !entry->description.empty()) {
-                    gfx.text(shortened(entry->description, 120), 80, 938, 17, kMuted, 1700);
+            if (nn.now) {
+                gfx.text("NOW", 80, 845, 17, kCyan, 60);
+                gfx.text(shortened(nn.now->title, 54), 140, 844, 20, kText, 840);
+                if (nn.next) {
+                    const auto hm = formatClockHm(nn.next->startEpochSeconds);
+                    gfx.text("NEXT", 1020, 845, 17, kMuted, 65);
+                    gfx.text(shortened((hm.empty() ? std::string{} : hm + " ") + nn.next->title, 48),
+                             1090, 844, 19, kMuted, 750);
+                }
+                if (message.empty() && !nn.now->description.empty()) {
+                    gfx.text(shortened(nn.now->description, 120), 80, 938, 17, kMuted, 1700);
                 }
             } else if (epgJobRunning) {
                 gfx.text("Loading guide...", 80, 845, 17, kMuted, 300);
@@ -2080,21 +2677,31 @@ struct App::Impl {
             gfx.text(formatTime(window) + " saved | " + formatTime(behind) + " behind live | " +
                 std::to_string(playerStatus.recordedBytes / 1024 / 1024) + " MiB", 80, 897, 18, kMuted, 900);
             controlHint(Button::Triangle, "Go live", 1430, 897);
-        } else if (const auto *entry = currentEpg()) {
-            gfx.text("NOW", 80, 875, 17, kCyan, 80);
-            gfx.text(shortened(entry->title, 65), 80, 898, 22, kText, 670);
-            if (!entry->description.empty())
-                gfx.text(shortened(entry->description, 110), 80, 930, 18, kMuted, 1030);
+        } else if (nn.now) {
+            gfx.text("NOW", 80, 855, 17, kCyan, 60);
+            gfx.text(shortened(nn.now->title, 54), 145, 853, 21, kText, 830);
+            if (nn.next) {
+                const auto hm = formatClockHm(nn.next->startEpochSeconds);
+                gfx.text("NEXT", 1020, 855, 17, kMuted, 65);
+                gfx.text(shortened((hm.empty() ? std::string{} : hm + " ") + nn.next->title, 48),
+                         1090, 854, 19, kMuted, 750);
+            }
+            if (!nn.now->description.empty())
+                gfx.text(shortened(nn.now->description, 120), 80, 896, 18, kMuted, 1700);
         } else if (playingLive && epgJobRunning) {
             gfx.text("Loading guide...", 80, 884, 18, kMuted, 300);
         }
         controlHint(Button::Options, "HUD", 80, 974);
         controlHint(Button::Cross, playerStatus.state == Player::State::Paused ? "Resume" : "Pause",
-                    260, 974);
+                    240, 974);
         const Color seekColor = playingLive && !playerStatus.liveRewind ? rgb(84, 101, 116) : kMuted;
-        gfx.button(Button::L2, 570, 974, 29, seekColor);
-        gfx.button(Button::R2, 611, 974, 29, seekColor);
-        gfx.text("Seek", 658, 977, 19, seekColor, 120);
+        gfx.button(Button::L2, 470, 974, 29, seekColor);
+        gfx.button(Button::R2, 511, 974, 29, seekColor);
+        gfx.text("Seek", 554, 977, 19, seekColor, 100);
+        if (playingLive) {
+            gfx.icon(Icon::Dpad, 690, 975, 28, kMuted);
+            gfx.text("Ch +/-", 730, 977, 19, kMuted, 120);
+        }
         gfx.icon(Icon::Volume, 955, 975, 28, kMuted);
         gfx.icon(Icon::Dpad, 997, 975, 28, kMuted);
         gfx.text("Volume " +
@@ -2165,11 +2772,12 @@ struct App::Impl {
                                           : label,
                      x + 12, bottomY + 18, 16, selected ? kCyan : kText, bottomWidth - 24);
         }
-        gfx.icon(Icon::Dpad, 382, 859, 29, kMuted);
-        gfx.text("Move", 423, 863, 19, kMuted);
-        controlHint(Button::Cross, "Select", 555, 859);
-        controlHint(Button::Circle, "Cancel", 750, 859);
-        gfx.text("You can also type with a connected keyboard", 974, 864, 17, kMuted, 560);
+        float hx = 382.0F;
+        hx += controlHint(Button::Cross, "Type", hx, 859, 18) + 22.0F;
+        hx += controlHint(Button::Triangle, "Space", hx, 859, 18) + 22.0F;
+        hx += controlHint(Button::Square, "Delete", hx, 859, 18) + 22.0F;
+        hx += controlHint(Button::Options, "Done", hx, 859, 18) + 22.0F;
+        controlHint(Button::Circle, "Cancel", hx, 859, 18);
     }
 
     void renderClearConfirmation() {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "brutv/player.hpp"
 #include "brutv/catalog.hpp"
 #include "brutv/timeshift.hpp"
@@ -22,6 +23,7 @@ extern "C" {
 #include <cmath>
 #include <condition_variable>
 #include <cstdarg>
+#include <cstring>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -37,13 +39,19 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr int kAudioRate = 48000;
-constexpr int kMaxWidth = 1280;
-constexpr int kMaxHeight = 720;
+constexpr int kMaxYuvWidth = 1920;
+constexpr int kMaxYuvHeight = 1080;
+constexpr int kMaxSwsWidth = 1280;
+constexpr int kMaxSwsHeight = 720;
 constexpr std::size_t kMaxFrames = 6;
+constexpr std::size_t kMaxFramePool = kMaxFrames + 2;
+constexpr std::size_t kMaxRecentSubPackets = 256;
+constexpr int kMaxCachedSubPacketBytes = 4096;
 constexpr double kMaxAudioSeconds = 0.5;
 constexpr auto kIoTimeout = std::chrono::seconds(15);
 constexpr auto kCloseTimeout = std::chrono::seconds(3);
 constexpr auto kFreezeTimeout = std::chrono::seconds(15);
+constexpr auto kSnapshotThrottle = std::chrono::milliseconds(250);
 constexpr const char* kDefaultUserAgent = "BruTV/1.0";
 constexpr double kNoTime = std::numeric_limits<double>::quiet_NaN();
 
@@ -148,8 +156,61 @@ void initializeFfmpeg() {
     });
 }
 
+struct RunControl {
+    std::uint64_t id = 0;
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> seekInterrupt{false};
+    std::atomic<bool> trackSwitchPending{false};
+    std::atomic<bool> capturingLive{false};
+    std::atomic<bool> captureStopping{false};
+    std::atomic<bool> waitingForSpool{false};
+    std::atomic<std::int64_t> deadline{0};
+
+    static int interrupt(void* opaque) {
+        auto* self = static_cast<RunControl*>(opaque);
+        const auto limit = self->deadline.load(std::memory_order_relaxed);
+        return self->stopping.load(std::memory_order_relaxed) ||
+               self->captureStopping.load(std::memory_order_relaxed) ||
+               (self->seekInterrupt.load(std::memory_order_relaxed) &&
+                !self->capturingLive.load(std::memory_order_relaxed)) ||
+               (limit != 0 && monotonicNanoseconds() >= limit);
+    }
+
+    void beginIo(std::chrono::milliseconds timeout = kIoTimeout) {
+        deadline.store(monotonicNanoseconds() +
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count(),
+                       std::memory_order_relaxed);
+    }
+
+    void endIo() {
+        deadline.store(0, std::memory_order_relaxed);
+    }
+};
+
+struct CachedSubtitlePacket {
+    AVPacket* packet = nullptr;
+    CachedSubtitlePacket() = default;
+    explicit CachedSubtitlePacket(const AVPacket* src) {
+        packet = av_packet_clone(src);
+    }
+    CachedSubtitlePacket(CachedSubtitlePacket&& other) noexcept : packet(other.packet) {
+        other.packet = nullptr;
+    }
+    CachedSubtitlePacket& operator=(CachedSubtitlePacket&& other) noexcept {
+        if (this != &other) {
+            av_packet_free(&packet);
+            packet = other.packet;
+            other.packet = nullptr;
+        }
+        return *this;
+    }
+    CachedSubtitlePacket(const CachedSubtitlePacket&) = delete;
+    CachedSubtitlePacket& operator=(const CachedSubtitlePacket&) = delete;
+    ~CachedSubtitlePacket() { av_packet_free(&packet); }
+};
+
 struct Session {
-    std::atomic<std::int64_t>* ioDeadline = nullptr;
+    std::shared_ptr<RunControl> run;
     AVFormatContext* format = nullptr;
     AVCodecContext* video = nullptr;
     AVCodecContext* audio = nullptr;
@@ -157,14 +218,24 @@ struct Session {
     AVPacket* packet = nullptr;
     AVFrame* decoded = nullptr;
     SwsContext* scaler = nullptr;
+    int lastSwsColorspace = -1;
+    int lastSwsColorRange = -1;
+    int lastSwsSrcW = 0;
+    int lastSwsSrcH = 0;
+    int lastSwsSrcFmt = -1;
+    int lastSwsDstW = 0;
+    int lastSwsDstH = 0;
     SwrContext* resampler = nullptr;
     AVChannelLayout resampleLayout{};
     int resampleRate = 0;
     int resampleFormat = -1;
+    std::vector<std::int16_t> pcmBuffer;
     int videoIndex = -1;
     int audioIndex = -1;
     std::atomic<int> activeAudioIndex{-1};
     int subtitleIndex = -1;
+    std::unordered_set<int> textSubtitleStreams;
+    std::deque<CachedSubtitlePacket> recentSubtitlePackets;
     std::vector<AVCodecParameters*> streamParameters;
     std::vector<AVRational> timeBases;
     AVRational frameRate{0, 1};
@@ -196,6 +267,7 @@ struct Session {
     }
 
     ~Session() {
+        recentSubtitlePackets.clear();
         sws_freeContext(scaler);
         swr_free(&resampler);
         av_channel_layout_uninit(&resampleLayout);
@@ -205,15 +277,15 @@ struct Session {
         avcodec_free_context(&audio);
         avcodec_free_context(&subtitle);
         for (auto*& parameters : streamParameters) avcodec_parameters_free(&parameters);
-        if (format && ioDeadline) {
-            ioDeadline->store(
+        if (format && run) {
+            run->deadline.store(
                 monotonicNanoseconds() +
                     std::chrono::duration_cast<std::chrono::nanoseconds>(kCloseTimeout).count(),
                 std::memory_order_relaxed);
         }
         avformat_close_input(&format);
-        if (ioDeadline) {
-            ioDeadline->store(0, std::memory_order_relaxed);
+        if (run) {
+            run->endIo();
         }
     }
 };
@@ -290,6 +362,38 @@ std::string subtitleText(const AVSubtitleRect* rect) {
     return result;
 }
 
+void copyPlane(const std::uint8_t* src, int srcStride, std::vector<std::uint8_t>& dst,
+               int width, int height) {
+    const std::size_t w = static_cast<std::size_t>(width);
+    const std::size_t h = static_cast<std::size_t>(height);
+    dst.resize(w * h);
+    if (srcStride == width) {
+        std::memcpy(dst.data(), src, w * h);
+        return;
+    }
+    std::uint8_t* out = dst.data();
+    for (int row = 0; row < height; ++row) {
+        std::memcpy(out, src + static_cast<std::ptrdiff_t>(row) * srcStride, w);
+        out += w;
+    }
+}
+
+VideoFrame::ColorSpace detectColorSpace(const AVFrame* frame) {
+    switch (frame->colorspace) {
+        case AVCOL_SPC_BT709:
+            return VideoFrame::ColorSpace::Bt709;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            return VideoFrame::ColorSpace::Bt2020;
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_SMPTE170M:
+            return VideoFrame::ColorSpace::Bt601;
+        default:
+            return frame->height >= 720 ? VideoFrame::ColorSpace::Bt709
+                                        : VideoFrame::ColorSpace::Bt601;
+    }
+}
+
 } // namespace
 
 ReconnectPolicy::Outcome ReconnectPolicy::evaluate(
@@ -322,8 +426,6 @@ ReconnectPolicy::Outcome ReconnectPolicy::evaluate(
         }
     }
     if (outcome.switchFormat && !hadFirstFrame && failures == 1) {
-        // Fast slot-release pause when the initial live format fails before first frame;
-        // once both formats fail, fall through to jittered exponential backoff.
         outcome.backoffMs = kFormatSwitchBackoffMs;
     } else {
         const int shift = std::min(failures - 1, 4);
@@ -381,23 +483,46 @@ DirectFallbackTiming prepareDirectFallbackTiming(double currentPosition) {
 struct Player::Impl {
     explicit Impl(std::shared_ptr<AudioSink> output) : sink(std::move(output)) {
         initializeFfmpeg();
+        reaper = std::thread([this] { reapWorkers(); });
+    }
+
+    ~Impl() {
+        {
+            std::lock_guard<std::mutex> lock(lifecycle);
+            stopLocked();
+        }
+        {
+            std::lock_guard<std::mutex> lock(reaperMutex);
+            reaperStopping = true;
+        }
+        reaperCv.notify_all();
+        if (reaper.joinable()) {
+            reaper.join();
+        }
     }
 
     std::shared_ptr<AudioSink> sink;
+    std::mutex sinkMutex;
     mutable std::mutex mutex;
     std::mutex lifecycle;
     std::condition_variable changed;
     std::thread worker;
-    std::atomic<bool> stopping{false};
-    std::atomic<bool> seekInterrupt{false};
-    std::atomic<bool> trackSwitchPending{false};
+    std::shared_ptr<RunControl> activeRun;
+    std::atomic<std::uint64_t> activeRunId{0};
     std::atomic<bool> isLive{false};
-    std::atomic<bool> capturingLive{false};
-    std::atomic<bool> captureStopping{false};
-    std::atomic<std::int64_t> deadline{0};
     std::atomic<float> volume{1.0F};
+    std::atomic<bool> preferYuv{true};
+
+    // Background worker reaper so Player::open()/stop() never block the UI thread on worker.join().
+    std::mutex reaperMutex;
+    std::condition_variable reaperCv;
+    std::deque<std::thread> retiredWorkers;
+    bool reaperStopping = false;
+    std::thread reaper;
+
     Status snapshot;
     std::deque<VideoFrame> frames;
+    std::vector<VideoFrame> framePool;
     bool paused = false;
     bool sourceOpened = false;
     bool clockStarted = false;
@@ -415,24 +540,71 @@ struct Player::Impl {
     std::uint64_t pauseEpoch = 0;
     WorkingFormatCache workingFormatCache;
 
-    static int interrupt(void* opaque) {
-        auto* self = static_cast<Impl*>(opaque);
-        const auto limit = self->deadline.load(std::memory_order_relaxed);
-        return self->stopping.load(std::memory_order_relaxed) ||
-               self->captureStopping.load(std::memory_order_relaxed) ||
-               (self->seekInterrupt.load(std::memory_order_relaxed) &&
-                !self->capturingLive.load(std::memory_order_relaxed)) ||
-               (limit != 0 && monotonicNanoseconds() >= limit);
+    void reapWorkers() {
+        for (;;) {
+            std::thread toJoin;
+            {
+                std::unique_lock<std::mutex> lock(reaperMutex);
+                reaperCv.wait(lock, [&] { return reaperStopping || !retiredWorkers.empty(); });
+                if (retiredWorkers.empty()) {
+                    if (reaperStopping) return;
+                    continue;
+                }
+                toJoin = std::move(retiredWorkers.front());
+                retiredWorkers.pop_front();
+            }
+            if (toJoin.joinable()) {
+                toJoin.join();
+            }
+        }
     }
 
-    void beginIo(std::chrono::milliseconds timeout = kIoTimeout) {
-        deadline.store(monotonicNanoseconds() +
-                           std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count(),
-                       std::memory_order_relaxed);
+    bool isCurrentRun(const RunControl& run) const {
+        return !run.stopping.load(std::memory_order_relaxed) &&
+               activeRunId.load(std::memory_order_acquire) == run.id;
     }
 
-    void endIo() {
-        deadline.store(0, std::memory_order_relaxed);
+    void recycleFrameLocked(VideoFrame&& frame) {
+        if (framePool.size() >= kMaxFramePool) {
+            return;
+        }
+        if (!frame.yPlane.empty() || !frame.uPlane.empty() || !frame.vPlane.empty() ||
+            !frame.rgba.empty()) {
+            frame.width = 0;
+            frame.height = 0;
+            frame.displayWidth = 0;
+            frame.displayHeight = 0;
+            frame.ptsSeconds = 0.0;
+            frame.serial = 0;
+            framePool.push_back(std::move(frame));
+        }
+    }
+
+    VideoFrame borrowFrame() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!framePool.empty()) {
+            VideoFrame f = std::move(framePool.back());
+            framePool.pop_back();
+            return f;
+        }
+        return VideoFrame{};
+    }
+
+    void clearSinkForRun(const RunControl& run) {
+        if (!sink) return;
+        std::lock_guard<std::mutex> lock(sinkMutex);
+        if (activeRunId.load(std::memory_order_acquire) == run.id) {
+            sink->clear();
+        }
+    }
+
+    bool queueAudioForRun(const RunControl& run, const std::int16_t* samples, std::size_t framesCount) {
+        if (!sink) return false;
+        std::lock_guard<std::mutex> lock(sinkMutex);
+        if (activeRunId.load(std::memory_order_acquire) != run.id) {
+            return false;
+        }
+        return sink->queue(samples, framesCount);
     }
 
     double queuedAudio() const {
@@ -443,10 +615,6 @@ struct Player::Impl {
         return std::isfinite(queued) ? std::clamp(queued, 0.0, 5.0) : 0.0;
     }
 
-    // mutex is held by the caller. The output queue is the audio clock; wall
-    // time advances through an underrun so a full video queue cannot deadlock
-    // demux before the next audio packet arrives, without ratcheting lastClock
-    // past the audio timeline.
     double clockLocked() const {
         if (!clockStarted || paused) {
             return clockBase;
@@ -497,8 +665,10 @@ struct Player::Impl {
         const double audioClock = std::max(0.0, audioEnd - queued);
         startClockLocked(audioClock);
         if (queued > 0.001) {
-            clockBase = audioClock;
-            lastClock = audioClock;
+            // Enforce monotonic lastClock; only seek/discontinuity resetOutput() lowers it.
+            const double monotonic = std::max(lastClock, audioClock);
+            clockBase = monotonic;
+            lastClock = monotonic;
             clockAnchor = Clock::now();
         } else {
             const double current = clockLocked();
@@ -525,12 +695,14 @@ struct Player::Impl {
         markPlayingLocked();
     }
 
-    void resetOutput(double position) {
-        if (sink) {
-            sink->clear();
-        }
+    void resetOutput(const RunControl& run, double position) {
+        clearSinkForRun(run);
         std::lock_guard<std::mutex> lock(mutex);
-        frames.clear();
+        if (!isCurrentRun(run)) return;
+        while (!frames.empty()) {
+            recycleFrameLocked(std::move(frames.front()));
+            frames.pop_front();
+        }
         cues.clear();
         ++serial;
         clockBase = std::max(0.0, position);
@@ -542,20 +714,22 @@ struct Player::Impl {
         changed.notify_all();
     }
 
-    bool waitActive(bool allowPreview = false) {
+    bool waitActive(const RunControl& run, bool allowPreview = false) {
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait(lock, [&] {
-            return stopping.load() || seekInterrupt.load() || trackSwitchPending.load() ||
-                   !paused || allowPreview;
+            return !isCurrentRun(run) || run.seekInterrupt.load() ||
+                   run.trackSwitchPending.load() || !paused || allowPreview;
         });
-        return !stopping.load() && !seekInterrupt.load() && !trackSwitchPending.load();
+        return isCurrentRun(run) && !run.seekInterrupt.load() && !run.trackSwitchPending.load();
     }
 
     bool openSource(Session& session, const std::string& url, bool live, bool allowConnectRetry,
                     double resumePosition, const RequestOptions& request) {
+        auto& run = *session.run;
         session.live = live;
         {
             std::lock_guard<std::mutex> lock(mutex);
+            if (!isCurrentRun(run)) return false;
             snapshot.liveRewind = false;
             snapshot.recordedBytes = 0;
             snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
@@ -565,10 +739,15 @@ struct Player::Impl {
         if (!session.format) {
             throw std::runtime_error("Cannot allocate a media reader.");
         }
-        session.format->interrupt_callback = {&Impl::interrupt, this};
+        session.format->interrupt_callback = {&RunControl::interrupt, &run};
         session.format->flags |= AVFMT_FLAG_DISCARD_CORRUPT | AVFMT_FLAG_GENPTS;
-        session.format->probesize = 4 * 1024 * 1024;
-        session.format->max_analyze_duration = 7 * AV_TIME_BASE;
+        if (live) {
+            session.format->probesize = 1 * 1024 * 1024;
+            session.format->max_analyze_duration = 2 * AV_TIME_BASE;
+        } else {
+            session.format->probesize = 4 * 1024 * 1024;
+            session.format->max_analyze_duration = 5 * AV_TIME_BASE;
+        }
         AVDictionary* options = nullptr;
         av_dict_set(&options, "rw_timeout", "15000000", 0);
         av_dict_set(&options, "tls_verify", "1", 0);
@@ -609,10 +788,11 @@ struct Player::Impl {
                         "408,429,458,500,502,503,504,520,521,522,523,524,525,526", 0);
             av_dict_set(&options, "reconnect_delay_max", "4", 0);
             if (live) {
-                av_dict_set(&options, "http_persistent", "0", 0);
+                const bool isHls = isHlsPlaylistUrl(url);
+                av_dict_set(&options, "http_persistent", isHls ? "1" : "0", 0);
                 av_dict_set(&options, "http_seekable", "0", 0);
                 av_dict_set(&options, "reconnect_streamed", "1", 0);
-                if (!isHlsPlaylistUrl(url)) {
+                if (!isHls) {
                     av_dict_set(&options, "reconnect_at_eof", "1", 0);
                 }
                 av_dict_set(&options, "m3u8_hold_counters", "5", 0);
@@ -621,20 +801,20 @@ struct Player::Impl {
 #ifdef BRUTV_PS5
         av_dict_set(&options, "ca_file", "/app0/assets/ca-bundle.crt", 0);
 #endif
-        beginIo(std::chrono::seconds(20));
+        run.beginIo(std::chrono::seconds(20));
         int result = avformat_open_input(&session.format, url.c_str(), nullptr, &options);
         av_dict_free(&options);
-        endIo();
-        if (stopping.load()) {
+        run.endIo();
+        if (!isCurrentRun(run)) {
             return false;
         }
         if (result < 0) {
             throw std::runtime_error("Cannot open source: " + avError(result));
         }
-        beginIo(std::chrono::seconds(20));
+        run.beginIo(std::chrono::seconds(20));
         result = avformat_find_stream_info(session.format, nullptr);
-        endIo();
-        if (stopping.load()) {
+        run.endIo();
+        if (!isCurrentRun(run)) {
             return false;
         }
         if (result < 0) {
@@ -674,12 +854,12 @@ struct Player::Impl {
         if (!live && resumePosition > 0.0) {
             const double absolute =
                 resumePosition + (std::isfinite(session.origin) ? session.origin : 0.0);
-            beginIo();
+            run.beginIo();
             const int seekResult = avformat_seek_file(
                 session.format, -1, INT64_MIN,
                 static_cast<std::int64_t>(absolute * AV_TIME_BASE), INT64_MAX,
                 AVSEEK_FLAG_BACKWARD);
-            endIo();
+            run.endIo();
             if (seekResult >= 0) {
                 if (!std::isfinite(session.origin)) {
                     session.origin = 0.0;
@@ -693,7 +873,7 @@ struct Player::Impl {
                 session.discardBefore = -1.0;
                 session.nextVideo = 0.0;
                 session.nextAudio = 0.0;
-                resetOutput(0.0);
+                resetOutput(run, 0.0);
             }
         } else {
             session.setOffsets(resumePosition);
@@ -703,7 +883,9 @@ struct Player::Impl {
         session.useAudioOutput = session.audio && static_cast<bool>(sink);
         session.audioOutputStalled = false;
         session.lastProgressAt = Clock::now();
+        session.textSubtitleStreams.clear();
         std::lock_guard<std::mutex> lock(mutex);
+        if (!isCurrentRun(run)) return false;
         snapshot.audioTracks.clear();
         snapshot.subtitleTracks.clear();
         for (unsigned index = 0; index < session.format->nb_streams; ++index) {
@@ -715,6 +897,7 @@ struct Player::Impl {
                     trackLabel(stream, "Audio", static_cast<int>(snapshot.audioTracks.size()) + 1)});
             } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE && codec &&
                        (codec->props & AV_CODEC_PROP_TEXT_SUB)) {
+                session.textSubtitleStreams.insert(static_cast<int>(index));
                 snapshot.subtitleTracks.push_back({static_cast<int>(index),
                     trackLabel(stream, "Subtitles", static_cast<int>(snapshot.subtitleTracks.size()) + 1)});
             }
@@ -755,7 +938,7 @@ struct Player::Impl {
                 }
                 streamOffset = current - (raw - session.origin);
                 previousRaw = raw;
-                resetOutput(current);
+                resetOutput(*session.run, current);
                 return std::max(0.0, raw - session.origin + streamOffset);
             }
             if (!std::isfinite(previousRaw)) {
@@ -775,6 +958,7 @@ struct Player::Impl {
     }
 
     bool outputVideo(Session& session, AVFrame* frame) {
+        auto& run = *session.run;
         if (frame->width <= 0 || frame->height <= 0 ||
             static_cast<std::int64_t>(frame->width) * frame->height > 3840LL * 2160LL) {
             throw std::runtime_error("Video exceeds the supported 4K software decode limit.");
@@ -792,47 +976,110 @@ struct Player::Impl {
         if (!std::isfinite(aspect) || aspect < 0.1 || aspect > 10.0) {
             throw std::runtime_error("Invalid video aspect ratio.");
         }
-        int width = std::min(frame->width, kMaxWidth);
-        int height = std::max(1, static_cast<int>(std::lround(width / aspect)));
-        if (height > kMaxHeight) {
-            height = kMaxHeight;
-            width = std::max(1, static_cast<int>(std::lround(height * aspect)));
-        }
-        VideoFrame output;
-        output.width = width;
-        output.height = height;
+
+        const bool useYuv =
+            preferYuv.load(std::memory_order_relaxed) &&
+            (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) &&
+            frame->width <= kMaxYuvWidth && frame->height <= kMaxYuvHeight &&
+            (frame->width & 1) == 0 && (frame->height & 1) == 0 &&
+            frame->data[0] != nullptr && frame->data[1] != nullptr && frame->data[2] != nullptr;
+
+        VideoFrame output = borrowFrame();
         output.ptsSeconds = pts;
-        output.rgba.resize(static_cast<std::size_t>(width) * height * 4);
-        session.scaler = sws_getCachedContext(
-            session.scaler, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-            width, height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!session.scaler) {
-            throw std::runtime_error("Cannot initialize video conversion.");
+
+        int statusWidth = 0;
+        int statusHeight = 0;
+
+        if (useYuv) {
+            int displayW = std::min(frame->width, kMaxYuvWidth);
+            int displayH = std::max(1, static_cast<int>(std::lround(displayW / aspect)));
+            if (displayH > kMaxYuvHeight) {
+                displayH = kMaxYuvHeight;
+                displayW = std::max(1, static_cast<int>(std::lround(displayH * aspect)));
+            }
+            output.format = VideoFrame::Format::Yuv420p;
+            output.colorSpace = detectColorSpace(frame);
+            output.fullRange =
+                frame->color_range == AVCOL_RANGE_JPEG || frame->format == AV_PIX_FMT_YUVJ420P;
+            output.width = frame->width;
+            output.height = frame->height;
+            output.displayWidth = displayW;
+            output.displayHeight = displayH;
+            output.yStride = frame->width;
+            output.uStride = frame->width / 2;
+            output.vStride = frame->width / 2;
+            copyPlane(frame->data[0], frame->linesize[0], output.yPlane, frame->width, frame->height);
+            copyPlane(frame->data[1], frame->linesize[1], output.uPlane, frame->width / 2, frame->height / 2);
+            copyPlane(frame->data[2], frame->linesize[2], output.vPlane, frame->width / 2, frame->height / 2);
+            output.rgba.clear();
+            statusWidth = displayW;
+            statusHeight = displayH;
+        } else {
+            int width = std::min(frame->width, kMaxSwsWidth);
+            int height = std::max(1, static_cast<int>(std::lround(width / aspect)));
+            if (height > kMaxSwsHeight) {
+                height = kMaxSwsHeight;
+                width = std::max(1, static_cast<int>(std::lround(height * aspect)));
+            }
+            output.format = VideoFrame::Format::Rgba;
+            output.width = width;
+            output.height = height;
+            output.displayWidth = width;
+            output.displayHeight = height;
+            output.yPlane.clear();
+            output.uPlane.clear();
+            output.vPlane.clear();
+            output.rgba.resize(static_cast<std::size_t>(width) * height * 4);
+            const bool scalerChanged =
+                !session.scaler || session.lastSwsSrcW != frame->width ||
+                session.lastSwsSrcH != frame->height || session.lastSwsSrcFmt != frame->format ||
+                session.lastSwsDstW != width || session.lastSwsDstH != height;
+            session.scaler = sws_getCachedContext(
+                session.scaler, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                width, height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!session.scaler) {
+                throw std::runtime_error("Cannot initialize video conversion.");
+            }
+            const int space = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 :
+                              frame->colorspace == AVCOL_SPC_BT2020_NCL ? SWS_CS_BT2020 : SWS_CS_ITU601;
+            const int fullRange =
+                (frame->color_range == AVCOL_RANGE_JPEG || frame->format == AV_PIX_FMT_YUVJ420P) ? 1 : 0;
+            if (scalerChanged || session.lastSwsColorspace != space ||
+                session.lastSwsColorRange != fullRange) {
+                const int* coefficients = sws_getCoefficients(space);
+                sws_setColorspaceDetails(session.scaler, coefficients, fullRange,
+                                         coefficients, 1, 0, 1 << 16, 1 << 16);
+                session.lastSwsColorspace = space;
+                session.lastSwsColorRange = fullRange;
+                session.lastSwsSrcW = frame->width;
+                session.lastSwsSrcH = frame->height;
+                session.lastSwsSrcFmt = frame->format;
+                session.lastSwsDstW = width;
+                session.lastSwsDstH = height;
+            }
+            std::uint8_t* destinations[] = {output.rgba.data(), nullptr, nullptr, nullptr};
+            int strides[] = {width * 4, 0, 0, 0};
+            const int rows = sws_scale(session.scaler, frame->data, frame->linesize, 0,
+                                       frame->height, destinations, strides);
+            if (rows != height) {
+                throw std::runtime_error("Video conversion failed.");
+            }
+            statusWidth = width;
+            statusHeight = height;
         }
-        const int space = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 :
-                          frame->colorspace == AVCOL_SPC_BT2020_NCL ? SWS_CS_BT2020 : SWS_CS_ITU601;
-        const int* coefficients = sws_getCoefficients(space);
-        sws_setColorspaceDetails(session.scaler, coefficients,
-                                frame->color_range == AVCOL_RANGE_JPEG, coefficients, 1,
-                                0, 1 << 16, 1 << 16);
-        std::uint8_t* destinations[] = {output.rgba.data(), nullptr, nullptr, nullptr};
-        int strides[] = {width * 4, 0, 0, 0};
-        const int rows = sws_scale(session.scaler, frame->data, frame->linesize, 0,
-                                   frame->height, destinations, strides);
-        if (rows != height) {
-            throw std::runtime_error("Video conversion failed.");
-        }
+
         std::unique_lock<std::mutex> lock(mutex);
         changed.wait(lock, [&] {
-            return stopping.load() || seekInterrupt.load() || frames.size() < kMaxFrames;
+            return !isCurrentRun(run) || run.seekInterrupt.load() || frames.size() < kMaxFrames;
         });
-        if (stopping.load() || seekInterrupt.load()) {
+        if (!isCurrentRun(run) || run.seekInterrupt.load()) {
+            recycleFrameLocked(std::move(output));
             return false;
         }
         output.serial = serial;
         frames.push_back(std::move(output));
-        snapshot.width = width;
-        snapshot.height = height;
+        snapshot.width = statusWidth;
+        snapshot.height = statusHeight;
         startClockLocked(pts);
         noteDecodedProgressLocked(session);
         session.preview = false;
@@ -875,6 +1122,7 @@ struct Player::Impl {
     }
 
     bool outputAudio(Session& session, AVFrame* frame) {
+        auto& run = *session.run;
         const double pts = frameTime(session, frame, session.audioIndex, true);
         if (frame->sample_rate <= 0) {
             throw std::runtime_error("Invalid audio sample rate.");
@@ -887,14 +1135,16 @@ struct Player::Impl {
             if (!session.video) {
                 {
                     std::lock_guard<std::mutex> lock(mutex);
+                    if (!isCurrentRun(run)) return false;
                     noteDecodedProgressLocked(session);
                 }
-                paceAudioOnly(session.nextAudio);
+                paceAudioOnly(run, session.nextAudio);
             }
-            return !stopping.load() && !seekInterrupt.load() && !trackSwitchPending.load();
+            return isCurrentRun(run) && !run.seekInterrupt.load() && !run.trackSwitchPending.load();
         }
         {
             std::lock_guard<std::mutex> lock(mutex);
+            if (!isCurrentRun(run)) return false;
             if (paused && ((session.preview && session.video) || probingAudioRecovery)) {
                 return true;
             }
@@ -906,7 +1156,11 @@ struct Player::Impl {
         if (capacity < 0 || capacity > kAudioRate * 2) {
             throw std::runtime_error("Audio conversion exceeds its buffer limit.");
         }
-        std::vector<std::int16_t> pcm(static_cast<std::size_t>(capacity) * 2);
+        const std::size_t needed = static_cast<std::size_t>(capacity) * 2;
+        if (session.pcmBuffer.size() < needed) {
+            session.pcmBuffer.resize(needed);
+        }
+        auto& pcm = session.pcmBuffer;
         std::uint8_t* destinations[] = {reinterpret_cast<std::uint8_t*>(pcm.data())};
         const int samples = swr_convert(session.resampler, destinations, static_cast<int>(capacity),
                                        const_cast<const std::uint8_t**>(frame->extended_data),
@@ -923,16 +1177,22 @@ struct Player::Impl {
         if (count == 0) {
             return true;
         }
-        const float gain = volume.load();
-        for (std::size_t sample = skip * 2; sample < static_cast<std::size_t>(samples) * 2; ++sample) {
-            pcm[sample] = static_cast<std::int16_t>(std::lround(pcm[sample] * gain));
+        const float gain = volume.load(std::memory_order_relaxed);
+        if (gain < 0.999F) {
+            const std::int32_t scale = static_cast<std::int32_t>(std::lround(gain * 32768.0F));
+            const std::size_t endIdx = static_cast<std::size_t>(samples) * 2;
+            for (std::size_t sample = skip * 2; sample < endIdx; ++sample) {
+                const std::int32_t scaled = (static_cast<std::int32_t>(pcm[sample]) * scale + 16384) >> 15;
+                pcm[sample] = static_cast<std::int16_t>(std::clamp(scaled, -32768, 32767));
+            }
         }
         if (probingAudioRecovery) {
             if (queuedAudio() + static_cast<double>(count) / kAudioRate <= kMaxAudioSeconds &&
-                sink->queue(pcm.data() + skip * 2, count)) {
+                queueAudioForRun(run, pcm.data() + skip * 2, count)) {
                 session.useAudioOutput = true;
                 session.audioOutputStalled = false;
                 std::lock_guard<std::mutex> lock(mutex);
+                if (!isCurrentRun(run)) return false;
                 if (snapshot.message == "Audio output stalled; continuing without audio.") {
                     snapshot.message.clear();
                 }
@@ -943,26 +1203,29 @@ struct Player::Impl {
             if (!session.video) {
                 {
                     std::lock_guard<std::mutex> lock(mutex);
+                    if (!isCurrentRun(run)) return false;
                     noteDecodedProgressLocked(session);
                 }
-                paceAudioOnly(session.nextAudio);
+                paceAudioOnly(run, session.nextAudio);
             }
-            return !stopping.load() && !seekInterrupt.load() && !trackSwitchPending.load();
+            return isCurrentRun(run) && !run.seekInterrupt.load() && !run.trackSwitchPending.load();
         }
         auto stalledSince = Clock::now();
-        while (!stopping.load() && !seekInterrupt.load() && !trackSwitchPending.load()) {
+        while (isCurrentRun(run) && !run.seekInterrupt.load() && !run.trackSwitchPending.load()) {
             const auto waitStarted = Clock::now();
-            if (!waitActive(session.preview && session.video)) {
+            if (!waitActive(run, session.preview && session.video)) {
                 return false;
             }
             stalledSince += Clock::now() - waitStarted;
             if (queuedAudio() + static_cast<double>(count) / kAudioRate <= kMaxAudioSeconds &&
-                sink->queue(pcm.data() + skip * 2, count)) {
+                queueAudioForRun(run, pcm.data() + skip * 2, count)) {
                 std::lock_guard<std::mutex> lock(mutex);
+                if (!isCurrentRun(run)) return false;
                 commitAudioClockLocked(session, pts, samples);
                 return true;
             }
             std::unique_lock<std::mutex> lock(mutex);
+            if (!isCurrentRun(run)) return false;
             if (paused) {
                 stalledSince = Clock::now();
             } else if (Clock::now() - stalledSince > std::chrono::seconds(3)) {
@@ -972,7 +1235,7 @@ struct Player::Impl {
                 audioMaster = false;
                 snapshot.message = "Audio output stalled; continuing without audio.";
                 lock.unlock();
-                sink->clear();
+                clearSinkForRun(run);
                 return true;
             }
             changed.wait_for(lock, std::chrono::milliseconds(10));
@@ -980,10 +1243,11 @@ struct Player::Impl {
         return false;
     }
 
-    void paceAudioOnly(double until) {
+    void paceAudioOnly(const RunControl& run, double until) {
         std::unique_lock<std::mutex> lock(mutex);
+        if (!isCurrentRun(run)) return;
         startClockLocked(until);
-        while (!stopping.load() && !seekInterrupt.load() &&
+        while (isCurrentRun(run) && !run.seekInterrupt.load() &&
                (paused || clockLocked() + kMaxAudioSeconds < until)) {
             changed.wait_for(lock, std::chrono::milliseconds(10));
         }
@@ -1033,6 +1297,7 @@ struct Player::Impl {
     }
 
     void decodeSubtitle(Session& session, AVPacket* packet) {
+        auto& run = *session.run;
         AVSubtitle decoded{};
         int available = 0;
         const int result = avcodec_decode_subtitle2(session.subtitle, &decoded, &available, packet);
@@ -1057,6 +1322,10 @@ struct Player::Impl {
             }
             if (!text.empty() && std::isfinite(start) && std::isfinite(end) && end > start) {
                 std::lock_guard<std::mutex> lock(mutex);
+                if (!isCurrentRun(run)) {
+                    avsubtitle_free(&decoded);
+                    return;
+                }
                 while (!cues.empty() && (cues.front().end < clockLocked() || cues.size() >= 256)) {
                     cues.pop_front();
                 }
@@ -1067,18 +1336,20 @@ struct Player::Impl {
     }
 
     double takeSeek(Session& session) {
+        auto& run = *session.run;
         double target;
         int audio;
         int subtitle;
         {
             std::lock_guard<std::mutex> lock(mutex);
+            if (!isCurrentRun(run)) return kNoTime;
             target = seekTarget;
             audio = requestedAudio;
             subtitle = requestedSubtitle;
             seekTarget = kNoTime;
             requestedAudio = requestedSubtitle = -2;
-            seekInterrupt.store(false);
-            trackSwitchPending.store(false);
+            run.seekInterrupt.store(false);
+            run.trackSwitchPending.store(false);
         }
         if (audio != -2 && audio != session.audioIndex) {
             auto* decoder = openDecoder(session.streamParameters[audio], session.timeBases[audio]);
@@ -1092,31 +1363,50 @@ struct Player::Impl {
             if (!std::isfinite(target)) {
                 swr_free(&session.resampler);
                 session.lastRawAudio = kNoTime;
-                if (sink) sink->clear();
+                clearSinkForRun(run);
             }
             std::lock_guard<std::mutex> lock(mutex);
-            snapshot.audioTrack = audio;
-            if (!std::isfinite(target)) {
-                audioMaster = false;
-                audioEnd = kNoTime;
+            if (isCurrentRun(run)) {
+                snapshot.audioTrack = audio;
+                if (!std::isfinite(target)) {
+                    audioMaster = false;
+                    audioEnd = kNoTime;
+                }
             }
         }
         if (subtitle != -2 && subtitle != session.subtitleIndex) {
-            auto* decoder = subtitle >= 0 ? openDecoder(session.streamParameters[subtitle], session.timeBases[subtitle]) : nullptr;
+            auto* decoder = subtitle >= 0
+                ? openDecoder(session.streamParameters[subtitle], session.timeBases[subtitle])
+                : nullptr;
             avcodec_free_context(&session.subtitle);
             session.subtitle = decoder;
             session.subtitleIndex = subtitle;
-            std::lock_guard<std::mutex> lock(mutex);
-            snapshot.subtitleTrack = subtitle;
-            cues.clear();
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (isCurrentRun(run)) {
+                    snapshot.subtitleTrack = subtitle;
+                    cues.clear();
+                }
+            }
+            // Replay recently demuxed packets for the newly selected subtitle stream so active
+            // cues appear instantly without flushing video/audio decoders or seeking!
+            if (session.subtitle) {
+                for (const auto& cached : session.recentSubtitlePackets) {
+                    if (cached.packet && cached.packet->stream_index == session.subtitleIndex) {
+                        decodeSubtitle(session, cached.packet);
+                    }
+                }
+            }
         }
         return target;
     }
 
     void resetDecoders(Session& session, double target) {
+        auto& run = *session.run;
         if (session.video) avcodec_flush_buffers(session.video);
         if (session.audio) avcodec_flush_buffers(session.audio);
         if (session.subtitle) avcodec_flush_buffers(session.subtitle);
+        session.recentSubtitlePackets.clear();
         swr_free(&session.resampler);
         session.lastRawAudio = kNoTime;
         session.lastRawVideo = kNoTime;
@@ -1127,15 +1417,17 @@ struct Player::Impl {
         session.videoDecodeErrors = 0;
         session.audioDecodeErrors = 0;
         session.lastProgressAt = Clock::now();
-        resetOutput(target);
+        resetOutput(run, target);
         std::lock_guard<std::mutex> lock(mutex);
+        if (!isCurrentRun(run)) return;
         snapshot.state = paused ? State::Paused : State::Buffering;
         snapshot.message = "Seeking...";
         snapshot.rewindMessage.clear();
     }
 
     bool livePlaybackStalled(Session& session) {
-        if (!session.live || seekInterrupt.load()) {
+        auto& run = *session.run;
+        if (!session.live || run.seekInterrupt.load()) {
             return false;
         }
         bool isPaused = false;
@@ -1151,6 +1443,7 @@ struct Player::Impl {
     }
 
     void processSeek(Session& session) {
+        auto& run = *session.run;
         const double target = takeSeek(session);
         if (!std::isfinite(target)) {
             return;
@@ -1160,13 +1453,15 @@ struct Player::Impl {
             session.format->pb->error = 0;
             session.format->pb->eof_reached = 0;
         }
-        beginIo();
+        run.beginIo();
         const int result = avformat_seek_file(session.format, -1, INT64_MIN,
             static_cast<std::int64_t>(absolute * AV_TIME_BASE), INT64_MAX, AVSEEK_FLAG_BACKWARD);
-        endIo();
+        run.endIo();
         if (result < 0) {
             std::lock_guard<std::mutex> lock(mutex);
-            snapshot.message = "This source does not support seeking: " + avError(result);
+            if (isCurrentRun(run)) {
+                snapshot.message = "This source does not support seeking: " + avError(result);
+            }
             return;
         }
         session.setOffsets(0.0);
@@ -1180,35 +1475,44 @@ struct Player::Impl {
         if (session.packet->stream_index == session.audioIndex) {
             return decodePacket(session, session.audio, true, session.packet);
         }
-        if (session.subtitle && session.packet->stream_index == session.subtitleIndex) {
-            decodeSubtitle(session, session.packet);
+        if (session.textSubtitleStreams.count(session.packet->stream_index) != 0) {
+            if (session.packet->size >= 0 && session.packet->size <= kMaxCachedSubPacketBytes) {
+                while (session.recentSubtitlePackets.size() >= kMaxRecentSubPackets) {
+                    session.recentSubtitlePackets.pop_front();
+                }
+                session.recentSubtitlePackets.emplace_back(session.packet);
+            }
+            if (session.subtitle && session.packet->stream_index == session.subtitleIndex) {
+                decodeSubtitle(session, session.packet);
+            }
         }
         return true;
     }
 
     int playDirectSession(Session& session) {
+        auto& run = *session.run;
         session.lastProgressAt = Clock::now();
         for (;;) {
-            if (stopping.load()) {
+            if (!isCurrentRun(run)) {
                 return AVERROR_EXIT;
             }
-            if (seekInterrupt.load() || trackSwitchPending.load()) {
+            if (run.seekInterrupt.load() || run.trackSwitchPending.load()) {
                 processSeek(session);
             }
             const auto beforeWait = Clock::now();
-            if (!waitActive(session.preview)) {
+            if (!waitActive(run, session.preview)) {
                 continue;
             }
             if (Clock::now() - beforeWait > std::chrono::milliseconds(50)) {
                 session.lastProgressAt = Clock::now();
             }
-            beginIo();
+            run.beginIo();
             const int result = av_read_frame(session.format, session.packet);
-            endIo();
-            if (stopping.load()) {
+            run.endIo();
+            if (!isCurrentRun(run)) {
                 return AVERROR_EXIT;
             }
-            if (seekInterrupt.load()) {
+            if (run.seekInterrupt.load()) {
                 av_packet_unref(session.packet);
                 continue;
             }
@@ -1221,7 +1525,7 @@ struct Player::Impl {
             }
             const bool keepGoing = consumePacket(session);
             av_packet_unref(session.packet);
-            if (!keepGoing && stopping.load()) {
+            if (!keepGoing && !isCurrentRun(run)) {
                 return AVERROR_EXIT;
             }
             if (livePlaybackStalled(session)) {
@@ -1231,6 +1535,7 @@ struct Player::Impl {
     }
 
     int playLiveSession(Session& session) {
+        auto& run = *session.run;
         std::unique_ptr<PacketSpool> spool;
         try {
             spool = std::make_unique<PacketSpool>();
@@ -1242,27 +1547,28 @@ struct Player::Impl {
         session.origin = 0.0;
         session.setOffsets(0.0);
         session.lastProgressAt = Clock::now();
-        capturingLive.store(true);
-        captureStopping.store(false);
+        run.capturingLive.store(true);
+        run.captureStopping.store(false);
         int captureResult = AVERROR_EOF;
         bool storageFailed = false;
         struct Capture {
             Impl& owner;
+            RunControl& run;
             Session& session;
             double origin;
             double offset;
             std::thread thread;
             void stop() {
-                owner.captureStopping.store(true);
+                run.captureStopping.store(true);
                 owner.changed.notify_all();
                 if (thread.joinable()) thread.join();
-                owner.capturingLive.store(false);
-                owner.captureStopping.store(false);
+                run.capturingLive.store(false);
+                run.captureStopping.store(false);
                 session.origin = origin;
                 session.setOffsets(offset);
             }
             ~Capture() { stop(); }
-        } capture{*this, session, initialOrigin, initialOffset, {}};
+        } capture{*this, run, session, initialOrigin, initialOffset, {}};
         capture.thread = std::thread([&] {
             AVPacket* packet = av_packet_alloc();
             double origin = initialOrigin;
@@ -1270,12 +1576,14 @@ struct Player::Impl {
             std::vector<double> previous(session.timeBases.size(), kNoTime);
             std::vector<double> streamOffsets(session.timeBases.size(), initialOffset);
             auto waitingForKeyframe = Clock::now();
+            auto lastSnapshotUpdate = Clock::time_point{};
+            bool hadRecordedBytes = false;
             try {
                 if (!packet) throw RewindUnavailable("Cannot allocate the live recorder buffer.");
-                while (!stopping.load() && !captureStopping.load()) {
-                    beginIo();
+                while (isCurrentRun(run) && !run.captureStopping.load()) {
+                    run.beginIo();
                     captureResult = av_read_frame(session.format, packet);
-                    endIo();
+                    run.endIo();
                     if (captureResult < 0) break;
                     if (packet->size > 64 * 1024 * 1024) {
                         throw RewindUnavailable("A live packet exceeds the recording limit.");
@@ -1348,35 +1656,48 @@ struct Player::Impl {
                         throw RewindUnavailable("The live recorder cannot retain a complete video keyframe group within its storage limit.");
                     }
                     av_packet_unref(packet);
-                    const auto saved = spool->snapshot();
-                    if (saved.bytes > 0) waitingForKeyframe = Clock::now();
-                    else if (Clock::now() - waitingForKeyframe > std::chrono::seconds(12)) {
-                        throw RewindUnavailable("The live source does not provide recordable keyframes.");
+
+                    // Throttle snapshot updates to keyframes, first recorded packet, or every 250 ms.
+                    const auto now = Clock::now();
+                    if (!hadRecordedBytes || keyframe || now - lastSnapshotUpdate >= kSnapshotThrottle) {
+                        lastSnapshotUpdate = now;
+                        const auto saved = spool->snapshot();
+                        if (saved.bytes > 0) {
+                            hadRecordedBytes = true;
+                            waitingForKeyframe = now;
+                        } else if (now - waitingForKeyframe > std::chrono::seconds(12)) {
+                            throw RewindUnavailable("The live source does not provide recordable keyframes.");
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            if (isCurrentRun(run)) {
+                                snapshot.liveRewind = saved.bytes > 0;
+                                snapshot.windowStartSeconds = saved.startSeconds;
+                                snapshot.windowEndSeconds = saved.endSeconds;
+                                snapshot.recordedBytes = saved.bytes;
+                                static constexpr const char* kFilling =
+                                    "Waiting for a video keyframe to resume live recording.";
+                                if (saved.bytes == 0) snapshot.rewindMessage = kFilling;
+                                else if (snapshot.rewindMessage == kFilling) snapshot.rewindMessage.clear();
+                            }
+                        }
                     }
-                    {
-                        std::lock_guard<std::mutex> lock(mutex);
-                        snapshot.liveRewind = saved.bytes > 0;
-                        snapshot.windowStartSeconds = saved.startSeconds;
-                        snapshot.windowEndSeconds = saved.endSeconds;
-                        snapshot.recordedBytes = saved.bytes;
-                        const std::string filling = "Waiting for a video keyframe to resume live recording.";
-                        if (saved.bytes == 0) snapshot.rewindMessage = filling;
-                        else if (snapshot.rewindMessage == filling) snapshot.rewindMessage.clear();
+                    if (run.waitingForSpool.exchange(false, std::memory_order_acq_rel)) {
+                        changed.notify_one();
                     }
-                    changed.notify_all();
                 }
             } catch (const std::exception&) {
                 storageFailed = true;
             }
             av_packet_free(&packet);
-            endIo();
+            run.endIo();
             spool->close();
             changed.notify_all();
         });
         std::uint64_t cursor = 0;
         for (;;) {
-            if (stopping.load()) return AVERROR_EXIT;
-            if (seekInterrupt.load() || trackSwitchPending.load()) {
+            if (!isCurrentRun(run)) return AVERROR_EXIT;
+            if (run.seekInterrupt.load() || run.trackSwitchPending.load()) {
                 const double target = takeSeek(session);
                 if (std::isfinite(target)) {
                     cursor = spool->seek(target);
@@ -1384,7 +1705,7 @@ struct Player::Impl {
                 }
             }
             const auto beforeWait = Clock::now();
-            if (!waitActive(session.preview)) continue;
+            if (!waitActive(run, session.preview)) continue;
             if (Clock::now() - beforeWait > std::chrono::milliseconds(50)) {
                 session.lastProgressAt = Clock::now();
             }
@@ -1398,7 +1719,9 @@ struct Player::Impl {
                 const auto saved = spool->snapshot();
                 resetDecoders(session, saved.startSeconds);
                 std::lock_guard<std::mutex> lock(mutex);
-                snapshot.rewindMessage = "Your pause exceeded the saved window. Playback moved to the earliest saved point.";
+                if (isCurrentRun(run)) {
+                    snapshot.rewindMessage = "Your pause exceeded the saved window. Playback moved to the earliest saved point.";
+                }
                 continue;
             }
             if (result == PacketSpool::ReadResult::Waiting) {
@@ -1407,7 +1730,9 @@ struct Player::Impl {
                     throw std::runtime_error("Live playback stalled without decoded frames.");
                 }
                 std::unique_lock<std::mutex> lock(mutex);
+                run.waitingForSpool.store(true, std::memory_order_release);
                 changed.wait_for(lock, std::chrono::milliseconds(10));
+                run.waitingForSpool.store(false, std::memory_order_relaxed);
                 continue;
             }
             if (result == PacketSpool::ReadResult::Finished) {
@@ -1425,6 +1750,7 @@ struct Player::Impl {
     }
 
     int playSession(Session& session) {
+        auto& run = *session.run;
         if (!session.live) return playDirectSession(session);
         try {
             return playLiveSession(session);
@@ -1432,6 +1758,7 @@ struct Player::Impl {
             double current;
             {
                 std::lock_guard<std::mutex> lock(mutex);
+                if (!isCurrentRun(run)) return AVERROR_EXIT;
                 current = std::max(clockLocked(), snapshot.windowEndSeconds);
             }
             resetDecoders(session, current);
@@ -1445,17 +1772,19 @@ struct Player::Impl {
             }
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                snapshot.liveRewind = false;
-                snapshot.recordedBytes = 0;
-                snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
-                snapshot.rewindMessage = std::string(error.what()) + " Continuing with direct playback.";
+                if (isCurrentRun(run)) {
+                    snapshot.liveRewind = false;
+                    snapshot.recordedBytes = 0;
+                    snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+                    snapshot.rewindMessage = std::string(error.what()) + " Continuing with direct playback.";
+                }
             }
             return playDirectSession(session);
         }
     }
 
-
     void finishPlayback(Session& session) {
+        auto& run = *session.run;
         if (session.video && !decodePacket(session, session.video, false, nullptr)) {
             return;
         }
@@ -1463,11 +1792,11 @@ struct Player::Impl {
             return;
         }
         std::unique_lock<std::mutex> lock(mutex);
-        while (!stopping.load() && !seekInterrupt.load() &&
+        while (isCurrentRun(run) && !run.seekInterrupt.load() &&
                (!frames.empty() || (session.useAudioOutput && queuedAudio() > 0.025))) {
             changed.wait_for(lock, std::chrono::milliseconds(10));
         }
-        if (!stopping.load() && !seekInterrupt.load()) {
+        if (isCurrentRun(run) && !run.seekInterrupt.load()) {
             clockBase = clockLocked();
             lastClock = clockBase;
             clockStarted = false;
@@ -1476,7 +1805,8 @@ struct Player::Impl {
         }
     }
 
-    void run(std::string url, bool live, RequestOptions request) {
+    void runWorker(std::shared_ptr<RunControl> run, std::string url, bool live,
+                   RequestOptions request, double startSeconds) {
         const std::string primaryUrl = url;
         const auto alternateUrl = live ? alternateXtreamLiveUrl(primaryUrl) : std::nullopt;
         std::string activeUrl = primaryUrl;
@@ -1491,37 +1821,43 @@ struct Player::Impl {
         int failures = 0;
         int failuresOnActive = 0;
         bool everOpened = false;
-        double resumePosition = 0.0;
+        double resumePosition = (!live && std::isfinite(startSeconds) && startSeconds > 0.0)
+            ? startSeconds : 0.0;
         std::mt19937 rng(static_cast<std::uint32_t>(
             Clock::now().time_since_epoch().count() ^ 0x9e3779b9U));
         std::uniform_real_distribution<double> jitterDist(0.0, 1.0);
         try {
             if (sink) {
-                sink->clear();
+                clearSinkForRun(*run);
                 std::lock_guard<std::mutex> lock(mutex);
-                sink->setPaused(paused);
+                if (isCurrentRun(*run)) {
+                    std::lock_guard<std::mutex> sinkLock(sinkMutex);
+                    if (activeRunId.load(std::memory_order_acquire) == run->id) {
+                        sink->setPaused(paused);
+                    }
+                }
             }
-            while (!stopping.load()) {
+            while (isCurrentRun(*run)) {
                 int result = AVERROR_UNKNOWN;
                 std::string failure;
                 bool sessionHadFirstFrame = false;
                 double healthySeconds = 0.0;
                 {
                     Session session;
-                    session.ioDeadline = &deadline;
+                    session.run = run;
                     try {
                         if (openSource(session, activeUrl, live, live || everOpened, resumePosition, request)) {
                             everOpened = true;
                             result = playSession(session);
-                            if (!stopping.load()) {
+                            if (isCurrentRun(*run)) {
                                 if (result == AVERROR_EOF && !live) {
                                     finishPlayback(session);
-                                    while (!stopping.load()) {
+                                    while (isCurrentRun(*run)) {
                                         std::unique_lock<std::mutex> lock(mutex);
                                         changed.wait(lock, [&] {
-                                            return stopping.load() || seekInterrupt.load();
+                                            return !isCurrentRun(*run) || run->seekInterrupt.load();
                                         });
-                                        if (stopping.load()) {
+                                        if (!isCurrentRun(*run)) {
                                             break;
                                         }
                                         lock.unlock();
@@ -1534,7 +1870,7 @@ struct Player::Impl {
                                         }
                                     }
                                 }
-                                if (!stopping.load()) {
+                                if (isCurrentRun(*run)) {
                                     failure = result == AVERROR_EOF
                                         ? "The live source closed its connection."
                                         : "Source read failed: " + avError(result);
@@ -1552,12 +1888,14 @@ struct Player::Impl {
                     if (live && alternateUrl && sessionHadFirstFrame && healthySeconds >= 10.0) {
                         workingFormatCache.remember(primaryUrl, activeUrl);
                     }
-                    sourceOpened = false;
-                    snapshot.liveRewind = false;
-                    snapshot.recordedBytes = 0;
-                    snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+                    if (isCurrentRun(*run)) {
+                        sourceOpened = false;
+                        snapshot.liveRewind = false;
+                        snapshot.recordedBytes = 0;
+                        snapshot.windowStartSeconds = snapshot.windowEndSeconds = 0.0;
+                    }
                 }
-                if (stopping.load()) {
+                if (!isCurrentRun(*run)) {
                     break;
                 }
                 const auto decision = ReconnectPolicy::evaluate(
@@ -1573,45 +1911,65 @@ struct Player::Impl {
                 }
                 {
                     std::lock_guard<std::mutex> lock(mutex);
+                    if (!isCurrentRun(*run)) break;
                     resumePosition = clockLocked();
                     snapshot.state = paused ? State::Paused : State::Buffering;
                     snapshot.message = "Reconnecting (" + std::to_string(failures) + "/" +
                         std::to_string(decision.maxFailures) + ")...";
                 }
-                resetOutput(resumePosition);
+                resetOutput(*run, resumePosition);
                 std::unique_lock<std::mutex> lock(mutex);
                 changed.wait_for(lock, std::chrono::milliseconds(decision.backoffMs),
-                                 [&] { return stopping.load(); });
+                                 [&] { return !isCurrentRun(*run); });
             }
         } catch (const std::exception& error) {
             std::lock_guard<std::mutex> lock(mutex);
-            clockBase = clockLocked();
-            clockStarted = false;
-            sourceOpened = false;
-            snapshot.state = State::Error;
-            snapshot.message = error.what();
+            if (isCurrentRun(*run)) {
+                clockBase = clockLocked();
+                clockStarted = false;
+                sourceOpened = false;
+                snapshot.state = State::Error;
+                snapshot.message = error.what();
+            }
         } catch (...) {
             std::lock_guard<std::mutex> lock(mutex);
-            snapshot.state = State::Error;
-            snapshot.message = "Unexpected media playback failure.";
-            clockStarted = false;
-            sourceOpened = false;
+            if (isCurrentRun(*run)) {
+                snapshot.state = State::Error;
+                snapshot.message = "Unexpected media playback failure.";
+                clockStarted = false;
+                sourceOpened = false;
+            }
         }
-        endIo();
-        if (sink) {
-            sink->clear();
-        }
+        run->endIo();
+        clearSinkForRun(*run);
         changed.notify_all();
     }
 
     void stopLocked() {
-        stopping.store(true);
+        // Signal the current run to abort immediately and retire its worker thread
+        // asynchronously to the background reaper so the UI thread never freezes.
+        if (activeRun) {
+            activeRun->stopping.store(true, std::memory_order_release);
+            activeRun->captureStopping.store(true, std::memory_order_release);
+            activeRun->deadline.store(1, std::memory_order_relaxed);
+        }
+        activeRunId.fetch_add(1, std::memory_order_acq_rel);
         changed.notify_all();
         if (worker.joinable()) {
-            worker.join();
+            std::lock_guard<std::mutex> rlock(reaperMutex);
+            retiredWorkers.push_back(std::move(worker));
+            reaperCv.notify_one();
+        }
+        activeRun.reset();
+        if (sink) {
+            std::lock_guard<std::mutex> slock(sinkMutex);
+            sink->clear();
         }
         std::lock_guard<std::mutex> lock(mutex);
-        frames.clear();
+        while (!frames.empty()) {
+            recycleFrameLocked(std::move(frames.front()));
+            frames.pop_front();
+        }
         cues.clear();
         snapshot = {};
         snapshot.volume = volume.load();
@@ -1624,8 +1982,6 @@ struct Player::Impl {
         lastClock = 0.0;
         seekTarget = kNoTime;
         requestedAudio = requestedSubtitle = -2;
-        seekInterrupt.store(false);
-        trackSwitchPending.store(false);
         isLive.store(false);
         ++serial;
     }
@@ -1634,15 +1990,15 @@ struct Player::Impl {
 Player::Player(std::shared_ptr<AudioSink> audioSink)
     : impl_(std::make_unique<Impl>(std::move(audioSink))) {}
 
-Player::~Player() {
-    stop();
-}
+Player::~Player() = default;
 
 void Player::open(const std::string& url, bool live,
-                  const std::unordered_map<std::string, std::string>& requestHeaders) {
+                  const std::unordered_map<std::string, std::string>& requestHeaders,
+                  double startSeconds) {
     std::lock_guard<std::mutex> lifecycle(impl_->lifecycle);
     impl_->stopLocked();
     RequestOptions request;
+    std::shared_ptr<RunControl> run;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->isLive.store(live);
@@ -1660,11 +2016,15 @@ void Player::open(const std::string& url, bool live,
             impl_->snapshot.message = error.what();
             return;
         }
+        run = std::make_shared<RunControl>();
+        run->id = impl_->activeRunId.fetch_add(1, std::memory_order_acq_rel) + 1;
+        impl_->activeRun = run;
         impl_->snapshot.state = State::Opening;
         impl_->snapshot.message = "Opening source...";
-        impl_->stopping.store(false);
     }
-    impl_->worker = std::thread([this, url, live, request] { impl_->run(url, live, request); });
+    impl_->worker = std::thread([this, run, url, live, request, startSeconds] {
+        impl_->runWorker(run, url, live, request, startSeconds);
+    });
 }
 
 void Player::stop() {
@@ -1694,6 +2054,7 @@ void Player::setPaused(bool paused) {
                 : (impl_->clockStarted ? State::Playing : State::Buffering);
         }
         if (impl_->sink) {
+            std::lock_guard<std::mutex> slock(impl_->sinkMutex);
             impl_->sink->setPaused(paused);
         }
     }
@@ -1715,7 +2076,7 @@ void Player::seekRelative(double seconds) {
     }
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->snapshot.state == State::Idle || impl_->snapshot.state == State::Error ||
-        impl_->snapshot.state == State::Opening) {
+        impl_->snapshot.state == State::Opening || !impl_->activeRun) {
         return;
     }
     if (impl_->snapshot.live) {
@@ -1731,14 +2092,14 @@ void Player::seekRelative(double seconds) {
             : std::numeric_limits<double>::max();
         impl_->seekTarget = std::clamp(impl_->clockLocked() + seconds, 0.0, upper);
     }
-    impl_->seekInterrupt.store(true);
+    impl_->activeRun->seekInterrupt.store(true);
     impl_->changed.notify_all();
 }
 
 void Player::goLive() {
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (!impl_->snapshot.live || !impl_->snapshot.liveRewind ||
+        if (!impl_->snapshot.live || !impl_->snapshot.liveRewind || !impl_->activeRun ||
             impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
         impl_->seekTarget = std::max(impl_->snapshot.windowStartSeconds,
             impl_->snapshot.windowEndSeconds - 0.5);
@@ -1749,8 +2110,11 @@ void Player::goLive() {
             impl_->paused = false;
             ++impl_->pauseEpoch;
         }
-        if (impl_->sink) impl_->sink->setPaused(false);
-        impl_->seekInterrupt.store(true);
+        if (impl_->sink) {
+            std::lock_guard<std::mutex> slock(impl_->sinkMutex);
+            impl_->sink->setPaused(false);
+        }
+        impl_->activeRun->seekInterrupt.store(true);
     }
     impl_->changed.notify_all();
 }
@@ -1758,7 +2122,7 @@ void Player::goLive() {
 void Player::cycleAudioTrack() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto& tracks = impl_->snapshot.audioTracks;
-    if (tracks.size() < 2 || impl_->snapshot.state == State::Opening ||
+    if (tracks.size() < 2 || !impl_->activeRun || impl_->snapshot.state == State::Opening ||
         impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
     const int current = impl_->requestedAudio == -2 ? impl_->snapshot.audioTrack : impl_->requestedAudio;
     auto selected = std::find_if(tracks.begin(), tracks.end(), [current](const Track& track) { return track.id == current; });
@@ -1766,9 +2130,9 @@ void Player::cycleAudioTrack() {
     impl_->requestedAudio = selected->id;
     if (!impl_->snapshot.live || impl_->snapshot.liveRewind) {
         impl_->seekTarget = impl_->clockLocked();
-        impl_->seekInterrupt.store(true);
+        impl_->activeRun->seekInterrupt.store(true);
     } else {
-        impl_->trackSwitchPending.store(true);
+        impl_->activeRun->trackSwitchPending.store(true);
     }
     impl_->changed.notify_all();
 }
@@ -1776,18 +2140,14 @@ void Player::cycleAudioTrack() {
 void Player::cycleSubtitleTrack() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     const auto& tracks = impl_->snapshot.subtitleTracks;
-    if (tracks.empty() || impl_->snapshot.state == State::Opening ||
+    if (tracks.empty() || !impl_->activeRun || impl_->snapshot.state == State::Opening ||
         impl_->snapshot.state == State::Error || impl_->snapshot.state == State::Idle) return;
     const int current = impl_->requestedSubtitle == -2 ? impl_->snapshot.subtitleTrack : impl_->requestedSubtitle;
     auto selected = std::find_if(tracks.begin(), tracks.end(), [current](const Track& track) { return track.id == current; });
     if (selected == tracks.end()) impl_->requestedSubtitle = tracks.front().id;
     else impl_->requestedSubtitle = ++selected == tracks.end() ? -1 : selected->id;
-    if (!impl_->snapshot.live || impl_->snapshot.liveRewind) {
-        impl_->seekTarget = impl_->clockLocked();
-        impl_->seekInterrupt.store(true);
-    } else {
-        impl_->trackSwitchPending.store(true);
-    }
+    // Switch subtitle decoder seamlessly without flushing video/audio decoders or seeking.
+    impl_->activeRun->trackSwitchPending.store(true);
     impl_->changed.notify_all();
 }
 
@@ -1795,6 +2155,10 @@ void Player::setVolume(float volume) {
     if (std::isfinite(volume)) {
         impl_->volume.store(std::clamp(volume, 0.0F, 1.0F));
     }
+}
+
+void Player::setPreferYuv(bool preferYuv) {
+    impl_->preferYuv.store(preferYuv, std::memory_order_relaxed);
 }
 
 void Player::clearFormatCache() {
@@ -1828,13 +2192,21 @@ bool Player::takeFrame(VideoFrame& frame) {
     }
     while (impl_->frames.size() > 1 &&
            impl_->frames[1].ptsSeconds <= position + tolerance) {
+        impl_->recycleFrameLocked(std::move(impl_->frames.front()));
         impl_->frames.pop_front();
         ++impl_->snapshot.droppedFrames;
     }
+    // Recycle caller's previously rendered buffers into the decoder frame pool.
+    impl_->recycleFrameLocked(std::move(frame));
     frame = std::move(impl_->frames.front());
     impl_->frames.pop_front();
-    impl_->changed.notify_all();
+    impl_->changed.notify_one();
     return true;
+}
+
+void Player::recycleFrame(VideoFrame&& frame) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->recycleFrameLocked(std::move(frame));
 }
 
 } // namespace brutv

@@ -224,6 +224,84 @@ void lruAndByteBudget() {
             "Byte-evicted artwork could not reload when revisited");
   }
 }
+
+void lifoPriorityNegativeTtlAndReleaseCpu() {
+  // 1. LIFO visible-priority evicts oldest queued off-screen request when full.
+  {
+    Gate gate;
+    std::mutex urlMutex;
+    std::vector<std::string> fetched;
+    brutv::ArtworkCache cache([&](const std::string &url) {
+      {
+        std::lock_guard<std::mutex> lock(urlMutex);
+        fetched.push_back(url);
+      }
+      return gate.fetch(url);
+    });
+    cache.request("https://test.invalid/active0");
+    cache.request("https://test.invalid/active1");
+    gate.waitForTwo();
+    for (int i = 0; i < 40; ++i)
+      cache.request("https://test.invalid/queued" + std::to_string(i));
+    gate.release();
+    waitUntil([&] {
+      std::lock_guard<std::mutex> lock(gate.mutex);
+      return gate.calls == 34 && gate.active == 0;
+    });
+    std::lock_guard<std::mutex> lock(urlMutex);
+    const bool gotNewest =
+        std::find(fetched.begin(), fetched.end(), "https://test.invalid/queued39") !=
+        fetched.end();
+    const bool droppedOldest =
+        std::find(fetched.begin(), fetched.end(), "https://test.invalid/queued0") ==
+        fetched.end();
+    require(gotNewest && droppedOldest,
+            "Artwork queue did not prioritize newest visible requests (LIFO)");
+  }
+
+  // 2. Negative-cache TTL retries after expiry and succeeds when server recovers.
+  {
+    const auto validPng = png(4, 4);
+    std::atomic<int> attempts{0};
+    brutv::ArtworkCache cache(
+        [&](const std::string &) {
+          if (++attempts == 1)
+            return std::string("broken");
+          return validPng;
+        },
+        std::chrono::seconds(1));
+    cache.request("https://test.invalid/flaky.png");
+    waitUntil([&] { return attempts.load() == 1; });
+    std::this_thread::sleep_for(50ms);
+    require(!cache.request("https://test.invalid/flaky.png"),
+            "Failed artwork unexpectedly returned an image");
+    require(attempts.load() == 1, "Failed artwork retried before negative TTL");
+    std::this_thread::sleep_for(1050ms);
+    const auto recovered = loaded(cache, "https://test.invalid/flaky.png");
+    require(recovered && recovered->width == 4 && attempts.load() == 2,
+            "Failed artwork did not retry after negative-cache TTL expired");
+  }
+
+  // 3. releaseCpu() frees CPU RGBA memory and allows reload if GPU later evicts.
+  {
+    const auto bytes = png(64, 64);
+    std::atomic<int> calls{0};
+    brutv::ArtworkCache cache([&](const std::string &) {
+      ++calls;
+      return bytes;
+    });
+    std::weak_ptr<const brutv::ArtworkImage> weakRef;
+    {
+      auto img = loaded(cache, "https://test.invalid/gpu-uploaded.png");
+      weakRef = img;
+      cache.releaseCpu("https://test.invalid/gpu-uploaded.png");
+    }
+    require(weakRef.expired(), "releaseCpu() did not free CPU RGBA buffer");
+    const auto reloaded = loaded(cache, "https://test.invalid/gpu-uploaded.png");
+    require(reloaded && calls.load() == 2,
+            "Released artwork could not be re-fetched after GPU eviction");
+  }
+}
 } // namespace
 
 int main() {
@@ -236,6 +314,7 @@ int main() {
     boundedQueueAndNonblockingRequest();
     cancelsQueuedOnDestruction();
     lruAndByteBudget();
+    lifoPriorityNegativeTtlAndReleaseCpu();
     std::cout << "Artwork decode, queue, failure, and cache checks passed\n";
     return 0;
   } catch (const std::exception &error) {

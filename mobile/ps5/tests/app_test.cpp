@@ -231,27 +231,30 @@ int main() {
             brutv::Settings settings;
             settings.source = original;
             store.save(settings);
-            brutv::App app(*platform, gfx, file, [&](const std::string &url) -> std::string {
-                if (url.find("action=get_live_categories") != std::string::npos)
-                    return R"([{"category_id":"1","category_name":"General"}])";
-                if (url.find("action=get_live_streams") != std::string::npos)
-                    return R"([{"stream_id":10,"name":"Cafe Live","category_id":"1"},{"stream_id":11,"name":"Zebra Live","category_id":"1"}])";
-                return response(url);
-            });
-            pump(app);
-            key(app, brutv::Key::Right, 2); // Focus Items
-            app.handle({{}, "Caf\xC3\xA9"}); // "Café" (2-byte UTF-8 'é') -> 0 matches
-            key(app, brutv::Key::Confirm);
-            require(store.load().recentsBySource.empty(),
-                    "Non-matching UTF-8 search query unexpectedly launched an item");
-            key(app, brutv::Key::Backspace); // Must erase full 'é' -> "Caf"
-            key(app, brutv::Key::Confirm);   // Must launch "Cafe Live"
+            {
+                brutv::App app(*platform, gfx, file, [&](const std::string &url) -> std::string {
+                    if (url.find("action=get_live_categories") != std::string::npos)
+                        return R"([{"category_id":"1","category_name":"General"}])";
+                    if (url.find("action=get_live_streams") != std::string::npos)
+                        return R"([{"stream_id":10,"name":"Cafe Live","category_id":"1"},{"stream_id":11,"name":"Zebra Live","category_id":"1"}])";
+                    return response(url);
+                });
+                pump(app);
+                key(app, brutv::Key::Right, 2); // Focus Items
+                app.handle({{}, "Caf\xC3\xA9"}); // "Café" (2-byte UTF-8 'é') -> 0 matches
+                key(app, brutv::Key::Confirm);
+                require(store.load().recentsBySource.empty(),
+                        "Non-matching UTF-8 search query unexpectedly launched an item");
+                key(app, brutv::Key::Backspace); // Must erase full 'é' -> "Caf"
+                key(app, brutv::Key::Confirm);   // Must launch "Cafe Live"
+                // Debounced recent save avoids fsync on UI thread; flushed on app teardown.
+                key(app, brutv::Key::Back);
+            }
             const auto saved = store.load();
             require(saved.recentsBySource.count(original.id) == 1 &&
                         !saved.recentsBySource.at(original.id).empty() &&
                         saved.recentsBySource.at(original.id).front().title == "Cafe Live",
                     "UTF-8 backspace corrupted search query instead of erasing full codepoint");
-            key(app, brutv::Key::Back);
         }
         // Test: Cached visibleItems avoids per-frame O(N log N) sorting and invalidates on edits.
         {
@@ -270,30 +273,35 @@ int main() {
             }
             streams << ']';
             const std::string streamsJson = streams.str();
-            brutv::App app(*platform, gfx, file, [&](const std::string &url) -> std::string {
-                if (url.find("action=get_live_categories") != std::string::npos)
-                    return R"([{"category_id":"1","category_name":"Cat 1"},{"category_id":"2","category_name":"Cat 2"},{"category_id":"3","category_name":"Cat 3"},{"category_id":"4","category_name":"Cat 4"}])";
-                if (url.find("action=get_live_streams") != std::string::npos)
-                    return streamsJson;
-                return response(url);
-            });
-            pump(app);
-            key(app, brutv::Key::Right, 2); // Focus Items
-            const auto start = std::chrono::steady_clock::now();
-            for (int step = 0; step < 200; ++step) {
-                key(app, step % 2 == 0 ? brutv::Key::Right : brutv::Key::Left);
+            {
+                brutv::App app(*platform, gfx, file, [&](const std::string &url) -> std::string {
+                    if (url.find("action=get_live_categories") != std::string::npos)
+                        return R"([{"category_id":"1","category_name":"Cat 1"},{"category_id":"2","category_name":"Cat 2"},{"category_id":"3","category_name":"Cat 3"},{"category_id":"4","category_name":"Cat 4"}])";
+                    if (url.find("action=get_live_streams") != std::string::npos)
+                        return streamsJson;
+                    return response(url);
+                });
+                pump(app);
+                key(app, brutv::Key::Right, 2); // Focus Items
+                const auto start = std::chrono::steady_clock::now();
+                for (int step = 0; step < 200; ++step) {
+                    key(app, step % 2 == 0 ? brutv::Key::Right : brutv::Key::Left);
+                }
+                const auto elapsed = std::chrono::steady_clock::now() - start;
+                require(elapsed < std::chrono::milliseconds(1000),
+                        "visibleItems navigation across 4000 items was unexpectedly slow (cache miss)");
+                // L2 / R2 page navigation in browse mode.
+                key(app, brutv::Key::Forward);
+                key(app, brutv::Key::Rewind);
+                // Search invalidates cache and selects exact item.
+                app.handle({{}, "Channel 3999"});
+                key(app, brutv::Key::Confirm);
+                key(app, brutv::Key::Back);
             }
-            const auto elapsed = std::chrono::steady_clock::now() - start;
-            require(elapsed < std::chrono::milliseconds(1000),
-                    "visibleItems navigation across 4000 items was unexpectedly slow (cache miss)");
-            // Search invalidates cache and selects exact item.
-            app.handle({{}, "Channel 3999"});
-            key(app, brutv::Key::Confirm);
             const auto afterSearch = store.load();
             require(afterSearch.recentsBySource.count(original.id) == 1 &&
                         afterSearch.recentsBySource.at(original.id).front().title == "Channel 3999",
                     "Search query did not invalidate cached visibleItems");
-            key(app, brutv::Key::Back);
         }
         // Test: Debounced volume save flushes final volume cleanly on app teardown.
         {
@@ -317,8 +325,47 @@ int main() {
             require(std::abs(store.load().volume - 0.80F) < 0.01F,
                     "Debounced volume change was not persisted on shutdown");
         }
+        // Test: OSK wrap + DualSense shortcuts (Triangle=Space, Square=Delete, Options=Done) + GPU YUV & Unicode render.
+        {
+            const auto file = std::string(folder) + "/osk-and-gfx.json";
+            brutv::SettingsStore store(file);
+            brutv::Settings settings;
+            settings.source = original;
+            store.save(settings);
+            brutv::App app(*platform, gfx, file, response);
+            pump(app);
+            key(app, brutv::Key::Options);
+            key(app, brutv::Key::Down, 1); // Source name field
+            key(app, brutv::Key::Confirm); // Open OSK
+            // Move Left from col 0 -> wraps to last col ('0'), press Confirm -> appends '0'.
+            key(app, brutv::Key::Left);
+            key(app, brutv::Key::Confirm);
+            // Triangle -> Space, Confirm -> '0', Square -> Delete last '0', Options -> Done.
+            key(app, brutv::Key::Search);
+            key(app, brutv::Key::Confirm);
+            key(app, brutv::Key::Favorite);
+            key(app, brutv::Key::Options);
+            const auto updated = store.load();
+            require(updated.source && updated.source->name.size() >= 2 &&
+                        updated.source->name.substr(updated.source->name.size() - 2) == "0 ",
+                    "OSK wrap or DualSense shortcuts (Triangle/Square/Options) failed");
+
+            // Smoke test GPU YUV420P shader upload + draw, Unicode punctuation, and hasImage.
+            std::vector<std::uint8_t> yPlane(64 * 64, 180);
+            std::vector<std::uint8_t> uPlane(32 * 32, 128);
+            std::vector<std::uint8_t> vPlane(32 * 32, 128);
+            std::vector<std::uint8_t> rgbaImg(16 * 16 * 4, 200);
+            gfx.begin(1280, 720);
+            gfx.videoYuv(yPlane.data(), uPlane.data(), vPlane.data(), 64, 64, 64, 64, 1, false);
+            gfx.drawVideo(0, 0, 1920, 1080);
+            require(!gfx.hasImage("test-art"), "Unexpected GPU cache hit before upload");
+            gfx.image("test-art", rgbaImg.data(), 16, 16, 10, 10, 64, 64, true, 8);
+            require(gfx.hasImage("test-art"), "GPU image cache did not report uploaded texture");
+            gfx.text("Smart \xE2\x80\x9Cquotes\xE2\x80\x9D \xE2\x80\x94 dash \xE2\x80\xA6", 20, 20, 24, {1, 1, 1, 1});
+            gfx.end();
+        }
         cleanup();
-        std::cout << "Controller source setup, identity, clearing, EPG non-looping, UTF-8 backspace, cache, and volume debounce passed.\n";
+        std::cout << "Controller source setup, identity, clearing, EPG non-looping, UTF-8 backspace, cache, OSK shortcuts, GPU YUV, and volume debounce passed.\n";
         return 0;
     } catch (const std::exception &error) {
         cleanup();
