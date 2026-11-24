@@ -367,17 +367,15 @@ jobs:
       - name: Resolve Android SDK path
         id: android-sdk-path
         run: echo "android_home=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_OUTPUT"
-      - name: Cache Android API 37 SDK and platform tools
+      - name: Cache Android API 37 SDK platform
         id: android-sdk-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ${{ steps.android-sdk-path.outputs.android_home }}/platforms/android-37.0
-            ${{ steps.android-sdk-path.outputs.android_home }}/platform-tools
-          key: android-sdk-${{ runner.os }}-api-37.0-platform-tools-v1
-      - name: Install Android API 37 and platform tools
+          path: ${{ steps.android-sdk-path.outputs.android_home }}/platforms/android-37.0
+          key: android-sdk-${{ runner.os }}-api-37.0-v2
+      - name: Install Android API 37 platform
         if: steps.android-sdk-cache.outputs.cache-hit != 'true'
-        run: sdkmanager --install 'platform-tools' 'platforms;android-37.0'
+        run: sdkmanager --install 'platforms;android-37.0'
       - name: Run Android tests, lint, and APK builds
         run: |
           ./mobile/android/gradlew --no-daemon --build-cache --max-workers=4 --console=plain -p mobile/android \
