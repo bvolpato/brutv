@@ -49,3 +49,16 @@ updates:
       dependency-updates:
         patterns: ["*"]
     open-pull-requests-limit: 2
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "04:00"
+      timezone: UTC
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions-updates:
+        patterns: ["*"]
+    open-pull-requests-limit: 2
