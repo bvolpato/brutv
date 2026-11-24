@@ -363,6 +363,219 @@ final class XtreamCodesClientTests: XCTestCase {
         XCTAssertEqual(delays[1].attempt, 2)
         XCTAssertNil(delays[1].delay)
     }
+
+    func testDiskCatalogCacheServesFreshAndStaleWhileRevalidateAndInvalidates() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("brutv-disk-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let profileID = UUID()
+
+        let firstPayload = Data(#"[{"stream_id":"101","num":"1","name":"News HD","category_id":"10","stream_icon":" https://img.example.test/news logo.png "},{"stream_id":102,"num":2,"name":"Sports 4K","category_id":20}]"#.utf8)
+        let secondPayload = Data(#"[{"stream_id":103,"num":3,"name":"Movies FHD","category_id":"30"}]"#.utf8)
+
+        let script = RetryStubScript(steps: [.http(200, firstPayload)])
+        RetryStubURLProtocol.install(script)
+        defer { RetryStubURLProtocol.install(nil) }
+
+        // 1. Cold fetch populates disk cache and pre-indexes categories + IDs
+        let client1 = XtreamCodesClient(
+            serverURLString: "https://cache-test.example.test",
+            username: "u",
+            password: "p",
+            session: makeRetryStubSession(),
+            retrySleep: { _ in }
+        )
+        client1.configureDiskCache(profileID: profileID, baseDirectory: tempDir, freshTTL: 900, staleTTL: 86_400)
+
+        let all1 = try await client1.fetchLiveStreams()
+        XCTAssertEqual(all1.map(\.id), [101, 102])
+        XCTAssertEqual(script.requestCount, 1)
+
+        // Category lookups and liveStreamIndex must hit pre-indexed RAM in O(1) without extra network calls.
+        let cat10 = try await client1.fetchLiveStreams(categoryID: "10")
+        XCTAssertEqual(cat10.map(\.id), [101])
+        let emptyCat = try await client1.fetchLiveStreams(categoryID: "999")
+        XCTAssertTrue(emptyCat.isEmpty)
+        let index = try await client1.liveStreamIndex()
+        XCTAssertEqual(index[102]?.quality, .uhd4k)
+        XCTAssertEqual(script.requestCount, 1)
+
+        // 2. Fresh cold-start client reads directly from disk cache with 0 network calls.
+        let freshScript = RetryStubScript(steps: [.http(500, Data())])
+        RetryStubURLProtocol.install(freshScript)
+        let client2 = XtreamCodesClient(
+            serverURLString: "https://cache-test.example.test",
+            username: "u",
+            password: "p",
+            session: makeRetryStubSession(),
+            retrySleep: { _ in }
+        )
+        client2.configureDiskCache(profileID: profileID, baseDirectory: tempDir, freshTTL: 900, staleTTL: 86_400)
+        let diskHit = try await client2.fetchLiveStreams()
+        XCTAssertEqual(diskHit.map(\.id), [101, 102])
+        XCTAssertEqual(freshScript.requestCount, 0)
+
+        // 3. Stale-while-revalidate returns cached payload immediately and refreshes in background.
+        let swrScript = RetryStubScript(steps: [.http(200, secondPayload)])
+        RetryStubURLProtocol.install(swrScript)
+        let client3 = XtreamCodesClient(
+            serverURLString: "https://cache-test.example.test",
+            username: "u",
+            password: "p",
+            session: makeRetryStubSession(),
+            retrySleep: { _ in }
+        )
+        client3.configureDiskCache(profileID: profileID, baseDirectory: tempDir, freshTTL: 0, staleTTL: 86_400)
+        let staleImmediate = try await client3.fetchLiveStreams()
+        XCTAssertEqual(staleImmediate.map(\.id), [101, 102])
+
+        // Wait briefly for background revalidation to finish and update cache.
+        for _ in 0..<20 where swrScript.requestCount == 0 {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        XCTAssertEqual(swrScript.requestCount, 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let revalidated = try await client3.fetchLiveStreams()
+        XCTAssertEqual(revalidated.map(\.id), [103])
+
+        // 4. Explicit clearCache(includeDisk: true) removes disk cache so next fetch hits network.
+        let refreshScript = RetryStubScript(steps: [.http(200, firstPayload)])
+        RetryStubURLProtocol.install(refreshScript)
+        client3.clearCache(includeDisk: true)
+        let afterClear = try await client3.fetchLiveStreams()
+        XCTAssertEqual(afterClear.map(\.id), [101, 102])
+        XCTAssertEqual(refreshScript.requestCount, 1)
+    }
+
+    func testInFlightCoalescingSharesSingleRequestAcrossConcurrentCallers() async throws {
+        let payload = Data(#"[{"category_id":"1","category_name":"Sports"},{"category_id":"2","category_name":"News"}]"#.utf8)
+        let script = RetryStubScript(steps: [.http(200, payload), .http(500, Data())], delayMs: 80)
+        RetryStubURLProtocol.install(script)
+        defer { RetryStubURLProtocol.install(nil) }
+
+        let client = XtreamCodesClient(
+            serverURLString: "https://coalesce.example.test",
+            username: "u",
+            password: "p",
+            session: makeRetryStubSession(),
+            retrySleep: { _ in }
+        )
+
+        async let first = client.fetchLiveCategories()
+        async let second = client.fetchLiveCategories()
+        async let third = client.fetchLiveCategories()
+        let results = try await (first, second, third)
+
+        XCTAssertEqual(results.0.map(\.id), ["1", "2"])
+        XCTAssertEqual(results.1.map(\.id), ["1", "2"])
+        XCTAssertEqual(results.2.map(\.id), ["1", "2"])
+        XCTAssertEqual(script.requestCount, 1, "Concurrent identical calls must coalesce into one network request")
+    }
+
+    func testBoundedLRUCacheEvictsLeastRecentlyUsedEntries() {
+        var cache = BoundedLRUCache<Int, String>(capacity: 3)
+        cache.set("a", for: 1)
+        cache.set("b", for: 2)
+        cache.set("c", for: 3)
+        // Touch key 1 so key 2 becomes least recently used.
+        XCTAssertEqual(cache.value(for: 1), "a")
+        cache.set("d", for: 4)
+        XCTAssertEqual(cache.count, 3)
+        XCTAssertNil(cache.value(for: 2))
+        XCTAssertEqual(cache.value(for: 1), "a")
+        XCTAssertEqual(cache.value(for: 3), "c")
+        XCTAssertEqual(cache.value(for: 4), "d")
+    }
+
+    func testShortEPGDecodesBase64TitlesAndCachesResult() async throws {
+        let titleB64 = Data("Evening News".utf8).base64EncodedString()
+        let descB64 = Data("Top headlines tonight".utf8).base64EncodedString()
+        let json = """
+        {
+          "epg_listings": [
+            {
+              "id": "55",
+              "title": "\(titleB64)",
+              "description": "\(descB64)",
+              "start_timestamp": "1760000000",
+              "stop_timestamp": "1760003600",
+              "channel_id": "ch1"
+            }
+          ]
+        }
+        """
+        let script = RetryStubScript(steps: [.http(200, Data(json.utf8))])
+        RetryStubURLProtocol.install(script)
+        defer { RetryStubURLProtocol.install(nil) }
+
+        let client = XtreamCodesClient(
+            serverURLString: "https://epg.example.test",
+            username: "u",
+            password: "p",
+            session: makeRetryStubSession(),
+            retrySleep: { _ in }
+        )
+
+        let listings = try await client.fetchShortEPG(streamID: 42, limit: 2)
+        XCTAssertEqual(listings.count, 1)
+        XCTAssertEqual(listings[0].title, "Evening News")
+        XCTAssertEqual(listings[0].description, "Top headlines tonight")
+        XCTAssertEqual(listings[0].startTimestamp, 1_760_000_000)
+        XCTAssertEqual(listings[0].stopTimestamp, 1_760_003_600)
+        XCTAssertFalse(listings[0].timeRangeString.isEmpty)
+
+        // Second call within TTL must hit RAM cache.
+        let cached = try await client.fetchShortEPG(streamID: 42, limit: 2)
+        XCTAssertEqual(cached, listings)
+        XCTAssertEqual(script.requestCount, 1)
+    }
+
+    func testFlexibleJSONDecodePrecomputedFieldsAndSeriesCoverURLSanitization() throws {
+        let seriesJSON = Data("""
+        [
+          {
+            "series_id": "777",
+            "name": "São Paulo Stories",
+            "cover": "  https://img.example.test/my cover.jpg  ",
+            "rating": "8.7/10",
+            "category_id": 42
+          },
+          {
+            "series_id": 778,
+            "name": "Null Fields Show",
+            "cover": null,
+            "rating": 9.2,
+            "category_id": "43"
+          }
+        ]
+        """.utf8)
+
+        let items = try SeriesItem.decodeArray(from: seriesJSON)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].id, 777)
+        XCTAssertEqual(items[0].categoryId, "42")
+        XCTAssertEqual(items[0].ratingValue, 8.7, accuracy: 0.001)
+        XCTAssertEqual(items[0].normalizedSearchText, "sao paulo stories")
+        XCTAssertEqual(items[0].coverURL?.absoluteString, "https://img.example.test/my%20cover.jpg")
+        XCTAssertEqual(items[1].id, 778)
+        XCTAssertEqual(items[1].ratingValue, 9.2, accuracy: 0.001)
+        XCTAssertNil(items[1].coverURL)
+
+        // Single-pass M3U parser produces identical deduplicated LiveStreams as legacy flow.
+        let m3u = """
+        #EXTM3U
+        #EXTINF:-1 tvg-id="c1" group-title="Sports",Channel One FHD
+        https://cdn.example/live/1.m3u8
+        #EXTINF:-1 tvg-id="c1" group-title="Sports",Channel One Duplicate
+        https://cdn.example/live/1.m3u8
+        #EXTINF:-1 group-title="Movies",Movie One
+        https://cdn.example/movie/99.mp4
+        """
+        let streams = try M3UPlaylistParser.parseLiveStreamsValidated(Data(m3u.utf8))
+        XCTAssertEqual(streams.count, 1)
+        XCTAssertEqual(streams[0].cleanName, "Channel One")
+        XCTAssertEqual(streams[0].quality, .fhd)
+        XCTAssertEqual(streams[0].categoryId, "Sports")
+    }
 }
 
 private final class RecordedRetryDelays: @unchecked Sendable {
@@ -392,8 +605,12 @@ private final class RetryStubScript: @unchecked Sendable {
     private let lock = NSLock()
     private var steps: [RetryStubStep]
     private var count = 0
+    let delayMs: UInt32
 
-    init(steps: [RetryStubStep]) { self.steps = steps }
+    init(steps: [RetryStubStep], delayMs: UInt32 = 0) {
+        self.steps = steps
+        self.delayMs = delayMs
+    }
 
     var requestCount: Int {
         lock.lock()
@@ -402,6 +619,9 @@ private final class RetryStubScript: @unchecked Sendable {
     }
 
     func next() -> RetryStubStep {
+        if delayMs > 0 {
+            usleep(delayMs * 1000)
+        }
         lock.lock()
         defer { lock.unlock() }
         count += 1

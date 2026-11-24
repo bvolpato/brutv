@@ -147,7 +147,7 @@ public struct CategorySideMenuView: View {
                     RoundedRectangle(cornerRadius: LayoutMetrics.cornerRadius - 2)
                         .fill(Color.black.opacity(0.6))
 
-                    CachedAsyncImage(url: item.iconURL) {
+                    CachedAsyncImage(url: item.iconURL, targetPixelSize: 128) {
                         Image(systemName: item.systemFallbackIcon)
                             .font(.system(size: LayoutMetrics.fontSize))
                             .foregroundColor(.gray)

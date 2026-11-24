@@ -64,4 +64,31 @@ final class TopShelfStoreTests: XCTestCase {
         XCTAssertEqual(payload.favorites.first?.playURL?.absoluteString, "brutv://play?id=1&type=live")
         XCTAssertEqual(payload.favorites.first?.displayURL?.absoluteString, "brutv://channel?id=1&type=live")
     }
+
+    func testProfileScopingIsolatesPayloadsAndClearsOnLogout() {
+        let (defaults, suite) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = TopShelfStore(userDefaults: defaults)
+        let profileA = UUID()
+        let profileB = UUID()
+
+        store.selectProfile(profileA)
+        store.recordContinueWatching(id: "10", title: "Profile A Movie", kind: "vod")
+        XCTAssertEqual(store.loadPayload().continueWatching.map(\.id), ["10"])
+
+        // Switching to Profile B shows clean slate and does not leak Profile A.
+        store.selectProfile(profileB)
+        XCTAssertTrue(store.loadPayload().continueWatching.isEmpty)
+        store.recordContinueWatching(id: "20", title: "Profile B Show", kind: "series")
+        XCTAssertEqual(store.loadPayload().continueWatching.map(\.id), ["20"])
+
+        // Logout clears active Top Shelf payload immediately.
+        store.selectProfile(nil)
+        XCTAssertTrue(store.loadPayload().continueWatching.isEmpty)
+        XCTAssertTrue(store.loadPayload().favorites.isEmpty)
+
+        // Switching back to Profile A restores its saved Top Shelf items.
+        store.selectProfile(profileA)
+        XCTAssertEqual(store.loadPayload().continueWatching.map(\.id), ["10"])
+    }
 }

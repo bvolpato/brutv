@@ -66,3 +66,124 @@ struct SourceLibraryState: Codable, Equatable, Sendable {
         return true
     }
 }
+
+public struct WatchProgressItem: Codable, Identifiable, Equatable, Hashable, Sendable {
+    public let id: String
+    public let streamID: Int
+    public let kind: String // "vod" or "series"
+    public let title: String
+    public let subtitle: String?
+    public let imageURLString: String?
+    public let containerExtension: String
+    public let season: Int?
+    public let episodeNum: Int?
+    public var position: Double
+    public var duration: Double
+    public var updatedAt: Date
+
+    public init(
+        streamID: Int,
+        kind: String,
+        title: String,
+        subtitle: String? = nil,
+        imageURLString: String? = nil,
+        containerExtension: String = "mp4",
+        season: Int? = nil,
+        episodeNum: Int? = nil,
+        position: Double,
+        duration: Double,
+        updatedAt: Date = Date()
+    ) {
+        self.id = "\(kind):\(streamID)"
+        self.streamID = streamID
+        self.kind = kind
+        self.title = title
+        self.subtitle = subtitle
+        self.imageURLString = imageURLString
+        self.containerExtension = containerExtension
+        self.season = season
+        self.episodeNum = episodeNum
+        self.position = position
+        self.duration = duration
+        self.updatedAt = updatedAt
+    }
+
+    public var progressFraction: Double {
+        guard duration.isFinite, duration > 0, position.isFinite, position > 0 else { return 0 }
+        return min(1.0, max(0.0, position / duration))
+    }
+
+    public var remainingSeconds: Double {
+        guard duration.isFinite, duration > 0, position.isFinite else { return 0 }
+        return max(0, duration - position)
+    }
+
+    public var imageURL: URL? {
+        MediaURL.parse(imageURLString)
+    }
+}
+
+/// Per-profile watch progress tracking with completion reset (>92%) and bounded history.
+public struct WatchProgressState: Codable, Equatable, Sendable {
+    public static let minimumResumeSeconds: Double = 10.0
+    public static let completionFraction: Double = 0.92
+    public static let maxItemsPerProfile: Int = 50
+
+    private var profiles: [String: [WatchProgressItem]] = [:]
+
+    public init() {}
+
+    public func items(for sourceID: UUID?) -> [WatchProgressItem] {
+        guard let sourceID else { return [] }
+        return profiles[sourceID.uuidString] ?? []
+    }
+
+    public func resumePosition(for sourceID: UUID?, kind: String, streamID: Int) -> Double? {
+        guard let sourceID,
+              let item = profiles[sourceID.uuidString]?.first(where: { $0.kind == kind && $0.streamID == streamID }) else {
+            return nil
+        }
+        guard item.position >= Self.minimumResumeSeconds else { return nil }
+        if item.duration > 0 && (item.position / item.duration) >= Self.completionFraction {
+            return nil
+        }
+        return item.position
+    }
+
+    /// Updates or clears an item's watch progress. Positions >= 92% of duration reset completion and remove the entry.
+    @discardableResult
+    public mutating func record(sourceID: UUID?, item: WatchProgressItem) -> Bool {
+        guard let sourceID, item.streamID > 0, item.position.isFinite else { return false }
+        let key = sourceID.uuidString
+        var list = profiles[key] ?? []
+        list.removeAll { $0.kind == item.kind && $0.streamID == item.streamID }
+
+        let completed = item.duration.isFinite && item.duration > 0 && (item.position / item.duration) >= Self.completionFraction
+        if completed || item.position < Self.minimumResumeSeconds {
+            profiles[key] = list
+            return true
+        }
+
+        list.insert(item, at: 0)
+        if list.count > Self.maxItemsPerProfile {
+            list = Array(list.prefix(Self.maxItemsPerProfile))
+        }
+        profiles[key] = list
+        return true
+    }
+
+    public mutating func markCompleted(sourceID: UUID?, kind: String, streamID: Int) {
+        guard let sourceID else { return }
+        let key = sourceID.uuidString
+        profiles[key]?.removeAll { $0.kind == kind && $0.streamID == streamID }
+    }
+
+    public mutating func remove(sourceID: UUID?, kind: String, streamID: Int) {
+        markCompleted(sourceID: sourceID, kind: kind, streamID: streamID)
+    }
+
+    public mutating func clear(sourceID: UUID?) {
+        guard let sourceID else { return }
+        profiles.removeValue(forKey: sourceID.uuidString)
+    }
+}

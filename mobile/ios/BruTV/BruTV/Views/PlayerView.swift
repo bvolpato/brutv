@@ -11,6 +11,8 @@ public struct PlayerView: View {
     @State private var showControls: Bool = true
     @State private var showGuideDrawer: Bool = false
     @State private var guideSearchText: String = ""
+    @State private var cachedGuideChannels: [LiveStream] = []
+    @State private var epgListings: [EPGListing] = []
     @State private var controlsTimer: Timer?
     /// True when a double-click in the player put the Mac window in full screen.
     @State private var enteredMacFullScreen: Bool = false
@@ -271,17 +273,12 @@ public struct PlayerView: View {
                 )
             }
 
-            // HUD Telemetry Overlay (Top-Right)
+            // HUD Telemetry Overlay (Top-Right) — isolated subview so root PlayerView does not re-render at 1 Hz
             if playback.settings.showStatsHUD {
-                VStack {
-                    HStack {
-                        Spacer()
-                        TechStatsHUD(telemetry: playback.telemetry, format: playback.activeFormatLabel)
-                            .padding(.top, 60)
-                            .padding(.trailing, 16)
-                    }
-                    Spacer()
-                }
+                PlayerStatsHUDOverlay(
+                    telemetryModel: playback.telemetryModel,
+                    format: playback.activeFormatLabel
+                )
             }
 
             // Overlay Controls
@@ -385,10 +382,16 @@ public struct PlayerView: View {
         )
         #endif
         .onAppear {
+            recomputeGuideChannels()
             if playback.playbackState == .playing {
                 scheduleControlsAutoHide()
             }
         }
+        .task(id: playback.currentStream?.id) {
+            await loadShortEPG(for: playback.currentStream)
+        }
+        .onChange(of: guideSearchText) { _, _ in recomputeGuideChannels() }
+        .onChange(of: playback.activePlaylist) { _, _ in recomputeGuideChannels() }
         .onChange(of: playback.playbackState) { _, newState in
             if newState == .playing {
                 scheduleControlsAutoHide()
@@ -408,12 +411,16 @@ public struct PlayerView: View {
         .onExitCommand {
             if showGuideDrawer {
                 withAnimation { showGuideDrawer = false }
+            } else if showControls {
+                withAnimation(.easeInOut(duration: 0.2)) { showControls = false }
+                controlsTimer?.invalidate()
             } else {
                 dismissPlayer(stop: true)
             }
         }
         .onMoveCommand { direction in
-            guard !showGuideDrawer else { return }
+            // Gate D-pad zapping/seeking so visible controls or guide drawer can receive normal focus navigation.
+            guard !showControls, !showGuideDrawer else { return }
             if case .failed = playback.playbackState { return }
             switch direction {
             case .up:
@@ -546,10 +553,23 @@ public struct PlayerView: View {
         .accessibilityIdentifier("playerCloseButton")
     }
 
+    private var currentEPG: EPGListing? {
+        epgListings.first(where: \.isNow) ?? epgListings.first
+    }
+
+    private var nextEPG: EPGListing? {
+        guard let current = currentEPG,
+              let idx = epgListings.firstIndex(where: { $0.id == current.id }),
+              idx + 1 < epgListings.count else {
+            return nil
+        }
+        return epgListings[idx + 1]
+    }
+
     private var channelTitle: some View {
         HStack(spacing: 8) {
             if let stream = playback.currentStream {
-                CachedAsyncImage(url: stream.iconURL) {
+                CachedAsyncImage(url: stream.iconURL, targetPixelSize: 128) {
                     Image(systemName: "tv")
                         .font(.system(size: 14))
                         .foregroundColor(.cyan)
@@ -557,7 +577,7 @@ public struct PlayerView: View {
                 .frame(width: 30, height: 30)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.1)))
             } else if let vod = playback.currentVOD {
-                CachedAsyncImage(url: vod.iconURL) {
+                CachedAsyncImage(url: vod.iconURL, targetPixelSize: 128) {
                     Image(systemName: vod.streamType == "series" ? "play.tv" : "film")
                         .font(.system(size: 14))
                         .foregroundColor(.cyan)
@@ -566,41 +586,55 @@ public struct PlayerView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.1)))
             }
 
-            Text(streamName)
-                .font(.system(size: 15, weight: .bold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            if playback.currentStream != nil {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 5, height: 5)
-                    Text(playback.shouldShowGoLive ? "DELAYED".localized : "LIVE".localized)
-                        .font(.system(size: 9, weight: .bold))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(streamName)
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.white)
-                }
-                .fixedSize()
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(Color.red.opacity(0.3)))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
 
-                Text(qualityBadgeText)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.black)
-                    .fixedSize()
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.cyan))
-            } else if let vod = playback.currentVOD {
-                Text(vod.streamType == "series" ? "SERIES".localized : "MOVIE".localized)
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.black)
-                    .fixedSize()
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.cyan))
+                    if playback.currentStream != nil {
+                        PlayerLiveStatusBadge(clock: playback.clock)
+
+                        Text(qualityBadgeText)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.black)
+                            .fixedSize()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.cyan))
+                    } else if let vod = playback.currentVOD {
+                        Text(vod.streamType == "series" ? "SERIES".localized : "MOVIE".localized)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.black)
+                            .fixedSize()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.cyan))
+                    }
+                }
+
+                if playback.currentStream != nil, let now = currentEPG {
+                    HStack(spacing: 6) {
+                        Text(now.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.9))
+                            .lineLimit(1)
+                        if now.startTimestamp > 0 && now.stopTimestamp > now.startTimestamp {
+                            Text(now.timeRangeString)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(.cyan.opacity(0.9))
+                                .fixedSize()
+                        }
+                        if let next = nextEPG {
+                            Text("• \("Next".localized): \(next.title)")
+                                .font(.system(size: 10, weight: .regular))
+                                .foregroundColor(.white.opacity(0.65))
+                                .lineLimit(1)
+                        }
+                    }
+                }
             }
         }
     }
@@ -628,41 +662,22 @@ public struct PlayerView: View {
 
     private var vodControlsDeck: some View {
         VStack(spacing: 10) {
-            // Scrubber Row
-            HStack(spacing: 10) {
-                Text(formatTime(isScrubbing ? scrubTime : playback.vodCurrentTime))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                    .frame(minWidth: 44, alignment: .leading)
-
-                InteractiveTimelineScrubber(
-                    value: isScrubbing ? scrubTime : playback.vodCurrentTime,
-                    range: 0...max(1.0, playback.vodDuration),
-                    bufferedValue: playback.vodCurrentTime + playback.telemetry.bufferDuration,
-                    onSeek: { targetTime in
-                        isScrubbing = false
-                        playback.seek(to: targetTime)
-                        scheduleControlsAutoHide()
-                    },
-                    onScrubbingChanged: { scrubbing, previewTime in
-                        isScrubbing = scrubbing
-                        scrubTime = previewTime
-                        if scrubbing {
-                            controlsTimer?.invalidate()
-                        }
-                    },
-                    formatTime: { seconds in
-                        formatTime(seconds)
-                    }
-                )
-                .accessibilityLabel("Playback progress scrubber".localized)
-                .accessibilityIdentifier("vodTimelineScrubber")
-
-                Text(formatTime(playback.vodDuration))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.85))
-                    .frame(minWidth: 44, alignment: .trailing)
-            }
+            // Isolated 1 Hz Scrubber Row
+            PlayerVODScrubberRow(
+                clock: playback.clock,
+                telemetryModel: playback.telemetryModel,
+                isScrubbing: $isScrubbing,
+                scrubTime: $scrubTime,
+                formatTime: formatTime,
+                onSeek: { targetTime in
+                    isScrubbing = false
+                    playback.seek(to: targetTime)
+                    scheduleControlsAutoHide()
+                },
+                onScrubStart: {
+                    controlsTimer?.invalidate()
+                }
+            )
 
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 16) {
@@ -750,17 +765,26 @@ public struct PlayerView: View {
     private var liveControlsDeck: some View {
         VStack(spacing: 10) {
             if playback.settings.liveRewind {
-                liveTimeshiftControls
+                PlayerLiveTimeshiftSection(
+                    clock: playback.clock,
+                    telemetryModel: playback.telemetryModel,
+                    isRecoveringLiveBuffer: playback.isRecoveringLiveBuffer,
+                    formatTime: formatTime,
+                    onSeekLive: { targetTime in
+                        playback.seekLive(to: targetTime)
+                        scheduleControlsAutoHide()
+                    },
+                    onGoLive: {
+                        playback.goLive()
+                        scheduleControlsAutoHide()
+                    },
+                    onScrubStart: {
+                        controlsTimer?.invalidate()
+                    }
+                )
             }
 
-            if let notice = playback.liveBuffer.notice, !notice.isEmpty {
-                Text(notice.localized)
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.8))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("playerLiveBufferNotice")
-            }
+            PlayerLiveBufferNoticeView(clock: playback.clock)
 
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
@@ -784,7 +808,7 @@ public struct PlayerView: View {
             }
 
             if playback.settings.showStatsHUD {
-                compactBufferIndicator
+                PlayerCompactBufferIndicator(telemetryModel: playback.telemetryModel)
             }
         }
         .padding(.horizontal, 16)
@@ -816,18 +840,14 @@ public struct PlayerView: View {
     }
 
     private func liveSeekButton(forward: Bool) -> some View {
-        Button {
-            playback.seekLive(by: forward ? 10 : -10)
-            scheduleControlsAutoHide()
-        } label: {
-            Image(systemName: forward ? "goforward.10" : "gobackward.10")
-                .font(.system(size: 15, weight: .semibold))
-        }
-        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
-        .disabled(!playback.canSeekLive)
-        .opacity(playback.canSeekLive ? 1.0 : 0.35)
-        .accessibilityLabel(forward ? "Forward 10 seconds".localized : "Rewind 10 seconds".localized)
-        .accessibilityIdentifier(forward ? "playerLiveForwardButton" : "playerLiveRewindButton")
+        PlayerLiveSeekButton(
+            clock: playback.clock,
+            forward: forward,
+            action: {
+                playback.seekLive(by: forward ? 10 : -10)
+                scheduleControlsAutoHide()
+            }
+        )
     }
 
     private var vodRewindButton: some View {
@@ -1088,120 +1108,23 @@ public struct PlayerView: View {
     }
     #endif
 
-    private var compactBufferIndicator: some View {
-        HStack(spacing: 6) {
-            Text("\("Buffer".localized) \(playback.telemetry.bufferDurationFormatted)")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-
-            Capsule()
-                .fill(Color.white.opacity(0.12))
-                .overlay(
-                    GeometryReader { geo in
-                        Capsule()
-                            .fill(playback.telemetry.bufferDuration >= 3.0 ? Color.green : (playback.telemetry.bufferDuration >= 1.0 ? Color.yellow : Color.orange))
-                            .frame(width: min(geo.size.width, max(2, geo.size.width * CGFloat(min(1.0, playback.telemetry.bufferDuration / 10.0)))))
-                    }
-                )
-                .frame(height: 3)
-
-            if !playback.telemetry.observedBitrateFormatted.isEmpty {
-                Text(playback.telemetry.observedBitrateFormatted)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+    private func recomputeGuideChannels() {
+        let query = ChannelTextHelper.normalizedSearchText(guideSearchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !query.isEmpty else {
+            cachedGuideChannels = playback.activePlaylist
+            return
         }
-        .frame(height: 12)
-        .padding(.top, 2)
-    }
-
-    private var liveTimeshiftControls: some View {
-        let isSeekable = playback.canSeekLive
-        let seekStart = isSeekable ? playback.liveSeekStart : 0.0
-        let seekEnd = isSeekable ? max(playback.liveSeekStart + 0.1, playback.liveSeekEnd) : 1.0
-        let playhead = isSeekable ? playback.livePlayhead : 1.0
-        let diff = seekEnd - playhead
-
-        return VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                // Time behind live
-                Text(diff < 2.0 || !isSeekable ? "LIVE".localized : "-" + formatTime(diff))
-                    .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundColor(diff < 2.0 || !isSeekable ? .green : .cyan)
-                    .frame(minWidth: 44, alignment: .leading)
-
-                InteractiveTimelineScrubber(
-                    value: playhead,
-                    range: seekStart...seekEnd,
-                    bufferedValue: playhead + playback.telemetry.bufferDuration,
-                    onSeek: { targetTime in
-                        guard isSeekable else { return }
-                        playback.seekLive(to: targetTime)
-                        scheduleControlsAutoHide()
-                    },
-                    onScrubbingChanged: { scrubbing, _ in
-                        if scrubbing {
-                            controlsTimer?.invalidate()
-                        }
-                    },
-                    formatTime: { targetTime in
-                        let targetDiff = seekEnd - targetTime
-                        if !isSeekable || targetDiff < 2.0 {
-                            return "LIVE".localized
-                        } else {
-                            return "-" + formatTime(targetDiff)
-                        }
-                    }
-                )
-                .disabled(!isSeekable)
-                .opacity(isSeekable ? 1.0 : 0.45)
-                .accessibilityLabel("Live rewind position".localized)
-                .accessibilityIdentifier("playerLiveSeekSlider")
-
-                if playback.shouldShowGoLive {
-                    Button {
-                        playback.goLive()
-                        scheduleControlsAutoHide()
-                    } label: {
-                        HStack(spacing: 3) {
-                            Circle().fill(Color.red).frame(width: 5, height: 5)
-                            Text("GO LIVE".localized)
-                                .font(.system(size: 9, weight: .heavy))
-                        }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                    }
-                    .buttonStyle(MediaControlButtonStyle(isActive: true, size: 26))
-                    .accessibilityIdentifier("playerGoLiveButton")
-                } else {
-                    HStack(spacing: 4) {
-                        Circle().fill(Color.green).frame(width: 5, height: 5)
-                        Text("LIVE".localized)
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.green)
-                    }
-                    .frame(minWidth: 44, alignment: .trailing)
-                }
-            }
-
-            if playback.isRecoveringLiveBuffer {
-                Text("Buffering rewind…".localized)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.cyan.opacity(0.85))
-                    .lineLimit(1)
-            }
+        cachedGuideChannels = playback.activePlaylist.filter {
+            $0.normalizedSearchText.contains(query) || "\($0.num)".contains(query)
         }
     }
 
-    private var filteredGuideChannels: [LiveStream] {
-        guard !guideSearchText.isEmpty else { return playback.activePlaylist }
-        return playback.activePlaylist.filter {
-            $0.cleanName.localizedCaseInsensitiveContains(guideSearchText) ||
-            "\($0.num)".contains(guideSearchText)
+    private func loadShortEPG(for stream: LiveStream?) async {
+        epgListings = []
+        guard let stream, stream.directURLString == nil else { return }
+        if let listings = try? await AccountStore.shared.client.fetchShortEPG(streamID: stream.id, limit: 4) {
+            guard !Task.isCancelled, playback.currentStream?.id == stream.id else { return }
+            epgListings = listings
         }
     }
 
@@ -1218,7 +1141,7 @@ public struct PlayerView: View {
                     Text("Channel Guide".localized)
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(.white)
-                    Text("\(filteredGuideChannels.count)")
+                    Text("\(cachedGuideChannels.count)")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(.gray)
                         .padding(.horizontal, 6)
@@ -1238,6 +1161,50 @@ public struct PlayerView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
+
+                if let now = currentEPG {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text("NOW".localized)
+                                .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.cyan))
+                            Text(now.title)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            if now.startTimestamp > 0 && now.stopTimestamp > now.startTimestamp {
+                                Text(now.timeRangeString)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                        if now.stopTimestamp > now.startTimestamp {
+                            GeometryReader { geo in
+                                Capsule()
+                                    .fill(Color.white.opacity(0.12))
+                                    .overlay(alignment: .leading) {
+                                        Capsule()
+                                            .fill(Color.cyan)
+                                            .frame(width: geo.size.width * CGFloat(now.progress))
+                                    }
+                            }
+                            .frame(height: 3)
+                        }
+                        if let next = nextEPG {
+                            Text("\("Next".localized): \(next.title)")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.7))
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+                    .padding(.horizontal, 14)
+                }
 
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
@@ -1269,10 +1236,12 @@ public struct PlayerView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(filteredGuideChannels) { ch in
+                            ForEach(cachedGuideChannels) { ch in
                                 ChannelCardView(
                                     stream: ch,
-                                    isSelected: playback.currentStream?.id == ch.id
+                                    isSelected: playback.currentStream?.id == ch.id,
+                                    isFavorite: favorites.favoriteChannelIDs.contains(ch.id),
+                                    onToggleFavorite: { favorites.toggleFavorite(channelID: ch.id) }
                                 ) {
                                     playback.play(stream: ch)
                                     withAnimation { showGuideDrawer = false }
@@ -1331,6 +1300,237 @@ public struct PlayerView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Isolated 1 Hz Subviews
+
+private struct PlayerStatsHUDOverlay: View {
+    @ObservedObject var telemetryModel: PlaybackTelemetryModel
+    let format: String
+
+    var body: some View {
+        VStack {
+            HStack {
+                Spacer()
+                TechStatsHUD(telemetry: telemetryModel.telemetry, format: format)
+                    .padding(.top, 60)
+                    .padding(.trailing, 16)
+            }
+            Spacer()
+        }
+    }
+}
+
+private struct PlayerLiveStatusBadge: View {
+    @ObservedObject var clock: PlaybackClockModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 5, height: 5)
+            Text(clock.shouldShowGoLive ? "DELAYED".localized : "LIVE".localized)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.white)
+        }
+        .fixedSize()
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Color.red.opacity(0.3)))
+    }
+}
+
+private struct PlayerVODScrubberRow: View {
+    @ObservedObject var clock: PlaybackClockModel
+    @ObservedObject var telemetryModel: PlaybackTelemetryModel
+    @Binding var isScrubbing: Bool
+    @Binding var scrubTime: Double
+    let formatTime: (Double) -> String
+    let onSeek: (Double) -> Void
+    let onScrubStart: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(formatTime(isScrubbing ? scrubTime : clock.vodCurrentTime))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
+                .frame(minWidth: 44, alignment: .leading)
+
+            InteractiveTimelineScrubber(
+                value: isScrubbing ? scrubTime : clock.vodCurrentTime,
+                range: 0...max(1.0, clock.vodDuration),
+                bufferedValue: clock.vodCurrentTime + telemetryModel.telemetry.bufferDuration,
+                onSeek: onSeek,
+                onScrubbingChanged: { scrubbing, previewTime in
+                    isScrubbing = scrubbing
+                    scrubTime = previewTime
+                    if scrubbing {
+                        onScrubStart()
+                    }
+                },
+                formatTime: formatTime
+            )
+            .accessibilityLabel("Playback progress scrubber".localized)
+            .accessibilityIdentifier("vodTimelineScrubber")
+
+            Text(formatTime(clock.vodDuration))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+    }
+}
+
+private struct PlayerLiveTimeshiftSection: View {
+    @ObservedObject var clock: PlaybackClockModel
+    @ObservedObject var telemetryModel: PlaybackTelemetryModel
+    let isRecoveringLiveBuffer: Bool
+    let formatTime: (Double) -> String
+    let onSeekLive: (Double) -> Void
+    let onGoLive: () -> Void
+    let onScrubStart: () -> Void
+
+    var body: some View {
+        let isSeekable = clock.canSeekLive
+        let seekStart = isSeekable ? clock.liveSeekStart : 0.0
+        let seekEnd = isSeekable ? max(clock.liveSeekStart + 0.1, clock.liveSeekEnd) : 1.0
+        let playhead = isSeekable ? clock.livePlayhead : 1.0
+        let diff = seekEnd - playhead
+
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Text(diff < 2.0 || !isSeekable ? "LIVE".localized : "-" + formatTime(diff))
+                    .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundColor(diff < 2.0 || !isSeekable ? .green : .cyan)
+                    .frame(minWidth: 44, alignment: .leading)
+
+                InteractiveTimelineScrubber(
+                    value: playhead,
+                    range: seekStart...seekEnd,
+                    bufferedValue: playhead + telemetryModel.telemetry.bufferDuration,
+                    onSeek: { targetTime in
+                        guard isSeekable else { return }
+                        onSeekLive(targetTime)
+                    },
+                    onScrubbingChanged: { scrubbing, _ in
+                        if scrubbing {
+                            onScrubStart()
+                        }
+                    },
+                    formatTime: { targetTime in
+                        let targetDiff = seekEnd - targetTime
+                        if !isSeekable || targetDiff < 2.0 {
+                            return "LIVE".localized
+                        } else {
+                            return "-" + formatTime(targetDiff)
+                        }
+                    }
+                )
+                .disabled(!isSeekable)
+                .opacity(isSeekable ? 1.0 : 0.45)
+                .accessibilityLabel("Live rewind position".localized)
+                .accessibilityIdentifier("playerLiveSeekSlider")
+
+                if clock.shouldShowGoLive {
+                    Button(action: onGoLive) {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color.red).frame(width: 5, height: 5)
+                            Text("GO LIVE".localized)
+                                .font(.system(size: 9, weight: .heavy))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(MediaControlButtonStyle(isActive: true, size: 26))
+                    .accessibilityIdentifier("playerGoLiveButton")
+                } else {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.green).frame(width: 5, height: 5)
+                        Text("LIVE".localized)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.green)
+                    }
+                    .frame(minWidth: 44, alignment: .trailing)
+                }
+            }
+
+            if isRecoveringLiveBuffer {
+                Text("Buffering rewind…".localized)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.cyan.opacity(0.85))
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct PlayerLiveBufferNoticeView: View {
+    @ObservedObject var clock: PlaybackClockModel
+
+    var body: some View {
+        if let notice = clock.liveBuffer.notice, !notice.isEmpty {
+            Text(notice.localized)
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.8))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("playerLiveBufferNotice")
+        }
+    }
+}
+
+private struct PlayerLiveSeekButton: View {
+    @ObservedObject var clock: PlaybackClockModel
+    let forward: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: forward ? "goforward.10" : "gobackward.10")
+                .font(.system(size: 15, weight: .semibold))
+        }
+        .buttonStyle(MediaControlButtonStyle(isCircular: true, size: 38))
+        .disabled(!clock.canSeekLive)
+        .opacity(clock.canSeekLive ? 1.0 : 0.35)
+        .accessibilityLabel(forward ? "Forward 10 seconds".localized : "Rewind 10 seconds".localized)
+        .accessibilityIdentifier(forward ? "playerLiveForwardButton" : "playerLiveRewindButton")
+    }
+}
+
+private struct PlayerCompactBufferIndicator: View {
+    @ObservedObject var telemetryModel: PlaybackTelemetryModel
+
+    var body: some View {
+        let telemetry = telemetryModel.telemetry
+        HStack(spacing: 6) {
+            Text("\("Buffer".localized) \(telemetry.bufferDurationFormatted)")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.6))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .overlay(
+                    GeometryReader { geo in
+                        Capsule()
+                            .fill(telemetry.bufferDuration >= 3.0 ? Color.green : (telemetry.bufferDuration >= 1.0 ? Color.yellow : Color.orange))
+                            .frame(width: min(geo.size.width, max(2, geo.size.width * CGFloat(min(1.0, telemetry.bufferDuration / 10.0)))))
+                    }
+                )
+                .frame(height: 3)
+
+            if !telemetry.observedBitrateFormatted.isEmpty {
+                Text(telemetry.observedBitrateFormatted)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .frame(height: 12)
+        .padding(.top, 2)
     }
 }
 

@@ -399,7 +399,26 @@ public final class LocalizationManager: ObservableObject {
         "The server returned an invalid response.": "O servidor retornou uma resposta inválida.",
         "Network connection timed out.": "Tempo limite de conexão esgotado.",
         "The stream could not be loaded.": "Não foi possível carregar a transmissão.",
-        "Buffering rewind…": "Preparando retrocesso…"
+        "Buffering rewind…": "Preparando retrocesso…",
+
+        // New UX & Profile Features
+        "Continue Watching": "Continuar Assistindo",
+        "left": "restantes",
+        "NOW": "AGORA",
+        "Next": "A seguir",
+        "Default Aspect Ratio": "Proporção Padrão",
+        "Auto-Play Next Episode": "Reproduzir Próximo Episódio",
+        "SWITCH PROFILE": "TROCAR DE PERFIL",
+        "Could not switch profile": "Não foi possível trocar de perfil",
+        "Rename": "Renomear",
+        "Delete": "Excluir",
+        "Rename Profile": "Renomear Perfil",
+        "Delete Profile": "Excluir Perfil",
+        "Profile name": "Nome do perfil",
+        "Save": "Salvar",
+        "Manage profile": "Gerenciar perfil",
+        "Are you sure you want to remove this saved profile?": "Tem certeza de que deseja remover este perfil salvo?",
+        "Compatible live channels keep a temporary local buffer for pause and rewind. Playback starts when the first recorded segment is available; startup time depends on the provider. The buffer keeps up to 10 minutes within 96 MiB and is deleted when playback closes or changes channels. Unsupported streams use ordinary playback.": "Canais ao vivo compatíveis mantêm um buffer local temporário para pausar e voltar. A reprodução começa quando o primeiro segmento gravado está disponível; o tempo de início depende do provedor. O buffer mantém até 10 minutos dentro de 96 MiB e é excluído ao fechar ou trocar de canal. Transmissões incompatíveis usam a reprodução normal."
     ]
 
     private let translationsEN: [String: String] = [:]

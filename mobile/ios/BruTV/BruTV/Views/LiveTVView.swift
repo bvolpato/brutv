@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct LiveTVView: View {
     @ObservedObject private var favorites = FavoritesStore.shared
+    @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var playingStreamID: Int? = PlaybackManager.shared.currentStream?.id
@@ -22,6 +23,10 @@ public struct LiveTVView: View {
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedStreams: [LiveStream] = []
     @State private var showSideMenu: Bool = false
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadGeneration: UInt64 = 0
+    @State private var filterTask: Task<Void, Never>?
+    @State private var filterGeneration: UInt64 = 0
     @State private var hasPickedCategoryOnPhone: Bool = {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--demo-login") ||
@@ -56,25 +61,43 @@ public struct LiveTVView: View {
         availableQualities = list
     }
 
-    private func recomputeFilteredStreams() {
+    private func scheduleFilter(debounce: Bool) {
+        filterTask?.cancel()
+        filterGeneration &+= 1
+        let generation = filterGeneration
+        let sourceStreams = streams
         let favOnly = showFavoritesOnly
-        let query = searchText
+        let favIDs = favorites.favoriteChannelIDs
+        let rawQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let quality = selectedQuality
-        if !favOnly && query.isEmpty && quality == .all {
-            filteredStreams = streams
+
+        if !favOnly && rawQuery.isEmpty && quality == .all {
+            filteredStreams = sourceStreams
             return
         }
-        filteredStreams = streams.filter { stream in
-            if favOnly && !favorites.isFavorite(channelID: stream.id) {
-                return false
+
+        let delayNs: UInt64 = (debounce && !rawQuery.isEmpty) ? 160_000_000 : 0
+        filterTask = Task {
+            if delayNs > 0 {
+                try? await Task.sleep(nanoseconds: delayNs)
+                guard !Task.isCancelled else { return }
             }
-            if !query.isEmpty && !stream.name.localizedCaseInsensitiveContains(query) {
-                return false
+            let normalizedQuery = ChannelTextHelper.normalizedSearchText(rawQuery)
+            let result = await Task.detached(priority: .userInitiated) {
+                sourceStreams.filter { stream in
+                    if favOnly && !favIDs.contains(stream.id) { return false }
+                    if quality != .all && stream.quality != quality { return false }
+                    if !normalizedQuery.isEmpty && !stream.normalizedSearchText.contains(normalizedQuery) {
+                        return false
+                    }
+                    return true
+                }
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.filterGeneration == generation else { return }
+                self.filteredStreams = result
             }
-            if quality != .all && stream.quality != quality {
-                return false
-            }
-            return true
         }
     }
 
@@ -141,11 +164,14 @@ public struct LiveTVView: View {
         .background(Color(white: 0.04).ignoresSafeArea())
         .navigationTitle("")
         .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
-        .onChange(of: searchText) { _, _ in recomputeFilteredStreams() }
-        .onChange(of: selectedQuality) { _, _ in recomputeFilteredStreams() }
-        .onChange(of: showFavoritesOnly) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: selectedQuality) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: showFavoritesOnly) { _, _ in scheduleFilter(debounce: false) }
         .onChange(of: favorites.favoriteChannelIDs) { _, _ in
-            if showFavoritesOnly { recomputeFilteredStreams() }
+            if showFavoritesOnly { scheduleFilter(debounce: false) }
+        }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await reloadFromSettings() }
         }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
@@ -204,11 +230,14 @@ public struct LiveTVView: View {
         .navigationTitle("")
         .toolbar(.hidden, for: .navigationBar)
         .onReceive(PlaybackManager.shared.$currentStream.map { $0?.id }.removeDuplicates()) { playingStreamID = $0 }
-        .onChange(of: searchText) { _, _ in recomputeFilteredStreams() }
-        .onChange(of: selectedQuality) { _, _ in recomputeFilteredStreams() }
-        .onChange(of: showFavoritesOnly) { _, _ in recomputeFilteredStreams() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: selectedQuality) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: showFavoritesOnly) { _, _ in scheduleFilter(debounce: false) }
         .onChange(of: favorites.favoriteChannelIDs) { _, _ in
-            if showFavoritesOnly { recomputeFilteredStreams() }
+            if showFavoritesOnly { scheduleFilter(debounce: false) }
+        }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await reloadFromSettings() }
         }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
@@ -345,7 +374,7 @@ public struct LiveTVView: View {
                                         .frame(width: 40, height: 40)
 
                                     if let icon = categoryIcons[cat.id] {
-                                        CachedAsyncImage(url: icon) {
+                                        CachedAsyncImage(url: icon, targetPixelSize: 128) {
                                             Image(systemName: "tv")
                                                 .font(.system(size: 16))
                                                 .foregroundColor(.cyan)
@@ -611,7 +640,9 @@ public struct LiveTVView: View {
                     ForEach(filteredStreams) { stream in
                         ChannelCardView(
                             stream: stream,
-                            isSelected: playingStreamID == stream.id
+                            isSelected: playingStreamID == stream.id,
+                            isFavorite: favorites.favoriteChannelIDs.contains(stream.id),
+                            onToggleFavorite: { favorites.toggleFavorite(channelID: stream.id) }
                         ) {
                             isChannelSearchFocused = false
                             PlaybackManager.shared.play(stream: stream, from: filteredStreams)
@@ -670,23 +701,23 @@ public struct LiveTVView: View {
     }
 
     private func loadChannels(categoryID: String) {
+        loadTask?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isLoading = true
         errorMessage = nil
 
-        Task {
+        loadTask = Task {
             do {
                 let catIDParam = categoryID == "ALL" ? nil : categoryID
                 let items = try await client.fetchLiveStreams(categoryID: catIDParam)
-                await MainActor.run {
-                    self.streams = items
-                    self.isLoading = false
-
-                    if categoryID == "ALL" {
-                        self.allLoadedStreams = items
-                    }
-
-                    var icons = self.categoryIcons
-                    var counts = self.categoryCounts
+                try Task.checkCancellation()
+                let existingIcons = await MainActor.run { self.categoryIcons }
+                let existingCounts = await MainActor.run { self.categoryCounts }
+                let metadata = await Task.detached(priority: .userInitiated) { () -> (icons: [String: URL], counts: [String: Int]) in
+                    var icons = existingIcons
+                    // Reset counts when reloading ALL so counts never double on refresh.
+                    var counts: [String: Int] = categoryID == "ALL" ? [:] : existingCounts
 
                     if icons["ALL"] == nil, let first = items.first(where: { $0.iconURL != nil })?.iconURL {
                         icons["ALL"] = first
@@ -708,18 +739,33 @@ public struct LiveTVView: View {
                             icons[stream.categoryId] = icon
                         }
                     }
-                    self.categoryIcons = icons
-                    self.categoryCounts = counts
+                    return (icons, counts)
+                }.value
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
+                    self.streams = items
+                    self.isLoading = false
+
+                    if categoryID == "ALL" {
+                        self.allLoadedStreams = items
+                    }
+
+                    self.categoryIcons = metadata.icons
+                    self.categoryCounts = metadata.counts
 
                     self.recomputeAvailableQualities()
                     if self.selectedQuality != .all && !self.availableQualities.contains(self.selectedQuality) {
                         self.selectedQuality = .all
                     }
-                    self.recomputeFilteredStreams()
+                    self.scheduleFilter(debounce: false)
                     self.recomputeMenuItems()
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
@@ -728,7 +774,11 @@ public struct LiveTVView: View {
     }
 
     private func reloadAll() async {
-        client.clearCache()
+        client.clearCache(includeDisk: true)
+        await reloadFromSettings()
+    }
+
+    private func reloadFromSettings() async {
         await loadCategories()
         loadChannels(categoryID: selectedCategoryID)
     }

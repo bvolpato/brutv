@@ -10,8 +10,14 @@ let relayLog = Logger(subsystem: "com.bvolpato.brutv", category: "live-relay")
 #endif
 
 struct LiveTimeshiftLimits: Sendable {
+    #if os(tvOS)
+    static let defaultBytes: Int = 96 * 1024 * 1024
+    #else
+    static let defaultBytes: Int = 256 * 1024 * 1024
+    #endif
+
     var seconds: Double = 600
-    var bytes: Int = 256 * 1024 * 1024
+    var bytes: Int = LiveTimeshiftLimits.defaultBytes
     var manifestBytes: Int = 1024 * 1024
     var segmentBytes: Int = 32 * 1024 * 1024
     var segmentCount: Int = 2000
@@ -247,9 +253,13 @@ final class LiveTimeshiftRing {
 
     let directory: URL
     let limits: LiveTimeshiftLimits
-    private(set) var entries: [Entry] = []
+    private var entryStorage: [Entry] = []
+    private var entryHead: Int = 0
     private var retired: [Entry] = []
+    private var fileIndex: [String: URL] = [:]
     private var readerCounts: [String: Int] = [:]
+    private(set) var activeBytes: Int = 0
+    private(set) var activeDuration: Double = 0
     private(set) var totalBytes = 0
     private(set) var targetDuration: Double = 0
     private var nextStart: Double = 0
@@ -262,6 +272,10 @@ final class LiveTimeshiftRing {
     private(set) var notice: String?
     private var stopped = false
 
+    var entries: ArraySlice<Entry> {
+        entryStorage[entryHead...]
+    }
+
     init(directory: URL, limits: LiveTimeshiftLimits = LiveTimeshiftLimits()) throws {
         self.directory = directory
         self.limits = limits
@@ -269,29 +283,86 @@ final class LiveTimeshiftRing {
     }
 
     var snapshot: LiveTimeshiftSnapshot {
-        LiveTimeshiftSnapshot(duration: entries.reduce(0) { $0 + $1.segment.duration }, bytes: totalBytes,
+        LiveTimeshiftSnapshot(duration: activeDuration, bytes: totalBytes,
                               targetDuration: targetDuration, recordedEnd: nextStart, notice: notice)
+    }
+
+    func nextSegmentFileSpec() throws -> (name: String, url: URL) {
+        guard !stopped else { throw LiveTimeshiftError.stopped }
+        let name = "segment-\(localSequence).ts"
+        return (name, directory.appendingPathComponent(name))
     }
 
     func append(_ segment: RecordedHLSSegment, data: Data, target: Double, now: TimeInterval) throws {
         guard !stopped else { throw LiveTimeshiftError.stopped }
-        guard data.count <= limits.segmentBytes else { throw LiveTimeshiftError.tooLarge }
-        guard data.count > 0, target.isFinite, target > 0, segment.duration.isFinite, segment.duration >= 0.25 else { throw LiveTimeshiftError.invalidPlaylist }
+        try validate(segment: segment, byteCount: data.count, target: target)
+        let name = "segment-\(localSequence).ts"
+        let fileURL = directory.appendingPathComponent(name)
+        // Each segment has a unique monotonically increasing filename and is published only after write completes.
+        try data.write(to: fileURL)
+        do {
+            try publishPrepared(segment, name: name, fileURL: fileURL, byteCount: data.count, target: target, now: now)
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
+        }
+    }
+
+    func appendPrewritten(
+        _ segment: RecordedHLSSegment,
+        name: String,
+        fileURL: URL,
+        byteCount: Int,
+        target: Double,
+        now: TimeInterval
+    ) throws {
+        do {
+            guard !stopped else { throw LiveTimeshiftError.stopped }
+            try validate(segment: segment, byteCount: byteCount, target: target)
+            try publishPrepared(segment, name: name, fileURL: fileURL, byteCount: byteCount, target: target, now: now)
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw error
+        }
+    }
+
+    private func validate(segment: RecordedHLSSegment, byteCount: Int, target: Double) throws {
+        guard byteCount <= limits.segmentBytes else { throw LiveTimeshiftError.tooLarge }
+        guard byteCount > 0, target.isFinite, target > 0, segment.duration.isFinite, segment.duration >= 0.25 else {
+            throw LiveTimeshiftError.invalidPlaylist
+        }
+        let windowByteLimit = limits.bytes / 2
+        guard byteCount <= windowByteLimit else { throw LiveTimeshiftError.bufferLimit }
+    }
+
+    private func publishPrepared(
+        _ segment: RecordedHLSSegment,
+        name: String,
+        fileURL: URL,
+        byteCount: Int,
+        target: Double,
+        now: TimeInterval
+    ) throws {
         reap(now: now)
         targetDuration = max(targetDuration, target)
         // Reserve half the total budget for leases of recently removed manifests.
         let windowByteLimit = limits.bytes / 2
-        guard data.count <= windowByteLimit else { throw LiveTimeshiftError.bufferLimit }
-        while !entries.isEmpty,
-              entries.count >= max(1, limits.segmentCount / 2) ||
-              entries.reduce(0, { $0 + $1.bytes }) + data.count > windowByteLimit ||
-              entries.reduce(0, { $0 + $1.segment.duration }) + segment.duration > limits.seconds {
-            let removed = entries.removeFirst()
+        let maxActiveSegments = max(1, limits.segmentCount / 2)
+        while entryHead < entryStorage.count,
+              (entryStorage.count - entryHead) >= maxActiveSegments ||
+              activeBytes + byteCount > windowByteLimit ||
+              activeDuration + segment.duration > limits.seconds {
+            let removed = entryStorage[entryHead]
+            entryHead += 1
+            activeBytes -= removed.bytes
+            activeDuration = max(0, activeDuration - removed.segment.duration)
             retired.append(removed)
             notice = "The temporary buffer is full. Older content expires as capture continues."
         }
+        compactEntriesIfNeeded()
         reap(now: now)
-        guard entries.count + retired.count < limits.segmentCount, totalBytes <= limits.bytes - data.count else {
+        guard (entryStorage.count - entryHead) + retired.count < limits.segmentCount,
+              totalBytes <= limits.bytes - byteCount else {
             throw LiveTimeshiftError.bufferLimit
         }
         if let previous = lastSourceSequence,
@@ -311,26 +382,42 @@ final class LiveTimeshiftRing {
         let adjusted = RecordedHLSSegment(sequence: localSequence, discontinuity: localDiscontinuity,
                                           duration: segment.duration, url: segment.url,
                                           programDateTime: date, gap: false)
-        let name = "segment-\(localSequence).ts"
-        try data.write(to: directory.appendingPathComponent(name), options: .atomic)
-        entries.append(Entry(segment: adjusted, name: name, bytes: data.count, start: nextStart))
-        totalBytes += data.count
+        entryStorage.append(Entry(segment: adjusted, name: name, bytes: byteCount, start: nextStart))
+        fileIndex[name] = fileURL
+        activeBytes += byteCount
+        activeDuration += segment.duration
+        totalBytes += byteCount
         nextStart += segment.duration
         localSequence += 1
         lastSourceSequence = segment.sequence
         lastSourceDiscontinuity = segment.discontinuity
     }
 
+    private func compactEntriesIfNeeded() {
+        if entryHead == entryStorage.count {
+            entryStorage.removeAll(keepingCapacity: true)
+            entryHead = 0
+        } else if entryHead >= 64 && entryHead * 2 >= entryStorage.count {
+            entryStorage.removeFirst(entryHead)
+            entryHead = 0
+        }
+    }
+
     func playlist(now: TimeInterval) throws -> Data {
-        guard !stopped, let first = entries.first else { throw LiveTimeshiftError.stopped }
-        let duration = snapshot.duration
-        var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:\(Int(ceil(targetDuration)))",
-                     "#EXT-X-MEDIA-SEQUENCE:\(first.segment.sequence)",
-                     "#EXT-X-DISCONTINUITY-SEQUENCE:\(first.segment.discontinuity)"]
+        guard !stopped, entryHead < entryStorage.count else { throw LiveTimeshiftError.stopped }
+        let first = entryStorage[entryHead]
+        let duration = activeDuration
+        var lines: [String] = []
+        lines.reserveCapacity((entryStorage.count - entryHead) * 3 + 6)
+        lines.append("#EXTM3U")
+        lines.append("#EXT-X-VERSION:3")
+        lines.append("#EXT-X-TARGETDURATION:\(Int(ceil(targetDuration)))")
+        lines.append("#EXT-X-MEDIA-SEQUENCE:\(first.segment.sequence)")
+        lines.append("#EXT-X-DISCONTINUITY-SEQUENCE:\(first.segment.discontinuity)")
         var discontinuity = first.segment.discontinuity
-        for index in entries.indices {
-            let entry = entries[index]
-            entries[index].advertisedUntil = max(entry.advertisedUntil, now + duration + entry.segment.duration)
+        for index in entryHead..<entryStorage.count {
+            let entry = entryStorage[index]
+            entryStorage[index].advertisedUntil = max(entry.advertisedUntil, now + duration + entry.segment.duration)
             if entry.segment.discontinuity != discontinuity {
                 lines.append("#EXT-X-DISCONTINUITY")
                 discontinuity = entry.segment.discontinuity
@@ -343,8 +430,8 @@ final class LiveTimeshiftRing {
     }
 
     func file(named name: String) -> URL? {
-        guard !stopped, entries.contains(where: { $0.name == name }) || retired.contains(where: { $0.name == name }) else { return nil }
-        return directory.appendingPathComponent(name)
+        guard !stopped else { return nil }
+        return fileIndex[name]
     }
 
     func acquireFile(named name: String) -> URL? {
@@ -365,7 +452,8 @@ final class LiveTimeshiftRing {
     func reap(now: TimeInterval) {
         retired.removeAll { entry in
             guard (stopped || entry.advertisedUntil <= now), readerCounts[entry.name] == nil else { return false }
-            try? FileManager.default.removeItem(at: directory.appendingPathComponent(entry.name))
+            let url = fileIndex.removeValue(forKey: entry.name) ?? directory.appendingPathComponent(entry.name)
+            try? FileManager.default.removeItem(at: url)
             totalBytes -= entry.bytes
             return true
         }
@@ -373,8 +461,13 @@ final class LiveTimeshiftRing {
 
     func stop() {
         stopped = true
-        retired.append(contentsOf: entries)
-        entries.removeAll()
+        if entryHead < entryStorage.count {
+            retired.append(contentsOf: entryStorage[entryHead...])
+        }
+        entryStorage.removeAll()
+        entryHead = 0
+        activeBytes = 0
+        activeDuration = 0
         reap(now: .greatestFiniteMagnitude)
         if totalBytes == 0 { try? FileManager.default.removeItem(at: directory) }
     }
@@ -795,7 +888,7 @@ actor LiveTimeshiftRecorder {
                     try Task.checkCancellation()
                     guard !stopped else { throw LiveTimeshiftError.stopped }
                     let segmentNow = clock()
-                    try ring.append(segment, data: data, target: playlist.targetDuration, now: segmentNow)
+                    try await writeAndPublish(segment, data: data, target: playlist.targetDuration, now: segmentNow)
                     latestSequence = segment.sequence
                     lastNewSegmentAt = segmentNow
                 }
@@ -808,6 +901,25 @@ actor LiveTimeshiftRecorder {
             latestURL = nil
             throw error
         }
+    }
+
+    private func writeAndPublish(
+        _ segment: RecordedHLSSegment,
+        data: Data,
+        target: Double,
+        now: TimeInterval
+    ) async throws {
+        let (name, fileURL) = try ring.nextSegmentFileSpec()
+        // Write segment data off the actor executor so local HTTP manifest/segment reads stay non-blocking.
+        try await Task.detached(priority: .userInitiated) {
+            try data.write(to: fileURL)
+        }.value
+        if stopped || Task.isCancelled {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw LiveTimeshiftError.stopped
+        }
+        try ring.appendPrewritten(segment, name: name, fileURL: fileURL, byteCount: data.count, target: target, now: now)
+        notifyStateWaiters()
     }
 
     func snapshot() -> LiveTimeshiftSnapshot {
@@ -847,11 +959,98 @@ actor LiveTimeshiftRecorder {
         if let registeredDirectoryName {
             ActiveTimeshiftRegistry.shared.unregister(registeredDirectoryName)
         }
+        notifyStateWaiters()
     }
 
     private var relayFailure: Error?
     private var relaySequence: Int64 = 0
     private var relayDiscontinuity: Int64 = 0
+    private var stateWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    private func notifyStateWaiters() {
+        guard !stateWaiters.isEmpty else { return }
+        let waiters = Array(stateWaiters.values)
+        stateWaiters.removeAll()
+        for continuation in waiters {
+            continuation.resume()
+        }
+    }
+
+    private func removeStateWaiter(_ id: UUID) {
+        if let continuation = stateWaiters.removeValue(forKey: id) {
+            continuation.resume()
+        }
+    }
+
+    private func waitForStateChange() async {
+        let waiterID = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if stopped || relayFailure != nil || Task.isCancelled {
+                    continuation.resume()
+                    return
+                }
+                stateWaiters[waiterID] = continuation
+            }
+        } onCancel: {
+            Task { await self.removeStateWaiter(waiterID) }
+        }
+    }
+
+    /// Event-driven readiness notification: returns immediately once the first segment is available,
+    /// or throws if capture fails, stops, or exceeds `timeout`.
+    func waitForFirstSegment(timeout: TimeInterval) async throws -> LiveTimeshiftSnapshot {
+        if let failure = relayFailure { throw failure }
+        if stopped { throw LiveTimeshiftError.stopped }
+        let current = snapshot()
+        if current.duration > 0 { return current }
+
+        guard timeout > 0 else { throw LiveTimeshiftError.startupTimeout }
+        return try await withThrowingTaskGroup(of: LiveTimeshiftSnapshot.self) { group in
+            group.addTask {
+                while !Task.isCancelled {
+                    if let failure = await self.transportStreamFailure() { throw failure }
+                    if await self.isStopped() { throw LiveTimeshiftError.stopped }
+                    let snap = await self.snapshot()
+                    if snap.duration > 0 { return snap }
+                    await self.waitForStateChange()
+                }
+                throw CancellationError()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw LiveTimeshiftError.startupTimeout
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+
+    /// Waits for a new segment to land (or `timeout` to elapse) without busy polling.
+    func waitForSnapshotUpdate(afterRecordedEnd previousEnd: Double, timeout: TimeInterval = 2.0) async throws -> LiveTimeshiftSnapshot {
+        if let failure = relayFailure { throw failure }
+        if stopped { throw LiveTimeshiftError.stopped }
+        let current = snapshot()
+        if current.recordedEnd > previousEnd { return current }
+
+        return try await withThrowingTaskGroup(of: LiveTimeshiftSnapshot.self) { group in
+            group.addTask {
+                await self.waitForStateChange()
+                if let failure = await self.transportStreamFailure() { throw failure }
+                if await self.isStopped() { throw LiveTimeshiftError.stopped }
+                return await self.snapshot()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(max(0.1, timeout) * 1_000_000_000))
+                if let failure = await self.transportStreamFailure() { throw failure }
+                return await self.snapshot()
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+
+    private func isStopped() -> Bool { stopped }
 
     func clearTransportStreamFailure() {
         relayFailure = nil
@@ -890,12 +1089,13 @@ actor LiveTimeshiftRecorder {
                         do {
                             // Keep #EXT-X-TARGETDURATION stable across typical 2-4s provider GOPs
                             // instead of mutating upward on every minor GOP fluctuation.
-                            try ring.append(recorded, data: segment.data, target: max(4, ceil(segment.duration)), now: now)
+                            try await writeAndPublish(recorded, data: segment.data, target: max(4, ceil(segment.duration)), now: now)
                         } catch {
                             #if canImport(os)
                             relayLog.error("relay buffer rejected a segment: \(String(describing: error), privacy: .public)")
                             #endif
                             relayFailure = error
+                            notifyStateWaiters()
                             return
                         }
                         #if canImport(os)
@@ -907,6 +1107,7 @@ actor LiveTimeshiftRecorder {
                     }
                     if bytes > 4 * 1024 * 1024, !segmenter.hasProgram {
                         relayFailure = LiveTimeshiftError.unsupported("The provider's .ts stream is not MPEG-TS video.")
+                        notifyStateWaiters()
                         return
                     }
                     if emitted.isEmpty, bytes > 0, clock() - lastSegmentTime > segmentStallTimeout {
@@ -921,6 +1122,7 @@ actor LiveTimeshiftRecorder {
                 #endif
                 if case LiveTimeshiftError.network(let status) = error, status == 401 || status == 404 {
                     relayFailure = error
+                    notifyStateWaiters()
                     return
                 }
                 failures += 1
@@ -932,6 +1134,7 @@ actor LiveTimeshiftRecorder {
                 }
                 if failures >= maxFailures {
                     relayFailure = error
+                    notifyStateWaiters()
                     return
                 }
             }

@@ -81,9 +81,10 @@ public struct AppRootView: View {
             return
         }
         #endif
+        // Dismiss immediately once initial SwiftUI state is ready with a short fade.
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_600_000_000)
-            withAnimation(.easeInOut(duration: 0.4)) {
+            await Task.yield()
+            withAnimation(.easeOut(duration: 0.18)) {
                 showSplash = false
             }
         }

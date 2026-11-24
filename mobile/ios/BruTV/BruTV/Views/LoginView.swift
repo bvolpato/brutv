@@ -21,6 +21,9 @@ public struct LoginView: View {
     @State private var signInGeneration = UUID()
     @State private var signInTask: Task<Void, Never>?
     @State private var showScanner = false
+    @State private var profileToRename: ServerProfile?
+    @State private var renameDraft: String = ""
+    @State private var profileToDelete: ServerProfile?
 
     public init() {}
 
@@ -251,29 +254,90 @@ public struct LoginView: View {
                                 .padding(.horizontal, 4)
 
                             ForEach(account.savedProfiles) { profile in
-                                Button {
-                                    signIn(with: profile.loginLink)
-                                } label: {
-                                    HStack {
-                                        Image(systemName: profile.kind == .m3u ? "list.bullet.rectangle" : "server.rack")
-                                            .foregroundColor(.cyan)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(profile.name)
-                                                .font(.system(size: 14, weight: .semibold))
-                                                .foregroundColor(.white)
-                                            Text(profile.kind == .m3u ? (profile.playlistURL ?? profile.serverURL) : profile.serverURL)
-                                                .font(.system(size: 12))
+                                HStack(spacing: 8) {
+                                    Button {
+                                        signIn(with: profile.loginLink)
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: profile.kind == .m3u ? "list.bullet.rectangle" : "server.rack")
+                                                .foregroundColor(.cyan)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(profile.name)
+                                                    .font(.system(size: 14, weight: .semibold))
+                                                    .foregroundColor(.white)
+                                                Text(profile.kind == .m3u ? (profile.playlistURL ?? profile.serverURL) : profile.serverURL)
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(.gray)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            }
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
                                                 .foregroundColor(.gray)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
                                         }
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .foregroundColor(.gray)
+                                        .padding(14)
+                                        .background(Color(white: 0.1))
+                                        .cornerRadius(12)
                                     }
-                                    .padding(14)
-                                    .background(Color(white: 0.1))
-                                    .cornerRadius(12)
+                                    .buttonStyle(.plain)
+
+                                    #if !os(tvOS)
+                                    Menu {
+                                        Button {
+                                            renameDraft = profile.name
+                                            profileToRename = profile
+                                        } label: {
+                                            Label("Rename".localized, systemImage: "pencil")
+                                        }
+
+                                        Button(role: .destructive) {
+                                            profileToDelete = profile
+                                        } label: {
+                                            Label("Delete".localized, systemImage: "trash")
+                                        }
+                                    } label: {
+                                        Image(systemName: "ellipsis.circle")
+                                            .font(.system(size: 18))
+                                            .foregroundColor(.gray)
+                                            .frame(width: 40, height: 44)
+                                            .background(Color(white: 0.1))
+                                            .cornerRadius(12)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Manage profile".localized)
+                                    #else
+                                    Button {
+                                        renameDraft = profile.name
+                                        profileToRename = profile
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                            .foregroundColor(.cyan)
+                                            .padding(12)
+                                    }
+                                    .accessibilityLabel("Rename".localized)
+
+                                    Button(role: .destructive) {
+                                        profileToDelete = profile
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .foregroundColor(.red)
+                                            .padding(12)
+                                    }
+                                    .accessibilityLabel("Delete".localized)
+                                    #endif
+                                }
+                                .contextMenu {
+                                    Button {
+                                        renameDraft = profile.name
+                                        profileToRename = profile
+                                    } label: {
+                                        Label("Rename".localized, systemImage: "pencil")
+                                    }
+                                    Button(role: .destructive) {
+                                        profileToDelete = profile
+                                    } label: {
+                                        Label("Delete".localized, systemImage: "trash")
+                                    }
                                 }
                             }
                         }
@@ -292,6 +356,37 @@ public struct LoginView: View {
             }
         }
         #endif
+        .alert(
+            "Rename Profile".localized,
+            isPresented: Binding(get: { profileToRename != nil }, set: { if !$0 { profileToRename = nil } })
+        ) {
+            TextField("Profile name".localized, text: $renameDraft)
+            Button("Save".localized) {
+                if let profile = profileToRename {
+                    account.renameProfile(profile, to: renameDraft)
+                }
+                profileToRename = nil
+            }
+            Button("Cancel".localized, role: .cancel) {
+                profileToRename = nil
+            }
+        }
+        .alert(
+            "Delete Profile".localized,
+            isPresented: Binding(get: { profileToDelete != nil }, set: { if !$0 { profileToDelete = nil } })
+        ) {
+            Button("Delete".localized, role: .destructive) {
+                if let profile = profileToDelete {
+                    account.deleteProfile(profile)
+                }
+                profileToDelete = nil
+            }
+            Button("Cancel".localized, role: .cancel) {
+                profileToDelete = nil
+            }
+        } message: {
+            Text("Are you sure you want to remove this saved profile?".localized)
+        }
     }
 
     // MARK: - Fields

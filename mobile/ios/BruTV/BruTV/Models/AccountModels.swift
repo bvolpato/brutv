@@ -105,15 +105,22 @@ public struct UserInfo: Codable, Equatable, Sendable {
         self.allowedOutputFormats = allowedOutputFormats
     }
 
+    private static let expirationFormatterLock = NSLock()
+    private static let expirationFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
     public var expirationFormatted: String {
         guard let expDate, let timestamp = Double(expDate), timestamp > 0 else {
             return "Unlimited / No Expiry"
         }
         let date = Date(timeIntervalSince1970: timestamp)
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
+        Self.expirationFormatterLock.lock()
+        defer { Self.expirationFormatterLock.unlock() }
+        return Self.expirationFormatter.string(from: date)
     }
 
     public var isExpired: Bool {

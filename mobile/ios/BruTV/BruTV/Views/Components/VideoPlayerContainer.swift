@@ -2,12 +2,9 @@ import SwiftUI
 import AVFoundation
 import AVKit
 
-/// Shows the shared `AVPlayer` through an `AVPlayerLayer`.
-///
-/// A plain layer, unlike `AVPlayerViewController`, can be removed and attached again
-/// (full player, mini player) without losing the picture. If the layer stays without
-/// a frame while the player is playing, it asks the player to redraw the current frame.
-public struct VideoPlayerContainer: UIViewRepresentable {
+/// Shows the shared `AVPlayer` through an `AVPlayerLayer` with real `.fit`, `.fill`,
+/// `16:9`, and `4:3` aspect-ratio presentation.
+public struct VideoPlayerContainer: View {
     public let player: AVPlayer
     public let aspectRatio: VideoAspectRatio
     public let showsNativeControls: Bool
@@ -33,18 +30,48 @@ public struct VideoPlayerContainer: UIViewRepresentable {
         self.accessibilityStatus = accessibilityStatus
     }
 
-    public func makeUIView(context: Context) -> PlayerLayerView {
+    public var body: some View {
+        let representable = PlayerLayerRepresentable(
+            player: player,
+            aspectRatio: aspectRatio,
+            allowsPictureInPicture: allowsPictureInPicture,
+            accessibilityIdentifier: accessibilityIdentifier,
+            accessibilityStatus: accessibilityStatus
+        )
+        switch aspectRatio {
+        case .fit, .fill:
+            representable
+        case .sixteenByNine:
+            representable
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .fourByThree:
+            representable
+                .aspectRatio(4.0 / 3.0, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct PlayerLayerRepresentable: UIViewRepresentable {
+    let player: AVPlayer
+    let aspectRatio: VideoAspectRatio
+    let allowsPictureInPicture: Bool
+    let accessibilityIdentifier: String?
+    let accessibilityStatus: String?
+
+    func makeUIView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
         view.isUserInteractionEnabled = false
         update(view)
         return view
     }
 
-    public func updateUIView(_ view: PlayerLayerView, context: Context) {
+    func updateUIView(_ view: PlayerLayerView, context: Context) {
         update(view)
     }
 
-    public static func dismantleUIView(_ view: PlayerLayerView, coordinator: ()) {
+    static func dismantleUIView(_ view: PlayerLayerView, coordinator: ()) {
         view.player = nil
         DispatchQueue.main.async {
             view.allowsPictureInPicture = false
@@ -56,10 +83,13 @@ public struct VideoPlayerContainer: UIViewRepresentable {
             view.player = player
         }
         switch aspectRatio {
-        case .fit, .sixteenByNine, .fourByThree:
+        case .fit:
             view.playerLayer.videoGravity = .resizeAspect
         case .fill:
             view.playerLayer.videoGravity = .resizeAspectFill
+        case .sixteenByNine, .fourByThree:
+            // Container is constrained to exact 16:9 or 4:3 bounds, so .resize fills that aspect box cleanly.
+            view.playerLayer.videoGravity = .resize
         }
         view.allowsPictureInPicture = allowsPictureInPicture
         view.testIdentifier = accessibilityIdentifier

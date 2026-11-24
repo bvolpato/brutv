@@ -52,6 +52,71 @@ public enum M3UPlaylistParser {
         return result.entries
     }
 
+    /// Single-pass parser directly into deduplicated `[LiveStream]` values with capacity estimation.
+    /// Avoids holding both `[M3UEntry]` and `[LiveStream]` arrays simultaneously on large playlists.
+    public static func parseLiveStreamsValidated(_ data: Data) throws -> [LiveStream] {
+        try data.withUnsafeBytes { raw -> [LiveStream] in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return [] }
+            let buf = UnsafeBufferPointer(start: base, count: raw.count)
+            let estimatedCapacity = max(16, min(raw.count / 180, 500_000))
+            var liveChannels: [LiveStream] = []
+            liveChannels.reserveCapacity(estimatedCapacity)
+            var seenLive = Set<Int>()
+            seenLive.reserveCapacity(estimatedCapacity)
+
+            var vodFallback: [LiveStream] = []
+            var seenVOD = Set<Int>()
+
+            var containsHLSMediaTags = false
+            var liveNum = 0
+            var vodNum = 0
+
+            scan(buf, onHLSMediaTag: {
+                containsHLSMediaTags = true
+            }, onEntry: { name, url, logo, group, tvgID in
+                let isVOD = url.contains("/movie/") || url.contains("/series/")
+                let id = stableID(for: url)
+                if !isVOD {
+                    guard seenLive.insert(id).inserted else { return }
+                    liveNum += 1
+                    liveChannels.append(
+                        LiveStream(
+                            id: id,
+                            num: liveNum,
+                            name: name,
+                            iconURLString: logo,
+                            epgChannelId: tvgID,
+                            categoryId: group,
+                            directURLString: url
+                        )
+                    )
+                    // Release fallback array once we know live channels exist.
+                    if !vodFallback.isEmpty {
+                        vodFallback.removeAll(keepingCapacity: false)
+                        seenVOD.removeAll(keepingCapacity: false)
+                    }
+                } else if liveChannels.isEmpty {
+                    guard seenVOD.insert(id).inserted else { return }
+                    vodNum += 1
+                    vodFallback.append(
+                        LiveStream(
+                            id: id,
+                            num: vodNum,
+                            name: name,
+                            iconURLString: logo,
+                            epgChannelId: tvgID,
+                            categoryId: group,
+                            directURLString: url
+                        )
+                    )
+                }
+            })
+
+            guard !containsHLSMediaTags else { throw M3UPlaylistError.hlsMediaManifest }
+            return liveChannels.isEmpty ? vodFallback : liveChannels
+        }
+    }
+
     private static func parseResult(_ data: Data) -> ParseResult {
         data.withUnsafeBytes { raw -> ParseResult in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return ParseResult(entries: [], containsHLSMediaTags: false) }
@@ -66,9 +131,23 @@ public enum M3UPlaylistParser {
 
     private static func parse(_ buf: UnsafeBufferPointer<UInt8>) -> ParseResult {
         var entries: [M3UEntry] = []
+        entries.reserveCapacity(max(16, min(buf.count / 180, 500_000)))
+        var containsHLSMediaTags = false
+        scan(buf, onHLSMediaTag: {
+            containsHLSMediaTags = true
+        }, onEntry: { name, url, logo, group, tvgID in
+            entries.append(M3UEntry(name: name, url: url, logo: logo, group: group, tvgID: tvgID))
+        })
+        return ParseResult(entries: entries, containsHLSMediaTags: containsHLSMediaTags)
+    }
+
+    private static func scan(
+        _ buf: UnsafeBufferPointer<UInt8>,
+        onHLSMediaTag: () -> Void,
+        onEntry: (_ name: String, _ url: String, _ logo: String?, _ group: String, _ tvgID: String?) -> Void
+    ) {
         var pendingInfo: Range<Int>?
         var pendingGroup: String?
-        var containsHLSMediaTags = false
 
         let count = buf.count
         var lineStart = 0
@@ -85,7 +164,7 @@ public enum M3UPlaylistParser {
 
             if s < e {
                 if matchesPrefix(buf, s, e, Prefix.extX) {
-                    containsHLSMediaTags = true
+                    onHLSMediaTag()
                 } else if hasPrefix(buf, s, e, Prefix.extinf) {
                     pendingInfo = s..<e
                     pendingGroup = nil
@@ -96,14 +175,13 @@ public enum M3UPlaylistParser {
                     let info = pendingInfo.map { parseInfo(buf, $0) } ?? InfoFields()
                     let group = primaryGroup(info.group) ?? primaryGroup(pendingGroup) ?? ungroupedTitle
                     let name = info.title ?? info.tvgName ?? URL(string: url)?.lastPathComponent ?? url
-                    entries.append(M3UEntry(name: name, url: url, logo: info.logo, group: group, tvgID: info.tvgID))
+                    onEntry(name, url, info.logo, group, info.tvgID)
                     pendingInfo = nil
                     pendingGroup = nil
                 }
             }
             lineStart = next
         }
-        return ParseResult(entries: entries, containsHLSMediaTags: containsHLSMediaTags)
     }
 
     private struct InfoFields {

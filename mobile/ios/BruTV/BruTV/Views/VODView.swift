@@ -9,6 +9,7 @@ public enum CatalogSortOrder: String, CaseIterable, Identifiable {
 }
 
 public struct VODView: View {
+    @ObservedObject private var account = AccountStore.shared
     @ObservedObject private var localization = LocalizationManager.shared
 
     @State private var categories: [VODCategory] = []
@@ -25,33 +26,57 @@ public struct VODView: View {
     @State private var categoryCounts: [String: Int] = [:]
     @State private var allLoadedMovies: [VODStream] = []
     @State private var showSideMenu: Bool = false
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadGeneration: UInt64 = 0
+    @State private var filterTask: Task<Void, Never>?
+    @State private var filterGeneration: UInt64 = 0
 
     private let client = AccountStore.shared.client
 
     public init() {}
 
-    private func recomputeFilteredMovies() {
-        let base: [VODStream]
-        if searchText.isEmpty {
-            base = movies
-        } else {
-            base = movies.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    private func scheduleFilter(debounce: Bool) {
+        filterTask?.cancel()
+        filterGeneration &+= 1
+        let generation = filterGeneration
+        let sourceMovies = movies
+        let rawQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let order = sortOrder
+
+        if rawQuery.isEmpty && order == .defaultOrder {
+            filteredMovies = sourceMovies
+            return
         }
 
-        switch sortOrder {
-        case .defaultOrder:
-            filteredMovies = base
-        case .topRated:
-            filteredMovies = base.sorted { parseRating($0.rating) > parseRating($1.rating) }
-        case .alphabetical:
-            filteredMovies = base.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let delayNs: UInt64 = (debounce && !rawQuery.isEmpty) ? 160_000_000 : 0
+        filterTask = Task {
+            if delayNs > 0 {
+                try? await Task.sleep(nanoseconds: delayNs)
+                guard !Task.isCancelled else { return }
+            }
+            let normalizedQuery = ChannelTextHelper.normalizedSearchText(rawQuery)
+            let result = await Task.detached(priority: .userInitiated) { () -> [VODStream] in
+                let base: [VODStream]
+                if normalizedQuery.isEmpty {
+                    base = sourceMovies
+                } else {
+                    base = sourceMovies.filter { $0.normalizedSearchText.contains(normalizedQuery) }
+                }
+                switch order {
+                case .defaultOrder:
+                    return base
+                case .topRated:
+                    return base.sorted { $0.ratingValue > $1.ratingValue }
+                case .alphabetical:
+                    return base.sorted { $0.normalizedSearchText < $1.normalizedSearchText }
+                }
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.filterGeneration == generation else { return }
+                self.filteredMovies = result
+            }
         }
-    }
-
-    private func parseRating(_ raw: String?) -> Double {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return 0 }
-        let cleaned = raw.components(separatedBy: "/").first ?? raw
-        return Double(cleaned.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     private var currentCategoryName: String {
@@ -119,8 +144,11 @@ public struct VODView: View {
         .sheet(item: $selectedMovie) { movie in
             VODDetailView(movie: movie, selectedMovie: $selectedMovie)
         }
-        .onChange(of: searchText) { _, _ in recomputeFilteredMovies() }
-        .onChange(of: sortOrder) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: sortOrder) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadCategories() }
+        }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
             recomputeMenuItems()
@@ -166,8 +194,11 @@ public struct VODView: View {
         .sheet(item: $selectedMovie) { movie in
             VODDetailView(movie: movie, selectedMovie: $selectedMovie)
         }
-        .onChange(of: searchText) { _, _ in recomputeFilteredMovies() }
-        .onChange(of: sortOrder) { _, _ in recomputeFilteredMovies() }
+        .onChange(of: searchText) { _, _ in scheduleFilter(debounce: true) }
+        .onChange(of: sortOrder) { _, _ in scheduleFilter(debounce: false) }
+        .onChange(of: account.catalogRefreshRevision) { _, _ in
+            Task { await loadCategories() }
+        }
         .onChange(of: localization.selectedLanguage) { _, _ in recomputeMenuItems() }
         .task {
             recomputeMenuItems()
@@ -366,7 +397,7 @@ public struct VODView: View {
                             .fill(Color(white: 0.12))
                             .aspectRatio(2/3, contentMode: .fit)
 
-                        CachedAsyncImage(url: movie.iconURL) {
+                        CachedAsyncImage(url: movie.iconURL, targetPixelSize: 320) {
                             Image(systemName: "film")
                                 .font(.system(size: 28))
                                 .foregroundColor(.gray)
@@ -440,27 +471,29 @@ public struct VODView: View {
     }
 
     private func loadMovies(categoryID: String) {
+        loadTask?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         isLoading = true
         errorMessage = nil
-        Task {
+        loadTask = Task {
             do {
                 let items = try await client.fetchVODStreams(categoryID: categoryID == "all" ? nil : categoryID)
-                await MainActor.run {
-                    self.movies = items
-                    self.isLoading = false
-
-                    if categoryID == "all" {
-                        self.allLoadedMovies = items
-                    }
-
-                    var icons = self.categoryIcons
-                    var counts = self.categoryCounts
+                try Task.checkCancellation()
+                let existingIcons = await MainActor.run { self.categoryIcons }
+                let existingCounts = await MainActor.run { self.categoryCounts }
+                let metadata = await Task.detached(priority: .userInitiated) { () -> (icons: [String: URL], counts: [String: Int]) in
+                    var icons = existingIcons
+                    // Reset counts when loading ALL so category totals never double on refresh.
+                    var counts: [String: Int] = categoryID == "all" ? [:] : existingCounts
 
                     if icons["all"] == nil, let first = items.first(where: { $0.iconURL != nil })?.iconURL {
                         icons["all"] = first
                     }
                     if categoryID == "all" {
                         counts["all"] = items.count
+                    } else {
+                        counts[categoryID] = items.count
                     }
 
                     for movie in items {
@@ -471,13 +504,28 @@ public struct VODView: View {
                             icons[movie.categoryId] = icon
                         }
                     }
-                    self.categoryIcons = icons
-                    self.categoryCounts = counts
-                    self.recomputeFilteredMovies()
+                    return (icons, counts)
+                }.value
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
+                    self.movies = items
+                    self.isLoading = false
+
+                    if categoryID == "all" {
+                        self.allLoadedMovies = items
+                    }
+
+                    self.categoryIcons = metadata.icons
+                    self.categoryCounts = metadata.counts
+                    self.scheduleFilter(debounce: false)
                     self.recomputeMenuItems()
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 await MainActor.run {
+                    guard self.loadGeneration == generation else { return }
                     self.errorMessage = error.localizedDescription
                     self.isLoading = false
                 }
@@ -486,7 +534,7 @@ public struct VODView: View {
     }
 
     private func reloadAll() async {
-        client.clearCache()
+        client.clearCache(includeDisk: true)
         await loadCategories()
     }
 }
@@ -604,7 +652,7 @@ public struct VODDetailView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(white: 0.15))
                     .frame(width: 130, height: 195)
-                CachedAsyncImage(url: movie.iconURL) {
+                CachedAsyncImage(url: movie.iconURL, targetPixelSize: 512) {
                     Image(systemName: "film")
                         .font(.system(size: 32))
                         .foregroundColor(.gray)

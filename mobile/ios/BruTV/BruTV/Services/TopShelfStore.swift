@@ -44,7 +44,7 @@ public struct TopShelfItem: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-public struct TopShelfPayload: Codable, Sendable {
+public struct TopShelfPayload: Codable, Equatable, Sendable {
     public var favorites: [TopShelfItem]
     public var continueWatching: [TopShelfItem]
 
@@ -58,8 +58,11 @@ public final class TopShelfStore: @unchecked Sendable {
     public static let shared = TopShelfStore()
     public static let appGroupID = "group.com.bvolpato.brutv"
     private static let storageKey = "brutv.topshelf.payload"
+    private static let profilesStorageKey = "brutv.topshelf.profilePayloads"
 
+    private let lock = NSLock()
     private let defaults: UserDefaults
+    private var activeProfileID: UUID?
 
     public init(suiteName: String? = appGroupID) {
         #if os(tvOS)
@@ -77,23 +80,65 @@ public final class TopShelfStore: @unchecked Sendable {
         self.defaults = userDefaults
     }
 
-    public func loadPayload() -> TopShelfPayload {
-        guard let data = defaults.data(forKey: Self.storageKey),
-              let payload = try? JSONDecoder().decode(TopShelfPayload.self, from: data) else {
-            return TopShelfPayload()
+    /// Scopes Top Shelf content to the selected profile. Passing `nil` (on logout) clears the active Top Shelf payload.
+    public func selectProfile(_ profileID: UUID?) {
+        lock.lock()
+        defer { lock.unlock() }
+        activeProfileID = profileID
+        guard let profileID else {
+            defaults.removeObject(forKey: Self.storageKey)
+            return
         }
-        return payload
+        let map = loadProfilePayloadsLocked()
+        let payload = map[profileID.uuidString] ?? TopShelfPayload()
+        writeActivePayloadLocked(payload)
+    }
+
+    public func clearProfile(_ profileID: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        var map = loadProfilePayloadsLocked()
+        map.removeValue(forKey: profileID.uuidString)
+        saveProfilePayloadsLocked(map)
+        if activeProfileID == profileID {
+            defaults.removeObject(forKey: Self.storageKey)
+        }
+    }
+
+    public func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        defaults.removeObject(forKey: Self.storageKey)
+    }
+
+    public func loadPayload() -> TopShelfPayload {
+        lock.lock()
+        defer { lock.unlock() }
+        return loadActivePayloadLocked()
     }
 
     public func save(payload: TopShelfPayload) {
-        guard let data = try? JSONEncoder().encode(payload) else { return }
-        defaults.set(data, forKey: Self.storageKey)
+        lock.lock()
+        defer { lock.unlock() }
+        writeActivePayloadLocked(payload)
+        if let activeProfileID {
+            var map = loadProfilePayloadsLocked()
+            map[activeProfileID.uuidString] = payload
+            saveProfilePayloadsLocked(map)
+        }
     }
 
     public func updateFavorites(items: [TopShelfItem]) {
-        var payload = loadPayload()
+        lock.lock()
+        defer { lock.unlock() }
+        var payload = loadActivePayloadLocked()
         payload.favorites = Array(items.prefix(20))
-        save(payload: payload)
+        writeActivePayloadLocked(payload)
+        if let activeProfileID {
+            var map = loadProfilePayloadsLocked()
+            map[activeProfileID.uuidString] = payload
+            saveProfilePayloadsLocked(map)
+        }
     }
 
 #if !TOPSHELF_EXTENSION
@@ -120,7 +165,9 @@ public final class TopShelfStore: @unchecked Sendable {
         imageURLString: String? = nil,
         kind: String
     ) {
-        var payload = loadPayload()
+        lock.lock()
+        defer { lock.unlock() }
+        var payload = loadActivePayloadLocked()
         payload.continueWatching.removeAll { $0.id == id && $0.kind == kind }
         let item = TopShelfItem(
             id: id,
@@ -134,6 +181,37 @@ public final class TopShelfStore: @unchecked Sendable {
         )
         payload.continueWatching.insert(item, at: 0)
         payload.continueWatching = Array(payload.continueWatching.prefix(20))
-        save(payload: payload)
+        writeActivePayloadLocked(payload)
+        if let activeProfileID {
+            var map = loadProfilePayloadsLocked()
+            map[activeProfileID.uuidString] = payload
+            saveProfilePayloadsLocked(map)
+        }
+    }
+
+    private func loadActivePayloadLocked() -> TopShelfPayload {
+        guard let data = defaults.data(forKey: Self.storageKey),
+              let payload = try? JSONDecoder().decode(TopShelfPayload.self, from: data) else {
+            return TopShelfPayload()
+        }
+        return payload
+    }
+
+    private func writeActivePayloadLocked(_ payload: TopShelfPayload) {
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        defaults.set(data, forKey: Self.storageKey)
+    }
+
+    private func loadProfilePayloadsLocked() -> [String: TopShelfPayload] {
+        guard let data = defaults.data(forKey: Self.profilesStorageKey),
+              let map = try? JSONDecoder().decode([String: TopShelfPayload].self, from: data) else {
+            return [:]
+        }
+        return map
+    }
+
+    private func saveProfilePayloadsLocked(_ map: [String: TopShelfPayload]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        defaults.set(data, forKey: Self.profilesStorageKey)
     }
 }

@@ -46,7 +46,6 @@ public final class HLSBufferEngine: @unchecked Sendable {
     public func configurePlayerItem(
         _ playerItem: AVPlayerItem,
         with profile: BufferProfile,
-        hardwareAccelerated: Bool = true,
         liveRewindEnabled: Bool = true
     ) {
         playerItem.preferredForwardBufferDuration = profile.forwardBufferDuration
