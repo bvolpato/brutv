@@ -113,29 +113,58 @@ void waitFor(brutv::Player& player, Predicate ready, std::chrono::seconds timeou
     throw std::runtime_error("Timed out waiting for playback state.");
 }
 
-void decodeFixture(const std::string& path, bool withAudio) {
+void decodeFixture(const std::string& path, bool withAudio, bool preferYuv = true) {
     auto sink = withAudio ? std::make_shared<CountingSink>() : nullptr;
     brutv::Player player(sink);
+    player.setPreferYuv(preferYuv);
     player.open(path, false, {{"User-Agent", "BruTV-Player-Test"},
                               {"Referer", "https://brutv.example/"}});
     std::size_t frameCount = 0;
     double previousPts = -1;
+    brutv::VideoFrame frame; // Reused across calls to exercise the zero-alloc frame pool!
+    std::vector<const std::uint8_t*> seenBuffers;
+    bool reusedBuffer = false;
     waitFor(player, [&](const auto& status) {
-        brutv::VideoFrame frame;
         if (player.takeFrame(frame)) {
-            require(frame.width > 0 && frame.width <= 1280, "Invalid decoded frame width.");
-            require(frame.height > 0 && frame.height <= 720, "Invalid decoded frame height.");
-            require(frame.rgba.size() == static_cast<std::size_t>(frame.width) * frame.height * 4,
-                    "Decoded frame has the wrong byte size.");
+            require(frame.width > 0 && frame.width <= 1920, "Invalid decoded frame width.");
+            require(frame.height > 0 && frame.height <= 1080, "Invalid decoded frame height.");
+            if (preferYuv) {
+                require(frame.format == brutv::VideoFrame::Format::Yuv420p,
+                        "Expected GPU YUV420P frame on default path.");
+                const std::size_t ySize = static_cast<std::size_t>(frame.width) * frame.height;
+                const std::size_t uvSize =
+                    static_cast<std::size_t>(frame.width / 2) * (frame.height / 2);
+                require(frame.yPlane.size() == ySize && frame.uPlane.size() == uvSize &&
+                        frame.vPlane.size() == uvSize,
+                        "Decoded YUV420P planes have wrong byte sizes.");
+                require(std::any_of(frame.yPlane.begin(), frame.yPlane.end(), [](auto byte) { return byte != 0; }),
+                        "Decoded YUV video luma plane is empty.");
+                if (std::find(seenBuffers.begin(), seenBuffers.end(), frame.yPlane.data()) != seenBuffers.end()) {
+                    reusedBuffer = true;
+                } else {
+                    seenBuffers.push_back(frame.yPlane.data());
+                }
+            } else {
+                require(frame.format == brutv::VideoFrame::Format::Rgba,
+                        "Expected RGBA fallback frame when preferYuv is false.");
+                require(frame.rgba.size() == static_cast<std::size_t>(frame.width) * frame.height * 4,
+                        "Decoded frame has the wrong byte size.");
+                require(std::any_of(frame.rgba.begin(), frame.rgba.end(), [](auto byte) { return byte != 0; }),
+                        "Decoded video is empty.");
+                if (std::find(seenBuffers.begin(), seenBuffers.end(), frame.rgba.data()) != seenBuffers.end()) {
+                    reusedBuffer = true;
+                } else {
+                    seenBuffers.push_back(frame.rgba.data());
+                }
+            }
             require(frame.ptsSeconds >= previousPts, "Video presentation time went backwards.");
-            require(std::any_of(frame.rgba.begin(), frame.rgba.end(), [](auto byte) { return byte != 0; }),
-                    "Decoded video is empty.");
             previousPts = frame.ptsSeconds;
             ++frameCount;
         }
         return status.state == brutv::Player::State::Ended;
     }, std::chrono::seconds(10));
     require(frameCount >= 15, "Too few frames decoded from the media fixture.");
+    require(reusedBuffer, "VideoFrame buffer pool did not recycle frame allocations.");
     require(player.status().hasVideo && player.status().hasAudio, "Missing media stream discovery.");
     if (sink) {
         require(sink->totalFrames() >= 48000, "Audio was not decoded and resampled.");
@@ -144,7 +173,6 @@ void decodeFixture(const std::string& path, bool withAudio) {
     player.seekRelative(-1.0);
     bool resumed = false;
     waitFor(player, [&](const auto& status) {
-        brutv::VideoFrame frame;
         resumed = player.takeFrame(frame) || resumed;
         return resumed && status.state == brutv::Player::State::Playing;
     }, std::chrono::seconds(3));
@@ -559,11 +587,11 @@ int main(int argc, char** argv) {
     }
     try {
         unitTests();
-        decodeFixture(argv[1], true);
-        decodeFixture(argv[1], false);
+        decodeFixture(argv[1], true, true);
+        decodeFixture(argv[1], false, false);
         controls(argv[1]);
         if (argc == 3) tracks(argv[2]);
-        std::cout << "Media decode, audio resampling, timing, controls and lifecycle passed.\n";
+        std::cout << "Media decode, GPU YUV & RGBA pool, audio resampling, timing, controls and lifecycle passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -86,8 +86,8 @@ int main(int argc, char **argv) {
             app.playUrl(play, false);
         int frame = 0;
         while (!app.shouldQuit()) {
-            const auto nextFrame =
-                std::chrono::steady_clock::now() + std::chrono::microseconds(16667);
+            const auto frameStart = std::chrono::steady_clock::now();
+            const auto nextFrame = frameStart + std::chrono::microseconds(16667);
             app.handle(platform->poll());
             app.tick();
             const int width = platform->width(), height = platform->height();
@@ -104,8 +104,15 @@ int main(int argc, char **argv) {
                     gfx.screenshot(screenshot);
                 break;
             }
+            const auto swapStart = std::chrono::steady_clock::now();
             platform->present();
-            std::this_thread::sleep_until(nextFrame);
+            const auto afterSwap = std::chrono::steady_clock::now();
+            // Avoid double frame pacing when VSync already blocked in present().
+            const auto swapDuration = afterSwap - swapStart;
+            if (swapDuration < std::chrono::milliseconds(4) &&
+                afterSwap + std::chrono::milliseconds(1) < nextFrame) {
+                std::this_thread::sleep_until(nextFrame);
+            }
         }
         return 0;
     } catch (const std::exception &error) {

@@ -7,7 +7,7 @@ cache=${BRUTV_PS5_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/brutv-ps5}
 [[ $cache == /* && $cache != / && $cache != *$'\n'* && $cache != *' '* ]] || {
     echo 'BRUTV_PS5_CACHE must be an absolute path without whitespace' >&2; exit 2;
 }
-for tool in curl sha256sum tar unzip git jq cmake ninja clang-18 clang++-18 ld.lld-18 llvm-ar-18 llvm-ranlib-18 llvm-readelf-18 make pkg-config zip rg; do
+for tool in curl sha256sum tar unzip git jq cmake ninja clang-18 clang++-18 ld.lld-18 llvm-ar-18 llvm-ranlib-18 llvm-readelf-18 make pkg-config zip grep; do
     command -v "$tool" >/dev/null || { echo "missing build tool: $tool" >&2; exit 2; }
 done
 mkdir -p "$cache/downloads"
@@ -79,10 +79,23 @@ cmp <(git -C "$native" show HEAD:tooling/native/sce_module_writer.cpp |
     "$native/tooling/native/sce_module_writer.cpp"
 # The upstream helpers are GPL source-built host utilities. Only their zlib and
 # runtime paths are used; their older SDK/PacBrew bootstrap is not invoked.
-USE_CCACHE=0 bash "$native/tools/setup-native-dependencies.sh" --skip-sdk >/dev/null
-USE_CCACHE=0 bash "$native/tools/build-host-tools.sh" >&2
+use_ccache=${USE_CCACHE:-0}
+if [[ -z ${USE_CCACHE:-} ]] && command -v ccache >/dev/null; then
+    use_ccache=1
+fi
+USE_CCACHE="$use_ccache" bash "$native/tools/setup-native-dependencies.sh" --skip-sdk >/dev/null
+patch_hash=$(sha256sum "$patch" | cut -d ' ' -f 1)
+host_stamp="$native/build/host/.brutv-host-tools-stamp"
+expected_stamp="${commit}:${patch_hash}"
+if [[ ! -x $native/build/host/ps5-native-tool ]] ||
+   [[ ! -x $native/build/host/libc-builder ]] ||
+   [[ ! -f $host_stamp ]] ||
+   [[ $(cat "$host_stamp") != "$expected_stamp" ]]; then
+    USE_CCACHE="$use_ccache" bash "$native/tools/build-host-tools.sh" >&2
+    printf '%s\n' "$expected_stamp" > "$host_stamp"
+fi
 if [[ ! -f $native/runtime/libc.prx ]] || ! (cd "$native/runtime" && sha256sum -c --status libc.prx.sha256); then
-    USE_CCACHE=0 bash "$native/tools/rebuild-libc.sh" >&2
+    USE_CCACHE="$use_ccache" bash "$native/tools/rebuild-libc.sh" >&2
 fi
 jq -n --arg cache "$cache" --arg sdk "$sdk" --arg opengl "$opengl" --arg pacbrew "$pacbrew" --arg native "$native" \
     '{cache:$cache,sdk:$sdk,opengl:$opengl,pacbrew:$pacbrew,native:$native}'

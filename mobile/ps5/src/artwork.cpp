@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "brutv/artwork.hpp"
 #include <algorithm>
 #include <array>
@@ -5,6 +6,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <deque>
 #include <list>
@@ -20,6 +22,8 @@ constexpr std::size_t readyImageLimit = 12 * 1024 * 1024;
 constexpr int dimensionLimit = 4096;
 constexpr std::size_t pixelLimit = 8 * 1024 * 1024;
 constexpr int thumbnailLimit = 512;
+constexpr std::size_t maxQueuedJobs = 32;
+constexpr std::size_t maxEntries = 48;
 
 struct alignas(std::max_align_t) DecoderAllocation {
   std::size_t size;
@@ -76,6 +80,52 @@ void *decoderRealloc(void *pointer, std::size_t size) {
 
 namespace brutv {
 namespace {
+// Integer box/area downscaler: fast fixed-point accumulation with zero
+// floating-point work per pixel and clean anti-aliased thumbnail quality.
+void downscaleBoxRgba(const std::uint8_t *src, int srcW, int srcH,
+                      std::uint8_t *dst, int dstW, int dstH) {
+  const std::size_t srcStride = static_cast<std::size_t>(srcW) * 4;
+  for (int y = 0; y < dstH; ++y) {
+    const int y0 = static_cast<int>((static_cast<std::int64_t>(y) * srcH) / dstH);
+    const int y1 = std::min(
+        srcH, std::max(y0 + 1, static_cast<int>(
+                                   (static_cast<std::int64_t>(y + 1) * srcH) /
+                                   dstH)));
+    std::uint8_t *dstRow = dst + static_cast<std::size_t>(y) * dstW * 4;
+    for (int x = 0; x < dstW; ++x) {
+      const int x0 =
+          static_cast<int>((static_cast<std::int64_t>(x) * srcW) / dstW);
+      const int x1 = std::min(
+          srcW, std::max(x0 + 1, static_cast<int>(
+                                     (static_cast<std::int64_t>(x + 1) * srcW) /
+                                     dstW)));
+      std::uint32_t r = 0, g = 0, b = 0, a = 0;
+      const std::uint32_t count =
+          static_cast<std::uint32_t>(y1 - y0) * static_cast<std::uint32_t>(x1 - x0);
+      for (int sy = y0; sy < y1; ++sy) {
+        const std::uint8_t *row =
+            src + static_cast<std::size_t>(sy) * srcStride +
+            static_cast<std::size_t>(x0) * 4;
+        for (int sx = x0; sx < x1; ++sx, row += 4) {
+          r += row[0];
+          g += row[1];
+          b += row[2];
+          a += row[3];
+        }
+      }
+      const std::uint32_t half = count >> 1;
+      dstRow[static_cast<std::size_t>(x) * 4 + 0] =
+          static_cast<std::uint8_t>((r + half) / count);
+      dstRow[static_cast<std::size_t>(x) * 4 + 1] =
+          static_cast<std::uint8_t>((g + half) / count);
+      dstRow[static_cast<std::size_t>(x) * 4 + 2] =
+          static_cast<std::uint8_t>((b + half) / count);
+      dstRow[static_cast<std::size_t>(x) * 4 + 3] =
+          static_cast<std::uint8_t>((a + half) / count);
+    }
+  }
+}
+
 std::shared_ptr<const ArtworkImage> decode(const std::string &bytes) {
   if (bytes.empty() || bytes.size() > compressedLimit)
     return {};
@@ -113,38 +163,14 @@ std::shared_ptr<const ArtworkImage> decode(const std::string &bytes) {
     return image;
   }
 
-  for (int y = 0; y < image->height; ++y) {
-    const double sourceY = std::clamp((y + 0.5) * height / image->height - 0.5,
-                                      0.0, static_cast<double>(height - 1));
-    const int y0 = static_cast<int>(sourceY);
-    const int y1 = std::min(height - 1, y0 + 1);
-    const double fy = sourceY - y0;
-    for (int x = 0; x < image->width; ++x) {
-      const double sourceX = std::clamp((x + 0.5) * width / image->width - 0.5,
-                                        0.0, static_cast<double>(width - 1));
-      const int x0 = static_cast<int>(sourceX);
-      const int x1 = std::min(width - 1, x0 + 1);
-      const double fx = sourceX - x0;
-      for (int channel = 0; channel < 4; ++channel) {
-        const auto sample = [&](int sx, int sy) {
-          return pixels
-              .get()[(static_cast<std::size_t>(sy) * width + sx) * 4 + channel];
-        };
-        const double top = sample(x0, y0) * (1.0 - fx) + sample(x1, y0) * fx;
-        const double bottom = sample(x0, y1) * (1.0 - fx) + sample(x1, y1) * fx;
-        image->rgba[(static_cast<std::size_t>(y) * image->width + x) * 4 +
-                    channel] =
-            static_cast<std::uint8_t>(
-                std::round(top * (1.0 - fy) + bottom * fy));
-      }
-    }
-  }
+  downscaleBoxRgba(pixels.get(), width, height, image->rgba.data(),
+                   image->width, image->height);
   return image;
 }
 } // namespace
 
 struct ArtworkCache::Impl {
-  enum class State { Queued, Active, Complete, Evicted };
+  enum class State { Queued, Active, Complete, Failed, Evicted };
   struct Entry {
     std::shared_ptr<const ArtworkImage> image;
     std::list<std::string>::iterator recent;
@@ -157,6 +183,7 @@ struct ArtworkCache::Impl {
     std::uint64_t generation;
   };
   HttpGet fetch;
+  std::chrono::seconds negativeTtl;
   std::mutex mutex;
   std::condition_variable wake;
   std::array<std::thread, 2> workers;
@@ -167,7 +194,8 @@ struct ArtworkCache::Impl {
   std::uint64_t generation{0};
   bool stopping{false};
 
-  explicit Impl(HttpGet get) : fetch(std::move(get)) {
+  Impl(HttpGet get, std::chrono::seconds negTtl)
+      : fetch(std::move(get)), negativeTtl(negTtl) {
     if (!fetch)
       return;
     try {
@@ -191,6 +219,20 @@ struct ArtworkCache::Impl {
     for (auto &worker : workers)
       if (worker.joinable())
         worker.join();
+  }
+
+  void enqueueLifoLocked(const std::string &url, std::uint64_t token) {
+    while (jobs.size() >= maxQueuedJobs) {
+      const Job dropped = std::move(jobs.back());
+      jobs.pop_back();
+      const auto it = entries.find(dropped.url);
+      if (it != entries.end() && it->second.state == State::Queued &&
+          it->second.generation == dropped.generation) {
+        recent.erase(it->second.recent);
+        entries.erase(it);
+      }
+    }
+    jobs.push_front({url, token});
   }
 
   void run() {
@@ -236,9 +278,14 @@ struct ArtworkCache::Impl {
               }
             }
             readyImageBytes += image->rgba.size();
+            entry->second.image = std::move(image);
+            entry->second.state = State::Complete;
+          } else {
+            entry->second.image.reset();
+            entry->second.state = State::Failed;
+            entry->second.retryAfter =
+                std::chrono::steady_clock::now() + negativeTtl;
           }
-          entry->second.image = std::move(image);
-          entry->second.state = State::Complete;
         }
       }
     }
@@ -249,22 +296,36 @@ struct ArtworkCache::Impl {
         (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0))
       return {};
     std::lock_guard<std::mutex> lock(mutex);
+    const auto now = std::chrono::steady_clock::now();
     const auto existing = entries.find(url);
     if (existing != entries.end()) {
       recent.splice(recent.begin(), recent, existing->second.recent);
-      if (existing->second.state == State::Evicted && jobs.size() < 32 &&
-          !stopping &&
-          std::chrono::steady_clock::now() >= existing->second.retryAfter) {
+      if (existing->second.state == State::Queued) {
+        // Bump visible item to head of LIFO queue.
+        const auto token = existing->second.generation;
+        auto it = std::find_if(jobs.begin(), jobs.end(), [&](const Job &j) {
+          return j.generation == token;
+        });
+        if (it != jobs.end() && it != jobs.begin()) {
+          Job bumped = std::move(*it);
+          jobs.erase(it);
+          jobs.push_front(std::move(bumped));
+        }
+        return {};
+      }
+      if ((existing->second.state == State::Evicted ||
+           existing->second.state == State::Failed) &&
+          !stopping && now >= existing->second.retryAfter) {
         existing->second.state = State::Queued;
         existing->second.generation = ++generation;
-        jobs.push_back({url, existing->second.generation});
+        enqueueLifoLocked(url, existing->second.generation);
         wake.notify_one();
       }
       return existing->second.image;
     }
-    if (stopping || jobs.size() >= 32)
+    if (stopping)
       return {};
-    if (entries.size() >= 48) {
+    if (entries.size() >= maxEntries) {
       auto oldest = recent.end();
       while (oldest != recent.begin()) {
         --oldest;
@@ -287,18 +348,34 @@ struct ArtworkCache::Impl {
     recent.push_front(url);
     const auto token = ++generation;
     entries.emplace(url, Entry{{}, recent.begin(), State::Queued, token, {}});
-    jobs.push_back({url, token});
+    enqueueLifoLocked(url, token);
     wake.notify_one();
     return {};
   }
+
+  void releaseCpu(const std::string &url) {
+    if (url.empty())
+      return;
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto existing = entries.find(url);
+    if (existing == entries.end() || !existing->second.image)
+      return;
+    readyImageBytes -= existing->second.image->rgba.size();
+    existing->second.image.reset();
+    existing->second.state = State::Evicted;
+    existing->second.retryAfter = std::chrono::steady_clock::time_point{};
+  }
 };
 
-ArtworkCache::ArtworkCache(HttpGet fetch)
-    : impl_(std::make_unique<Impl>(std::move(fetch))) {}
+ArtworkCache::ArtworkCache(HttpGet fetch, std::chrono::seconds negativeTtl)
+    : impl_(std::make_unique<Impl>(std::move(fetch), negativeTtl)) {}
 ArtworkCache::~ArtworkCache() = default;
 std::shared_ptr<const ArtworkImage>
 ArtworkCache::request(const std::string &url) {
   return impl_->request(url);
+}
+void ArtworkCache::releaseCpu(const std::string &url) {
+  impl_->releaseCpu(url);
 }
 
 } // namespace brutv

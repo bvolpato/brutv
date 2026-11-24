@@ -1,9 +1,11 @@
 #include "brutv/catalog.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <sys/stat.h>
 
 using namespace brutv;
@@ -325,6 +327,173 @@ void xtreamLiveAlternateAndOutputFormats() {
     assert(m3uLive.items[0].requestHeaders.count("Transfer-Encoding") == 0);
     assert(m3uLive.items[0].requestHeaders.count("Host") == 0);
 }
+
+void saxM3uCacheDiskCacheAndEpgParity() {
+    // 1. M3U caching across authenticate() + load(Live/Movie/Series) -> only 1 HTTP fetch!
+    {
+        Source source;
+        source.id = "cached-m3u";
+        source.type = SourceType::M3U;
+        source.url = "https://provider.example/playlist.m3u";
+        std::atomic<int> fetches{0};
+        const std::string xmltv =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<tv>\n"
+            "  <programme start=\"20250101000000 +0000\" stop=\"20250101010000 +0000\" channel=\"news.us\">\n"
+            "    <title>News &amp; Weather</title>\n"
+            "    <desc>Top stories &lt;live&gt;</desc>\n"
+            "  </programme>\n"
+            "  <programme start=\"20250101010000 +0000\" stop=\"20250101020000 +0000\" channel=\"news.us\">\n"
+            "    <title>Late Show</title>\n"
+            "  </programme>\n"
+            "</tv>\n";
+        std::atomic<int> xmltvFetches{0};
+        CatalogClient client([&](const std::string& url) {
+            if (url == "https://provider.example/guide.xml") {
+                ++xmltvFetches;
+                return xmltv;
+            }
+            ++fetches;
+            return std::string(
+                "#EXTM3U url-tvg=\"guide.xml\"\n"
+                "#EXTINF:-1 tvg-id=\"news.us\" group-title=\"News\",News 24\n"
+                "https://provider.example/live/news.m3u8\n"
+                "#EXTINF:-1 group-title=\"Cinema\",Movie One\n"
+                "https://provider.example/movie/one.mp4\n");
+        });
+        client.authenticate(source);
+        auto live = client.load(source, MediaKind::Live);
+        auto movies = client.load(source, MediaKind::Movie);
+        auto series = client.load(source, MediaKind::Series);
+        assert(fetches.load() == 1);
+        assert(live.items.size() == 1 && movies.items.size() == 1 && series.items.empty());
+        assert(client.xmltvUrl(source) == "https://provider.example/guide.xml");
+
+        auto epg1 = client.loadEpg(source, "news.us");
+        auto epg2 = client.loadEpg(source, "news.us");
+        assert(xmltvFetches.load() == 1);
+        assert(epg1.size() == 2 && epg2.size() == 2);
+        assert(epg1[0].title == "News & Weather");
+        assert(epg1[0].description == "Top stories <live>");
+        assert(epg1[0].startEpochSeconds == 1735689600 && epg1[0].endEpochSeconds == 1735693200);
+        assert(epg1[1].title == "Late Show");
+
+        client.invalidateCache(source.id);
+        (void)client.load(source, MediaKind::Live);
+        assert(fetches.load() == 2);
+    }
+
+    // 2. Streaming SAX parsing with nested arrays, parallel fetch, and on-disk TTL cache.
+    {
+        const auto cacheDir = std::filesystem::temp_directory_path() / "brutv-ps5-disk-cache-test";
+        std::filesystem::remove_all(cacheDir);
+        Source source;
+        source.id = "sax-provider";
+        source.type = SourceType::Xtream;
+        source.url = "https://iptv.example/panel";
+        source.username = "u1";
+        source.password = "p1";
+
+        std::ostringstream items;
+        items << '[';
+        for (int i = 1; i <= 500; ++i) {
+            if (i > 1) items << ',';
+            items << R"({"stream_id":)" << i << R"(,"name":"Ch )" << i
+                  << R"(","category_id":"2","category_ids":[2,3],"backdrop_path":["a","b"],"rating":8.5,"stream_icon":"https://img.example/)"
+                  << i << R"(.png"})";
+        }
+        items << ']';
+        const std::string itemsJson = items.str();
+
+        std::atomic<int> httpCalls{0};
+        auto transport = [&](const std::string& url) {
+            ++httpCalls;
+            if (url.find("action=get_live_categories") != std::string::npos)
+                return std::string(R"([{"category_id":"2","category_name":"Sports","nested":{"x":1}}])");
+            if (url.find("action=get_live_streams") != std::string::npos)
+                return itemsJson;
+            return std::string("[]");
+        };
+        {
+            CatalogClient client(transport, true);
+            client.setCacheDirectory(cacheDir, std::chrono::seconds(900));
+            auto live = client.load(source, MediaKind::Live);
+            assert(httpCalls.load() == 2);
+            assert(live.categories.size() == 1 && live.categories[0].name == "Sports");
+            assert(live.items.size() == 500);
+            assert(live.items[0].categoryName == "Sports" && live.items[0].rating == "8.5");
+            assert(live.items[499].mediaUrl == "https://iptv.example/panel/live/u1/p1/500.m3u8");
+        }
+        // Second client reads directly from on-disk cache with 0 HTTP calls.
+        {
+            CatalogClient client2(transport, true);
+            client2.setCacheDirectory(cacheDir, std::chrono::seconds(900));
+            auto cachedLive = client2.load(source, MediaKind::Live);
+            assert(httpCalls.load() == 2);
+            assert(cachedLive.items.size() == 500 && cachedLive.categories.size() == 1);
+            // Password change invalidates fingerprint automatically.
+            Source changed = source;
+            changed.password = "p2";
+            auto refreshed = client2.load(changed, MediaKind::Live);
+            assert(httpCalls.load() == 4);
+            assert(refreshed.items[0].mediaUrl == "https://iptv.example/panel/live/u1/p2/1.m3u8");
+        }
+        std::filesystem::remove_all(cacheDir);
+    }
+
+    // 3. EPG > 1000 entries truncates cleanly instead of throwing.
+    {
+        Source source;
+        source.id = "epg-trunc";
+        source.type = SourceType::Xtream;
+        source.url = "https://iptv.example";
+        source.username = "u";
+        source.password = "p";
+        std::ostringstream epg;
+        epg << R"({"epg_listings":[)";
+        for (int i = 0; i < 1200; ++i) {
+            if (i) epg << ',';
+            epg << R"({"title":"Show )" << i << R"(","start_timestamp":)" << (1700000000 + i * 3600)
+                << R"(,"stop_timestamp":)" << (1700003600 + i * 3600) << '}';
+        }
+        epg << "]}";
+        const std::string epgJson = epg.str();
+        CatalogClient client([&](const std::string&) { return epgJson; });
+        auto entries = client.loadEpg(source, "10");
+        assert(entries.size() == 1000);
+        assert(entries.front().title == "Show 0" && entries.back().title == "Show 999");
+    }
+
+    // 4. Settings round-trip for resumePositionsBySource and savedSources.
+    {
+        const auto root = std::filesystem::temp_directory_path() / "brutv-ps5-resume-settings-test";
+        std::filesystem::remove_all(root);
+        std::filesystem::create_directories(root);
+        SettingsStore store(root / "settings.json");
+        Settings s;
+        Source s1;
+        s1.id = "src-1";
+        s1.name = "Primary";
+        s1.type = SourceType::M3U;
+        s1.url = "https://provider-a.example/list.m3u";
+        Source s2;
+        s2.id = "src-2";
+        s2.name = "Backup";
+        s2.type = SourceType::Xtream;
+        s2.url = "https://provider-b.example";
+        s2.username = "u";
+        s2.password = "p";
+        s.source = s1;
+        s.savedSources = {s1, s2};
+        s.resumePositionsBySource[s1.id]["movie-1"] = 1234.5;
+        store.save(s);
+        auto loaded = store.load();
+        assert(loaded.savedSources.size() == 2);
+        assert(loaded.savedSources[1].name == "Backup");
+        assert(loaded.resumePositionsBySource.at(s1.id).at("movie-1") > 1234.0);
+        std::filesystem::remove_all(root);
+    }
+}
 } // namespace
 
 int main() {
@@ -334,5 +503,6 @@ int main() {
     providerFailuresDoNotExposeCredentials();
     settingsAtomicPrivateRoundTripAndRecovery();
     xtreamLiveAlternateAndOutputFormats();
+    saxM3uCacheDiskCacheAndEpgParity();
     std::cout << "BruTV catalog tests passed\n";
 }

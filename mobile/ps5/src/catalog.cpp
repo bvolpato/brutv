@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "brutv/catalog.hpp"
 
 #include <nlohmann/json.hpp>
@@ -7,11 +8,16 @@
 #include <cerrno>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
+#include <cstring>
+#include <ctime>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <sstream>
 #include <string_view>
+#include <unordered_set>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -24,7 +30,11 @@ constexpr std::size_t kMaxResponse = 64U * 1024U * 1024U;
 constexpr std::size_t kMaxLine = 128U * 1024U;
 constexpr std::size_t kMaxItems = 250'000U;
 constexpr std::size_t kMaxSettings = 4U * 1024U * 1024U;
+constexpr std::size_t kMaxEpgEntries = 1000U;
+constexpr std::size_t kMaxJsonDepth = 64U;
 constexpr std::string_view kUncategorized = "Uncategorized";
+constexpr std::chrono::seconds kM3uMemoryCacheTtl(60);
+constexpr std::chrono::seconds kXmltvMemoryCacheTtl(900);
 
 bool ws(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
 std::string trim(std::string_view s) {
@@ -49,6 +59,7 @@ bool unreserved(unsigned char c) {
 std::string encode(std::string_view value) {
     static constexpr char hex[] = "0123456789ABCDEF";
     std::string out;
+    out.reserve(value.size());
     for (unsigned char c : value) {
         if (unreserved(c)) out.push_back(static_cast<char>(c));
         else { out.push_back('%'); out.push_back(hex[c >> 4]); out.push_back(hex[c & 15]); }
@@ -136,7 +147,7 @@ std::string urlString(const Url& url) {
     if (url.hasFragment) out += "#" + url.fragment;
     return out;
 }
-bool jsonDepthWithin(std::string_view input, std::size_t limit = 64) {
+bool jsonDepthWithin(std::string_view input, std::size_t limit = kMaxJsonDepth) {
     std::size_t depth = 0;
     bool inString = false, escaped = false;
     for (char c : input) {
@@ -155,6 +166,15 @@ bool jsonDepthWithin(std::string_view input, std::size_t limit = 64) {
         }
     }
     return depth == 0 && !inString;
+}
+std::string_view stripBom(std::string_view response) {
+    if (response.size() >= 3 &&
+        static_cast<unsigned char>(response[0]) == 0xEF &&
+        static_cast<unsigned char>(response[1]) == 0xBB &&
+        static_cast<unsigned char>(response[2]) == 0xBF) {
+        response.remove_prefix(3);
+    }
+    return response;
 }
 bool validSource(const Source& source) {
     if (source.type == SourceType::M3U) return parseUrl(source.url).has_value();
@@ -224,7 +244,7 @@ std::optional<std::string> resolveUrl(std::string_view base, std::string_view re
     auto noFragment = ref.substr(0, hash);
     auto question = noFragment.find('?');
     auto refPath = noFragment.substr(0, question);
-    bool hasQuery = question != std::string::npos;
+    bool hasQuery = question != std::string_view::npos;
     std::string query = hasQuery ? noFragment.substr(question + 1) : "";
     origin->hasFragment = hash != std::string::npos;
     origin->fragment = hash == std::string::npos ? "" : ref.substr(hash + 1);
@@ -351,14 +371,21 @@ MediaKind classify(std::string_view address) {
     if (path.find("/movie/") != std::string::npos || path.find("/series/") != std::string::npos) return MediaKind::Movie;
     auto dot = path.rfind('.');
     auto ext = dot == std::string::npos ? std::string{} : path.substr(dot + 1);
-    static const std::set<std::string> video{"mp4", "mkv", "avi", "mov", "webm", "m4v"};
+    static const std::unordered_set<std::string> video{"mp4", "mkv", "avi", "mov", "webm", "m4v"};
     return video.count(ext) ? MediaKind::Movie : MediaKind::Live;
 }
 struct PlaylistEntry { MediaItem item; std::string group; };
-std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& source) {
+struct ParsedPlaylist {
+    std::vector<PlaylistEntry> entries;
+    std::string xmltvUrl;
+};
+ParsedPlaylist parsePlaylist(std::string_view body, const Source& source) {
     if (body.size() > kMaxResponse) throw CatalogError("The playlist exceeds the size limit.");
-    std::vector<PlaylistEntry> output;
-    std::set<std::string> seen;
+    body = stripBom(body);
+    ParsedPlaylist parsedResult;
+    auto& output = parsedResult.entries;
+    std::unordered_set<std::string> seen;
+    const std::string sid = brutv::sourceId(source);
     std::string info, fallbackGroup;
     std::unordered_map<std::string, std::string> headers;
     bool hls = false;
@@ -373,6 +400,20 @@ std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& so
         if (newline == std::string_view::npos) pos = body.size(); else pos = newline + 1;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
+        if (starts(line, "#EXTM3U") && parsedResult.xmltvUrl.empty()) {
+            const auto headerAttrs = attributes(std::string_view(line).substr(7));
+            std::string rawTvg;
+            if (auto it = headerAttrs.find("url-tvg"); it != headerAttrs.end()) rawTvg = it->second;
+            else if (auto it2 = headerAttrs.find("x-tvg-url"); it2 != headerAttrs.end()) rawTvg = it2->second;
+            if (!rawTvg.empty()) {
+                const auto comma = rawTvg.find(',');
+                if (comma != std::string::npos) rawTvg.resize(comma);
+                if (auto resolvedTvg = resolveUrl(source.url, rawTvg)) {
+                    parsedResult.xmltvUrl = std::move(*resolvedTvg);
+                }
+            }
+            continue;
+        }
         if (starts(line, "#EXT-X-")) hls = true;
         if (starts(line, "#EXTINF")) { info = line; fallbackGroup.clear(); headers.clear(); }
         else if (starts(line, "#EXTGRP:")) fallbackGroup = trim(std::string_view(line).substr(line.find(':') + 1));
@@ -389,7 +430,9 @@ std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& so
                     attrs = attributes(std::string_view(info).substr(offset, comma - offset));
                     title = trim(std::string_view(info).substr(comma + 1));
                 }
-                if (title.empty()) title = attrs["tvg-name"];
+                if (title.empty()) {
+                    if (auto it = attrs.find("tvg-name"); it != attrs.end()) title = it->second;
+                }
                 if (title.empty()) {
                     auto url = parseUrl(*resolved);
                     auto path = url ? url->path : *resolved;
@@ -399,7 +442,8 @@ std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& so
                     if (query != std::string::npos) title.resize(query);
                 }
                 if (title.empty()) title = *resolved;
-                auto group = attrs["group-title"];
+                std::string group;
+                if (auto it = attrs.find("group-title"); it != attrs.end()) group = it->second;
                 auto semi = group.find(';');
                 if (semi != std::string::npos) group.resize(semi);
                 if (group.empty()) group = fallbackGroup;
@@ -408,16 +452,16 @@ std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& so
                 if (seen.insert(itemKey).second) {
                     if (output.size() >= kMaxItems) throw CatalogError("The playlist has too many entries.");
                     MediaItem item;
-                    item.sourceId = brutv::sourceId(source);
-                    item.id = item.sourceId + ":" + itemKey;
+                    item.sourceId = sid;
+                    item.id = sid + ":" + itemKey;
                     item.providerId = itemKey;
                     item.title = std::move(title);
                     item.kind = classify(*resolved);
                     item.categoryId = group;
                     item.categoryName = group;
                     item.mediaUrl = *resolved;
-                    item.logoUrl = attrs["tvg-logo"];
-                    item.epgId = attrs["tvg-id"];
+                    if (auto it = attrs.find("tvg-logo"); it != attrs.end()) item.logoUrl = std::move(it->second);
+                    if (auto it = attrs.find("tvg-id"); it != attrs.end()) item.epgId = std::move(it->second);
                     item.requestHeaders = headers;
                     output.push_back({std::move(item), std::move(group)});
                 }
@@ -426,7 +470,7 @@ std::vector<PlaylistEntry> parsePlaylist(std::string_view body, const Source& so
         }
     }
     if (hls) throw CatalogError("This is an HLS media manifest, not an IPTV channel list.");
-    return output;
+    return parsedResult;
 }
 
 std::string serverBase(const Source& source) {
@@ -442,14 +486,22 @@ std::string apiUrl(const Source& source, const std::vector<std::pair<std::string
     for (const auto& [key, value] : params) url += "&" + encode(key) + "=" + encode(value);
     return url;
 }
-std::string streamUrl(const Source& source, std::string_view type, std::string_view id, std::string extension) {
-    if (extension.empty()) extension = "mp4";
-    extension = lower(std::move(extension));
+std::string safeExtension(std::string_view extension) {
     std::string safe;
-    for (unsigned char c : extension) if (std::isalnum(c)) safe.push_back(static_cast<char>(c));
+    safe.reserve(extension.size());
+    for (unsigned char c : extension) {
+        if (std::isalnum(c)) safe.push_back(lowerChar(static_cast<char>(c)));
+    }
     if (safe.empty()) safe = "mp4";
-    return serverBase(source) + "/" + std::string(type) + "/" + encode(source.username) + "/" +
-           encode(source.password) + "/" + encode(std::string(id) + "." + safe);
+    return safe;
+}
+std::string streamUrlWithPrefix(const std::string& prefix, std::string_view id, std::string_view extension) {
+    return prefix + encode(std::string(id) + "." + safeExtension(extension));
+}
+std::string streamUrl(const Source& source, std::string_view type, std::string_view id, std::string extension) {
+    const std::string prefix = serverBase(source) + "/" + std::string(type) + "/" +
+                               encode(source.username) + "/" + encode(source.password) + "/";
+    return streamUrlWithPrefix(prefix, id, extension);
 }
 
 std::string js(const Json& object, std::string_view key) {
@@ -469,12 +521,7 @@ std::int64_t ji(const Json& object, std::string_view key) {
 }
 Json providerJson(std::string_view response) {
     if (response.size() > kMaxResponse) throw CatalogError("The provider response exceeds the size limit.");
-    if (response.size() >= 3 &&
-        static_cast<unsigned char>(response[0]) == 0xEF &&
-        static_cast<unsigned char>(response[1]) == 0xBB &&
-        static_cast<unsigned char>(response[2]) == 0xBF) {
-        response.remove_prefix(3);
-    }
+    response = stripBom(response);
     if (!jsonDepthWithin(response)) throw CatalogError("The provider response exceeds the nesting limit.");
     try {
         auto value = Json::parse(response.begin(), response.end());
@@ -483,12 +530,415 @@ Json providerJson(std::string_view response) {
     } catch (const CatalogError&) { throw; }
     catch (...) { throw CatalogError("The provider returned invalid JSON."); }
 }
-Json requestJson(const HttpGet& get, const Source& source, const std::vector<std::pair<std::string, std::string>>& params) {
+std::string requestRaw(const HttpGet& get, const Source& source, const std::vector<std::pair<std::string, std::string>>& params) {
     if (!get) throw CatalogError("No HTTP transport is configured.");
-    std::string response;
-    try { response = get(apiUrl(source, params)); }
+    try { return get(apiUrl(source, params)); }
     catch (...) { throw CatalogError("Could not connect to the provider."); }
-    return providerJson(response);
+}
+Json requestJson(const HttpGet& get, const Source& source, const std::vector<std::pair<std::string, std::string>>& params) {
+    return providerJson(requestRaw(get, source, params));
+}
+
+// Streaming SAX parser for Xtream categories array (zero DOM memory overhead).
+class XtreamCategorySax : public nlohmann::json_sax<Json> {
+public:
+    XtreamCategorySax(MediaKind kind, std::vector<Category>& categories,
+                      std::unordered_map<std::string, std::string>& categoryNames)
+        : kind_(kind), categories_(categories), categoryNames_(categoryNames) {}
+
+    bool depthExceeded = false;
+    bool providerError = false;
+    bool sizeExceeded = false;
+    bool rootIsArray = false;
+    bool rootStarted = false;
+    bool syntaxError = false;
+
+    bool null() override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        clearKey();
+        return true;
+    }
+    bool boolean(bool val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        assignValue(val ? "true" : "false");
+        return true;
+    }
+    bool number_integer(number_integer_t val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(std::to_string(val));
+        return true;
+    }
+    bool number_unsigned(number_unsigned_t val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(std::to_string(val));
+        return true;
+    }
+    bool number_float(number_float_t, const string_t& s) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(s);
+        return true;
+    }
+    bool string(string_t& val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignMove(std::move(val));
+        return true;
+    }
+    bool binary(binary_t&) override {
+        clearKey();
+        return true;
+    }
+    bool start_object(std::size_t) override {
+        if (!rootStarted) {
+            rootStarted = true;
+            rootIsArray = false;
+        }
+        if (++depth_ > kMaxJsonDepth) {
+            depthExceeded = true;
+            return false;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (++elementCount_ > kMaxItems) {
+                sizeExceeded = true;
+                return false;
+            }
+            catId_.clear();
+            fallbackId_.clear();
+            catName_.clear();
+            field_ = Field::None;
+        }
+        return true;
+    }
+    bool key(string_t& val) override {
+        if (!rootIsArray && depth_ == 1) {
+            if (val == "error") {
+                providerError = true;
+                return false;
+            }
+            return true;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (val == "category_id") field_ = Field::CategoryId;
+            else if (val == "id") field_ = Field::Id;
+            else if (val == "category_name") field_ = Field::CategoryName;
+            else field_ = Field::None;
+        }
+        return true;
+    }
+    bool end_object() override {
+        if (rootIsArray && depth_ == 2) {
+            std::string id = !catId_.empty() ? std::move(catId_) : std::move(fallbackId_);
+            if (!id.empty() && seen_.insert(id).second) {
+                std::string name = catName_.empty() ? std::string(kUncategorized) : std::move(catName_);
+                categoryNames_.emplace(id, name);
+                categories_.push_back({std::move(id), std::move(name), kind_});
+            }
+            field_ = Field::None;
+        }
+        if (depth_ > 0) --depth_;
+        return true;
+    }
+    bool start_array(std::size_t) override {
+        if (!rootStarted) {
+            rootStarted = true;
+            rootIsArray = true;
+        }
+        if (++depth_ > kMaxJsonDepth) {
+            depthExceeded = true;
+            return false;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (++elementCount_ > kMaxItems) {
+                sizeExceeded = true;
+                return false;
+            }
+        }
+        return true;
+    }
+    bool end_array() override {
+        if (depth_ > 0) --depth_;
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override {
+        syntaxError = true;
+        return false;
+    }
+
+private:
+    enum class Field { None, CategoryId, Id, CategoryName };
+    void clearKey() { if (depth_ == 2) field_ = Field::None; }
+    void assignValue(std::string_view val) {
+        if (depth_ != 2) return;
+        switch (field_) {
+            case Field::CategoryId: catId_.assign(val.data(), val.size()); break;
+            case Field::Id: fallbackId_.assign(val.data(), val.size()); break;
+            case Field::CategoryName: catName_.assign(val.data(), val.size()); break;
+            case Field::None: break;
+        }
+        field_ = Field::None;
+    }
+    void assignMove(std::string&& val) {
+        if (depth_ != 2) return;
+        switch (field_) {
+            case Field::CategoryId: catId_ = std::move(val); break;
+            case Field::Id: fallbackId_ = std::move(val); break;
+            case Field::CategoryName: catName_ = std::move(val); break;
+            case Field::None: break;
+        }
+        field_ = Field::None;
+    }
+
+    MediaKind kind_;
+    std::vector<Category>& categories_;
+    std::unordered_map<std::string, std::string>& categoryNames_;
+    std::unordered_set<std::string> seen_;
+    std::size_t depth_ = 0;
+    std::size_t elementCount_ = 0;
+    Field field_ = Field::None;
+    std::string catId_, fallbackId_, catName_;
+};
+
+// Streaming SAX parser for Xtream Live/VOD/Series item arrays (zero DOM overhead).
+class XtreamItemSax : public nlohmann::json_sax<Json> {
+public:
+    XtreamItemSax(MediaKind kind, std::string sid, std::string kindStr,
+                  std::string livePrefix, std::string liveFormat,
+                  std::string moviePrefix,
+                  const std::unordered_map<std::string, std::string>& categoryNames,
+                  std::vector<MediaItem>& items)
+        : kind_(kind),
+          sid_(std::move(sid)),
+          idPrefix_(sid_ + ":" + kindStr + ":"),
+          livePrefix_(std::move(livePrefix)),
+          liveFormat_(safeExtension(liveFormat)),
+          moviePrefix_(std::move(moviePrefix)),
+          categoryNames_(categoryNames),
+          items_(items) {}
+
+    bool depthExceeded = false;
+    bool providerError = false;
+    bool sizeExceeded = false;
+    bool rootIsArray = false;
+    bool rootStarted = false;
+    bool syntaxError = false;
+
+    bool null() override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        clearKey();
+        return true;
+    }
+    bool boolean(bool val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(val ? "true" : "false");
+        return true;
+    }
+    bool number_integer(number_integer_t val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(std::to_string(val));
+        return true;
+    }
+    bool number_unsigned(number_unsigned_t val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(std::to_string(val));
+        return true;
+    }
+    bool number_float(number_float_t, const string_t& s) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignValue(s);
+        return true;
+    }
+    bool string(string_t& val) override {
+        if (!rootStarted) { rootStarted = true; return false; }
+        if (depth_ == 2) assignMove(std::move(val));
+        return true;
+    }
+    bool binary(binary_t&) override {
+        clearKey();
+        return true;
+    }
+    bool start_object(std::size_t) override {
+        if (!rootStarted) {
+            rootStarted = true;
+            rootIsArray = false;
+        }
+        if (++depth_ > kMaxJsonDepth) {
+            depthExceeded = true;
+            return false;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (++elementCount_ > kMaxItems) {
+                sizeExceeded = true;
+                return false;
+            }
+            resetCurrent();
+        }
+        return true;
+    }
+    bool key(string_t& val) override {
+        if (!rootIsArray && depth_ == 1) {
+            if (val == "error") {
+                providerError = true;
+                return false;
+            }
+            return true;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (kind_ == MediaKind::Series && val == "series_id") field_ = Field::PrimaryId;
+            else if (kind_ != MediaKind::Series && val == "stream_id") field_ = Field::PrimaryId;
+            else if (val == "id") field_ = Field::FallbackId;
+            else if (val == "name") field_ = Field::Name;
+            else if (val == "title") field_ = Field::Title;
+            else if (val == "category_id") field_ = Field::CategoryId;
+            else if (val == "container_extension") field_ = Field::ContainerExt;
+            else if (val == "stream_icon") field_ = Field::StreamIcon;
+            else if (val == "cover") field_ = Field::Cover;
+            else if (val == "cover_big") field_ = Field::CoverBig;
+            else if (val == "plot") field_ = Field::Plot;
+            else if (val == "rating") field_ = Field::Rating;
+            else if (val == "rating_5based") field_ = Field::Rating5;
+            else if (val == "epg_channel_id") field_ = Field::EpgId;
+            else field_ = Field::None;
+        }
+        return true;
+    }
+    bool end_object() override {
+        if (rootIsArray && depth_ == 2) {
+            std::string providerId = !primaryId_.empty() ? std::move(primaryId_) : std::move(fallbackId_);
+            if (!providerId.empty()) {
+                std::string id;
+                id.reserve(idPrefix_.size() + providerId.size());
+                id.append(idPrefix_);
+                id.append(providerId);
+                if (seenItems_.insert(id).second) {
+                    MediaItem item;
+                    item.id = std::move(id);
+                    item.sourceId = sid_;
+                    item.kind = kind_;
+                    item.title = !name_.empty() ? std::move(name_)
+                                                : (!title_.empty() ? std::move(title_) : std::string("Untitled"));
+                    item.categoryId = std::move(categoryId_);
+                    if (auto cat = categoryNames_.find(item.categoryId); cat != categoryNames_.end()) {
+                        item.categoryName = cat->second;
+                    }
+                    if (kind_ == MediaKind::Live) {
+                        item.mediaUrl = livePrefix_ + encode(providerId + "." + liveFormat_);
+                    } else if (kind_ == MediaKind::Movie) {
+                        item.mediaUrl = streamUrlWithPrefix(
+                            moviePrefix_, providerId,
+                            containerExt_.empty() ? std::string_view("mp4") : std::string_view(containerExt_));
+                    }
+                    item.providerId = std::move(providerId);
+                    item.logoUrl = !streamIcon_.empty() ? std::move(streamIcon_)
+                                 : (!cover_.empty() ? std::move(cover_) : std::move(coverBig_));
+                    item.description = std::move(plot_);
+                    item.rating = !rating_.empty() ? std::move(rating_) : std::move(rating5_);
+                    item.epgId = std::move(epgId_);
+                    items_.push_back(std::move(item));
+                }
+            }
+            field_ = Field::None;
+        }
+        if (depth_ > 0) --depth_;
+        return true;
+    }
+    bool start_array(std::size_t) override {
+        if (!rootStarted) {
+            rootStarted = true;
+            rootIsArray = true;
+        }
+        if (++depth_ > kMaxJsonDepth) {
+            depthExceeded = true;
+            return false;
+        }
+        if (rootIsArray && depth_ == 2) {
+            if (++elementCount_ > kMaxItems) {
+                sizeExceeded = true;
+                return false;
+            }
+        }
+        return true;
+    }
+    bool end_array() override {
+        if (depth_ > 0) --depth_;
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override {
+        syntaxError = true;
+        return false;
+    }
+
+private:
+    enum class Field {
+        None, PrimaryId, FallbackId, Name, Title, CategoryId, ContainerExt,
+        StreamIcon, Cover, CoverBig, Plot, Rating, Rating5, EpgId
+    };
+    void clearKey() { if (depth_ == 2) field_ = Field::None; }
+    void resetCurrent() {
+        primaryId_.clear(); fallbackId_.clear(); name_.clear(); title_.clear();
+        categoryId_.clear(); containerExt_.clear(); streamIcon_.clear();
+        cover_.clear(); coverBig_.clear(); plot_.clear(); rating_.clear();
+        rating5_.clear(); epgId_.clear();
+        field_ = Field::None;
+    }
+    void assignValue(std::string_view val) {
+        if (depth_ != 2) return;
+        std::string* target = targetField();
+        if (target) target->assign(val.data(), val.size());
+        field_ = Field::None;
+    }
+    void assignMove(std::string&& val) {
+        if (depth_ != 2) return;
+        std::string* target = targetField();
+        if (target) *target = std::move(val);
+        field_ = Field::None;
+    }
+    std::string* targetField() {
+        switch (field_) {
+            case Field::PrimaryId: return &primaryId_;
+            case Field::FallbackId: return &fallbackId_;
+            case Field::Name: return &name_;
+            case Field::Title: return &title_;
+            case Field::CategoryId: return &categoryId_;
+            case Field::ContainerExt: return &containerExt_;
+            case Field::StreamIcon: return &streamIcon_;
+            case Field::Cover: return &cover_;
+            case Field::CoverBig: return &coverBig_;
+            case Field::Plot: return &plot_;
+            case Field::Rating: return &rating_;
+            case Field::Rating5: return &rating5_;
+            case Field::EpgId: return &epgId_;
+            case Field::None: return nullptr;
+        }
+        return nullptr;
+    }
+
+    MediaKind kind_;
+    std::string sid_;
+    std::string idPrefix_;
+    std::string livePrefix_;
+    std::string liveFormat_;
+    std::string moviePrefix_;
+    const std::unordered_map<std::string, std::string>& categoryNames_;
+    std::vector<MediaItem>& items_;
+    std::unordered_set<std::string> seenItems_;
+    std::size_t depth_ = 0;
+    std::size_t elementCount_ = 0;
+    Field field_ = Field::None;
+    std::string primaryId_, fallbackId_, name_, title_, categoryId_, containerExt_;
+    std::string streamIcon_, cover_, coverBig_, plot_, rating_, rating5_, epgId_;
+};
+
+template <typename Sax>
+void runXtreamSax(std::string_view response, Sax& sax, const char* invalidRootMessage) {
+    if (response.size() > kMaxResponse) throw CatalogError("The provider response exceeds the size limit.");
+    response = stripBom(response);
+    const bool ok = Json::sax_parse(response.begin(), response.end(), &sax, Json::input_format_t::json, false);
+    if (sax.depthExceeded) throw CatalogError("The provider response exceeds the nesting limit.");
+    if (sax.providerError) throw CatalogError("The provider rejected the request.");
+    if (sax.sizeExceeded) throw CatalogError("The provider catalog exceeds the size limit.");
+    if (sax.syntaxError) throw CatalogError("The provider returned invalid JSON.");
+    if (!sax.rootStarted) throw CatalogError("The provider returned invalid JSON.");
+    if (!sax.rootIsArray) throw CatalogError(invalidRootMessage);
+    if (!ok) throw CatalogError("The provider returned invalid JSON.");
 }
 
 std::optional<std::vector<std::pair<std::string, std::string>>> queryPairs(std::string_view query) {
@@ -543,7 +993,157 @@ bool universalJoin(const Url& url) {
         url.authority == url.host && url.path == "/brutv/join.html";
 }
 
-std::int64_t parseDate(std::string_view s);
+std::int64_t daysFromCivil(int year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(year - era * 400);
+    const unsigned adjusted = month > 2 ? month - 3 : month + 9;
+    const unsigned doy = (153U * adjusted + 2U) / 5U + day - 1U;
+    const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    return static_cast<std::int64_t>(era) * 146097 + doe - 719468;
+}
+std::int64_t parseDate(std::string_view s) {
+    if (s.size() < 19) return 0;
+    auto num = [&](std::size_t p, std::size_t n) {
+        int value = 0; auto r = std::from_chars(s.data() + p, s.data() + p + n, value);
+        return r.ec == std::errc{} && r.ptr == s.data() + p + n ? value : -1;
+    };
+    int y = num(0,4), m = num(5,2), d = num(8,2), h = num(11,2), mi = num(14,2), sec = num(17,2);
+    if (y < 0 || m < 1 || m > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60) return 0;
+    return daysFromCivil(y, static_cast<unsigned>(m), static_cast<unsigned>(d)) * 86400 + h * 3600 + mi * 60 + sec;
+}
+std::int64_t parseXmltvTimestamp(std::string_view s) {
+    auto trimmed = trim(s);
+    if (trimmed.size() < 14) return 0;
+    auto num = [&](std::size_t p, std::size_t n) {
+        int value = 0;
+        auto r = std::from_chars(trimmed.data() + p, trimmed.data() + p + n, value);
+        return r.ec == std::errc{} && r.ptr == trimmed.data() + p + n ? value : -1;
+    };
+    const int y = num(0, 4), m = num(4, 2), d = num(6, 2), h = num(8, 2), mi = num(10, 2), sec = num(12, 2);
+    if (y < 1970 || m < 1 || m > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60)
+        return 0;
+    std::int64_t epoch = daysFromCivil(y, static_cast<unsigned>(m), static_cast<unsigned>(d)) * 86400 +
+                         h * 3600 + mi * 60 + sec;
+    // Optional timezone offset: +HHMM or -HHMM
+    const auto tzPos = trimmed.find_first_of("+-", 14);
+    if (tzPos != std::string::npos && tzPos + 5 <= trimmed.size()) {
+        const int tzH = num(tzPos + 1, 2);
+        const int tzM = num(tzPos + 3, 2);
+        if (tzH >= 0 && tzH <= 23 && tzM >= 0 && tzM <= 59) {
+            const std::int64_t offsetSec = static_cast<std::int64_t>(tzH) * 3600 + tzM * 60;
+            epoch += (trimmed[tzPos] == '+') ? -offsetSec : offsetSec;
+        }
+    }
+    return epoch;
+}
+std::string decodeXmlEntities(std::string_view input) {
+    std::string out;
+    out.reserve(input.size());
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        if (input[i] == '&') {
+            auto semi = input.find(';', i + 1);
+            if (semi != std::string_view::npos && semi - i <= 10) {
+                auto entity = input.substr(i + 1, semi - i - 1);
+                if (entity == "amp") { out.push_back('&'); i = semi; continue; }
+                if (entity == "lt") { out.push_back('<'); i = semi; continue; }
+                if (entity == "gt") { out.push_back('>'); i = semi; continue; }
+                if (entity == "quot") { out.push_back('"'); i = semi; continue; }
+                if (entity == "apos") { out.push_back('\''); i = semi; continue; }
+                if (!entity.empty() && entity[0] == '#') {
+                    unsigned code = 0;
+                    bool ok = false;
+                    if (entity.size() > 2 && (entity[1] == 'x' || entity[1] == 'X')) {
+                        auto r = std::from_chars(entity.data() + 2, entity.data() + entity.size(), code, 16);
+                        ok = r.ec == std::errc{} && r.ptr == entity.data() + entity.size();
+                    } else if (entity.size() > 1) {
+                        auto r = std::from_chars(entity.data() + 1, entity.data() + entity.size(), code, 10);
+                        ok = r.ec == std::errc{} && r.ptr == entity.data() + entity.size();
+                    }
+                    if (ok && code >= 0x20 && code < 0x80) {
+                        out.push_back(static_cast<char>(code));
+                        i = semi;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_back(input[i]);
+    }
+    return out;
+}
+std::string xmlAttr(std::string_view tag, std::string_view attrName) {
+    std::size_t pos = 0;
+    while (pos < tag.size()) {
+        auto found = tag.find(attrName, pos);
+        if (found == std::string_view::npos) return {};
+        const bool boundaryBefore = found == 0 || ws(tag[found - 1]);
+        std::size_t after = found + attrName.size();
+        while (after < tag.size() && ws(tag[after])) ++after;
+        if (boundaryBefore && after < tag.size() && tag[after] == '=') {
+            ++after;
+            while (after < tag.size() && ws(tag[after])) ++after;
+            if (after < tag.size() && (tag[after] == '"' || tag[after] == '\'')) {
+                const char q = tag[after++];
+                const auto end = tag.find(q, after);
+                if (end != std::string_view::npos) {
+                    return decodeXmlEntities(tag.substr(after, end - after));
+                }
+            }
+        }
+        pos = found + attrName.size();
+    }
+    return {};
+}
+std::string xmlElementText(std::string_view block, std::string_view tagName) {
+    const std::string openPrefix = "<" + std::string(tagName);
+    const std::string closeTag = "</" + std::string(tagName) + ">";
+    auto start = block.find(openPrefix);
+    if (start == std::string_view::npos) return {};
+    auto tagEnd = block.find('>', start + openPrefix.size());
+    if (tagEnd == std::string_view::npos) return {};
+    auto close = block.find(closeTag, tagEnd + 1);
+    if (close == std::string_view::npos) return {};
+    return trim(decodeXmlEntities(block.substr(tagEnd + 1, close - tagEnd - 1)));
+}
+std::unordered_map<std::string, std::vector<EpgEntry>> parseXmltv(std::string_view xml) {
+    std::unordered_map<std::string, std::vector<EpgEntry>> byChannel;
+    if (xml.size() > kMaxResponse) return byChannel;
+    xml = stripBom(xml);
+    std::size_t pos = 0;
+    while (pos < xml.size()) {
+        const auto progStart = xml.find("<programme", pos);
+        if (progStart == std::string_view::npos) break;
+        const auto openEnd = xml.find('>', progStart + 10);
+        if (openEnd == std::string_view::npos) break;
+        const auto progEnd = xml.find("</programme>", openEnd + 1);
+        if (progEnd == std::string_view::npos) break;
+        const std::string_view openTag = xml.substr(progStart + 10, openEnd - progStart - 10);
+        const std::string_view body = xml.substr(openEnd + 1, progEnd - openEnd - 1);
+        pos = progEnd + 12;
+
+        std::string channel = xmlAttr(openTag, "channel");
+        if (channel.empty()) continue;
+        auto& list = byChannel[channel];
+        if (list.size() >= kMaxEpgEntries) continue;
+        EpgEntry entry;
+        entry.title = xmlElementText(body, "title");
+        if (entry.title.empty()) continue;
+        entry.description = xmlElementText(body, "desc");
+        entry.startEpochSeconds = parseXmltvTimestamp(xmlAttr(openTag, "start"));
+        entry.endEpochSeconds = parseXmltvTimestamp(xmlAttr(openTag, "stop"));
+        if (entry.startEpochSeconds > 0) {
+            list.push_back(std::move(entry));
+        }
+    }
+    for (auto& [ch, entries] : byChannel) {
+        std::sort(entries.begin(), entries.end(), [](const EpgEntry& a, const EpgEntry& b) {
+            return a.startEpochSeconds < b.startEpochSeconds;
+        });
+    }
+    return byChannel;
+}
+
 std::string decodeBase64(std::string value) {
     static constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     if (value.size() < 8 || value.size() > 1'000'000 || value.find_first_of(" \t\r\n") != std::string::npos) return value;
@@ -565,9 +1165,11 @@ std::string decodeBase64(std::string value) {
 }
 std::vector<EpgEntry> epgEntries(const Json& root) {
     if (!root.is_object() || !root.contains("epg_listings") || !root["epg_listings"].is_array()) return {};
-    if (root["epg_listings"].size() > 1000) throw CatalogError("The provider returned too many guide entries.");
+    const auto& listings = root["epg_listings"];
     std::vector<EpgEntry> out;
-    for (const auto& item : root["epg_listings"]) {
+    out.reserve(std::min<std::size_t>(listings.size(), kMaxEpgEntries));
+    for (const auto& item : listings) {
+        if (out.size() >= kMaxEpgEntries) break;
         if (!item.is_object()) continue;
         EpgEntry epg; epg.title = js(item, "title");
         if (epg.title.empty()) epg.title = js(item, "name");
@@ -582,25 +1184,6 @@ std::vector<EpgEntry> epgEntries(const Json& root) {
         out.push_back(std::move(epg));
     }
     return out;
-}
-std::int64_t daysFromCivil(int year, unsigned month, unsigned day) {
-    year -= month <= 2;
-    const int era = (year >= 0 ? year : year - 399) / 400;
-    const unsigned yoe = static_cast<unsigned>(year - era * 400);
-    const unsigned adjusted = month > 2 ? month - 3 : month + 9;
-    const unsigned doy = (153U * adjusted + 2U) / 5U + day - 1U;
-    const unsigned doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
-    return static_cast<std::int64_t>(era) * 146097 + doe - 719468;
-}
-std::int64_t parseDate(std::string_view s) {
-    if (s.size() < 19) return 0;
-    auto num = [&](std::size_t p, std::size_t n) {
-        int value = 0; auto r = std::from_chars(s.data() + p, s.data() + p + n, value);
-        return r.ec == std::errc{} && r.ptr == s.data() + p + n ? value : -1;
-    };
-    int y = num(0,4), m = num(5,2), d = num(8,2), h = num(11,2), mi = num(14,2), sec = num(17,2);
-    if (y < 0 || m < 1 || m > 12 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60) return 0;
-    return daysFromCivil(y, static_cast<unsigned>(m), static_cast<unsigned>(d)) * 86400 + h * 3600 + mi * 60 + sec;
 }
 std::vector<std::string> objectKeys(const Json& object) {
     std::vector<std::string> keys;
@@ -620,7 +1203,230 @@ std::vector<std::string> objectKeys(const Json& object) {
     });
     return keys;
 }
+
+bool writeAll(int fd, const char* data, std::size_t size) {
+    std::size_t offset = 0;
+    while (offset < size) {
+        auto written = ::write(fd, data + offset, size - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return false;
+        offset += static_cast<std::size_t>(written);
+    }
+    return true;
+}
+
+// Compact binary on-disk catalog cache (TTL + fingerprint verified, mode 0600).
+constexpr std::array<char, 4> kDiskCacheMagic = {'B', 'T', 'V', 'K'};
+constexpr std::uint32_t kDiskCacheVersion = 1U;
+
+struct BinWriter {
+    std::string buf;
+    template <typename T>
+    void writePod(const T& v) {
+        buf.append(reinterpret_cast<const char*>(&v), sizeof(T));
+    }
+    void writeStr(std::string_view s) {
+        const std::uint32_t len = static_cast<std::uint32_t>(s.size());
+        writePod(len);
+        buf.append(s.data(), s.size());
+    }
+};
+
+struct BinReader {
+    std::string_view buf;
+    std::size_t pos = 0;
+    template <typename T>
+    bool readPod(T& out) {
+        if (sizeof(T) > buf.size() - pos) return false;
+        std::memcpy(&out, buf.data() + pos, sizeof(T));
+        pos += sizeof(T);
+        return true;
+    }
+    bool readStr(std::string& out, std::size_t maxLen = 65536) {
+        std::uint32_t len = 0;
+        if (!readPod(len) || len > maxLen || len > buf.size() - pos) return false;
+        out.assign(buf.data() + pos, len);
+        pos += len;
+        return true;
+    }
+};
+
+std::filesystem::path diskCachePath(const std::filesystem::path& dir, const std::string& sid, MediaKind kind) {
+    return dir / ("catalog-" + hash64(sid + "|" + kindName(kind)) + ".bin");
+}
+
+std::string catalogFingerprint(const Source& source, const std::string& liveFormat) {
+    return hash64(typeName(source.type) + "|" + source.url + "|" + source.username + "|" +
+                  source.password + "|" + liveFormat);
+}
+
+std::optional<Catalog> readDiskCache(const std::filesystem::path& path,
+                                     const std::string& expectedFingerprint,
+                                     std::chrono::seconds ttl) {
+    if (ttl.count() <= 0) return std::nullopt;
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(path, ec);
+    if (ec || sz < 16 || sz > kMaxResponse) return std::nullopt;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::string bytes(static_cast<std::size_t>(sz), '\0');
+    in.read(bytes.data(), static_cast<std::streamsize>(sz));
+    if (!in) return std::nullopt;
+
+    BinReader r{bytes, 0};
+    std::array<char, 4> magic{};
+    std::uint32_t version = 0;
+    std::int64_t savedAt = 0;
+    std::string fingerprint;
+    if (!r.readPod(magic) || magic != kDiskCacheMagic ||
+        !r.readPod(version) || version != kDiskCacheVersion ||
+        !r.readPod(savedAt) || !r.readStr(fingerprint, 64)) {
+        return std::nullopt;
+    }
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    if (fingerprint != expectedFingerprint || now < savedAt || (now - savedAt) > ttl.count()) {
+        return std::nullopt;
+    }
+    std::uint32_t catCount = 0;
+    if (!r.readPod(catCount) || catCount > kMaxItems) return std::nullopt;
+    Catalog catalog;
+    catalog.categories.reserve(catCount);
+    for (std::uint32_t i = 0; i < catCount; ++i) {
+        Category c;
+        std::uint8_t k = 0;
+        if (!r.readStr(c.id, 1024) || !r.readStr(c.name, 4096) || !r.readPod(k) || k > 3)
+            return std::nullopt;
+        c.kind = static_cast<MediaKind>(k);
+        catalog.categories.push_back(std::move(c));
+    }
+    std::uint32_t itemCount = 0;
+    if (!r.readPod(itemCount) || itemCount > kMaxItems) return std::nullopt;
+    catalog.items.reserve(itemCount);
+    for (std::uint32_t i = 0; i < itemCount; ++i) {
+        MediaItem item;
+        std::uint8_t k = 0;
+        std::uint32_t hdrCount = 0;
+        if (!r.readStr(item.id, 1024) || !r.readStr(item.sourceId, 256) ||
+            !r.readStr(item.providerId, 1024) || !r.readStr(item.title, 4096) ||
+            !r.readPod(k) || k > 3 || !r.readStr(item.categoryId, 1024) ||
+            !r.readStr(item.categoryName, 4096) || !r.readStr(item.mediaUrl, 8192) ||
+            !r.readStr(item.logoUrl, 8192) || !r.readStr(item.description, 16384) ||
+            !r.readStr(item.rating, 256) || !r.readStr(item.epgId, 1024) ||
+            !r.readPod(hdrCount) || hdrCount > 64) {
+            return std::nullopt;
+        }
+        item.kind = static_cast<MediaKind>(k);
+        for (std::uint32_t h = 0; h < hdrCount; ++h) {
+            std::string hk, hv;
+            if (!r.readStr(hk, 128) || !r.readStr(hv, 4096)) return std::nullopt;
+            item.requestHeaders.emplace(std::move(hk), std::move(hv));
+        }
+        catalog.items.push_back(std::move(item));
+    }
+    return catalog;
+}
+
+void writeDiskCache(const std::filesystem::path& path, const std::string& fingerprint,
+                    const Catalog& catalog) {
+    try {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) return;
+        BinWriter w;
+        w.buf.reserve(catalog.items.size() * 256 + 1024);
+        w.writePod(kDiskCacheMagic);
+        w.writePod(kDiskCacheVersion);
+        w.writePod(static_cast<std::int64_t>(std::time(nullptr)));
+        w.writeStr(fingerprint);
+        w.writePod(static_cast<std::uint32_t>(catalog.categories.size()));
+        for (const auto& c : catalog.categories) {
+            w.writeStr(c.id);
+            w.writeStr(c.name);
+            w.writePod(static_cast<std::uint8_t>(c.kind));
+        }
+        w.writePod(static_cast<std::uint32_t>(catalog.items.size()));
+        for (const auto& item : catalog.items) {
+            w.writeStr(item.id);
+            w.writeStr(item.sourceId);
+            w.writeStr(item.providerId);
+            w.writeStr(item.title);
+            w.writePod(static_cast<std::uint8_t>(item.kind));
+            w.writeStr(item.categoryId);
+            w.writeStr(item.categoryName);
+            w.writeStr(item.mediaUrl);
+            w.writeStr(item.logoUrl);
+            w.writeStr(item.description);
+            w.writeStr(item.rating);
+            w.writeStr(item.epgId);
+            w.writePod(static_cast<std::uint32_t>(item.requestHeaders.size()));
+            for (const auto& [hk, hv] : item.requestHeaders) {
+                w.writeStr(hk);
+                w.writeStr(hv);
+            }
+        }
+        if (w.buf.size() > kMaxResponse) return;
+        std::string tmp = path.string() + ".tmp.XXXXXX";
+        std::vector<char> tmpName(tmp.begin(), tmp.end());
+        tmpName.push_back('\0');
+        int fd = ::mkstemp(tmpName.data());
+        if (fd < 0) return;
+        bool ok = (::fchmod(fd, S_IRUSR | S_IWUSR) == 0 || errno == ENOSYS || errno == EPERM) &&
+                  writeAll(fd, w.buf.data(), w.buf.size());
+        if (::close(fd) != 0) ok = false;
+        if (!ok || ::rename(tmpName.data(), path.c_str()) != 0) {
+            (void)::unlink(tmpName.data());
+        }
+    } catch (...) {
+        // On-disk cache is best-effort; ignore storage errors.
+    }
+}
 } // namespace
+
+struct CatalogClient::CacheState {
+    struct CachedM3u {
+        std::shared_ptr<const ParsedPlaylist> playlist;
+        std::chrono::steady_clock::time_point fetchedAt{};
+    };
+    struct CachedXmltv {
+        std::unordered_map<std::string, std::vector<EpgEntry>> byChannel;
+        std::chrono::steady_clock::time_point fetchedAt{};
+    };
+    mutable std::mutex mutex;
+    std::unordered_map<std::string, CachedM3u> m3uByKey;
+    std::unordered_map<std::string, std::string> xmltvBySource;
+    std::unordered_map<std::string, CachedXmltv> xmltvData;
+    std::filesystem::path diskDir;
+    std::chrono::seconds diskTtl{0};
+
+    std::shared_ptr<const ParsedPlaylist> getOrFetchM3u(const HttpGet& httpGet, const Source& source) {
+        const std::string sid = sourceId(source);
+        const std::string key = sid + "|" + source.url;
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto it = m3uByKey.find(key);
+            if (it != m3uByKey.end() && (now - it->second.fetchedAt) < kM3uMemoryCacheTtl &&
+                it->second.playlist) {
+                return it->second.playlist;
+            }
+        }
+        if (!validSource(source)) throw CatalogError("The playlist address is invalid.");
+        if (!httpGet) throw CatalogError("No HTTP transport is configured.");
+        std::string response;
+        try { response = httpGet(source.url); }
+        catch (...) { throw CatalogError("Could not connect to the provider."); }
+        auto parsed = std::make_shared<ParsedPlaylist>(parsePlaylist(response, source));
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (m3uByKey.size() >= 4) m3uByKey.clear();
+            m3uByKey[key] = {parsed, std::chrono::steady_clock::now()};
+            if (!parsed->xmltvUrl.empty()) {
+                xmltvBySource[sid] = parsed->xmltvUrl;
+            }
+        }
+        return parsed;
+    }
+};
 
 std::string sourceId(const Source& source) {
     if (!source.id.empty()) return source.id;
@@ -685,9 +1491,8 @@ std::optional<std::string> alternateXtreamLiveUrl(const std::string& url) {
     const std::string_view suffix =
         suffixStart == std::string_view::npos ? std::string_view{} : view.substr(suffixStart);
 
-    // Split path into non-leading segments; empty segments invalidate live URLs.
     std::vector<std::string_view> segments;
-    std::size_t pos = 1; // skip leading '/'
+    std::size_t pos = 1;
     while (pos <= path.size()) {
         const std::size_t slash = path.find('/', pos);
         const std::size_t end = slash == std::string_view::npos ? path.size() : slash;
@@ -731,7 +1536,48 @@ std::optional<std::string> alternateXtreamLiveUrl(const std::string& url) {
     return out;
 }
 
-CatalogClient::CatalogClient(HttpGet httpGet) : httpGet_(std::move(httpGet)) {}
+CatalogClient::CatalogClient(HttpGet httpGet, bool allowParallelFetch)
+    : httpGet_(std::move(httpGet)),
+      allowParallelFetch_(allowParallelFetch),
+      cache_(std::make_unique<CacheState>()) {}
+
+CatalogClient::~CatalogClient() = default;
+
+void CatalogClient::setCacheDirectory(std::filesystem::path directory, std::chrono::seconds ttl) {
+    std::lock_guard<std::mutex> lock(cache_->mutex);
+    cache_->diskDir = std::move(directory);
+    cache_->diskTtl = ttl;
+}
+
+void CatalogClient::invalidateCache(const std::string& sourceKey) const {
+    std::filesystem::path dir;
+    {
+        std::lock_guard<std::mutex> lock(cache_->mutex);
+        cache_->m3uByKey.clear();
+        cache_->xmltvData.clear();
+        if (sourceKey.empty()) {
+            cache_->xmltvBySource.clear();
+        } else {
+            cache_->xmltvBySource.erase(sourceKey);
+        }
+        dir = cache_->diskDir;
+    }
+    if (dir.empty()) return;
+    std::error_code ec;
+    if (sourceKey.empty()) {
+        std::filesystem::remove_all(dir, ec);
+    } else {
+        for (const auto kind : {MediaKind::Live, MediaKind::Movie, MediaKind::Series}) {
+            std::filesystem::remove(diskCachePath(dir, sourceKey, kind), ec);
+        }
+    }
+}
+
+std::string CatalogClient::xmltvUrl(const Source& source) const {
+    std::lock_guard<std::mutex> lock(cache_->mutex);
+    const auto it = cache_->xmltvBySource.find(sourceId(source));
+    return it == cache_->xmltvBySource.end() ? std::string{} : it->second;
+}
 
 std::string CatalogClient::preferredLiveFormat(const Source& source) const {
     std::lock_guard<std::mutex> lock(formatMutex_);
@@ -753,13 +1599,8 @@ void CatalogClient::setPreferredLiveFormat(const Source& source, std::string for
 
 void CatalogClient::authenticate(const Source& source) const {
     if (source.type == SourceType::M3U) {
-        if (!validSource(source)) throw CatalogError("The playlist address is invalid.");
-        if (!httpGet_) throw CatalogError("No HTTP transport is configured.");
-        std::string response;
-        try { response = httpGet_(source.url); }
-        catch (...) { throw CatalogError("Could not connect to the provider."); }
-        auto items = parsePlaylist(response, source);
-        if (items.empty()) throw CatalogError("The playlist contains no supported HTTP streams.");
+        auto parsed = cache_->getOrFetchM3u(httpGet_, source);
+        if (parsed->entries.empty()) throw CatalogError("The playlist contains no supported HTTP streams.");
         return;
     }
     const auto response = requestJson(httpGet_, source, {});
@@ -788,18 +1629,36 @@ void CatalogClient::authenticate(const Source& source) const {
 
 Catalog CatalogClient::load(const Source& source, MediaKind kind) const {
     Catalog result;
+    const std::string sid = sourceId(source);
+    const std::string liveFmt = preferredLiveFormat(source);
+
+    std::filesystem::path cacheDir;
+    std::chrono::seconds cacheTtl{0};
+    {
+        std::lock_guard<std::mutex> lock(cache_->mutex);
+        cacheDir = cache_->diskDir;
+        cacheTtl = cache_->diskTtl;
+    }
+    const std::string fingerprint = catalogFingerprint(source, liveFmt);
+    if (!cacheDir.empty() && cacheTtl.count() > 0 && kind != MediaKind::Episode) {
+        if (auto cached = readDiskCache(diskCachePath(cacheDir, sid, kind), fingerprint, cacheTtl)) {
+            return *cached;
+        }
+    }
+
     if (source.type == SourceType::M3U) {
-        if (!validSource(source)) throw CatalogError("The playlist address is invalid.");
-        if (!httpGet_) throw CatalogError("No HTTP transport is configured.");
-        std::string response;
-        try { response = httpGet_(source.url); }
-        catch (...) { throw CatalogError("Could not connect to the provider."); }
-        auto playlist = parsePlaylist(response, source);
-        std::set<std::string> categories;
-        for (auto& parsed : playlist) {
-            if (parsed.item.kind != kind) continue;
-            if (categories.insert(parsed.group).second) result.categories.push_back({parsed.group, parsed.group, kind});
-            result.items.push_back(std::move(parsed.item));
+        auto parsed = cache_->getOrFetchM3u(httpGet_, source);
+        std::unordered_set<std::string> categories;
+        result.items.reserve(parsed->entries.size());
+        for (const auto& entry : parsed->entries) {
+            if (entry.item.kind != kind) continue;
+            if (categories.insert(entry.group).second) {
+                result.categories.push_back({entry.group, entry.group, kind});
+            }
+            result.items.push_back(entry.item);
+        }
+        if (!cacheDir.empty() && cacheTtl.count() > 0 && kind != MediaKind::Episode) {
+            writeDiskCache(diskCachePath(cacheDir, sid, kind), fingerprint, result);
         }
         return result;
     }
@@ -812,58 +1671,53 @@ Catalog CatalogClient::load(const Source& source, MediaKind kind) const {
         case MediaKind::Series: categoryAction = "get_series_categories"; itemAction = "get_series"; break;
         case MediaKind::Episode: return result;
     }
-    const auto categoryJson = requestJson(httpGet_, source, {{"action", categoryAction}});
-    const auto itemJson = requestJson(httpGet_, source, {{"action", itemAction}});
-    if (!categoryJson.is_array()) throw CatalogError("The provider returned an invalid category response.");
-    if (!itemJson.is_array()) throw CatalogError("The provider returned an invalid catalog response.");
-    if (categoryJson.size() > kMaxItems || itemJson.size() > kMaxItems)
-        throw CatalogError("The provider catalog exceeds the size limit.");
 
-    std::set<std::string> seenCategories;
-    std::unordered_map<std::string, std::string> categoryNames;
-    for (const auto& value : categoryJson) {
-        if (!value.is_object()) continue;
-        auto id = js(value, "category_id");
-        if (id.empty()) id = js(value, "id");
-        if (id.empty() || !seenCategories.insert(id).second) continue;
-        auto name = js(value, "category_name");
-        if (name.empty()) name = std::string(kUncategorized);
-        categoryNames.emplace(id, name);
-        result.categories.push_back({std::move(id), std::move(name), kind});
+    // Hoist URL base & encoded credentials once before parsing all items.
+    const std::string base = serverBase(source);
+    const std::string encUser = encode(source.username);
+    const std::string encPass = encode(source.password);
+    const std::string livePrefix = base + "/live/" + encUser + "/" + encPass + "/";
+    const std::string moviePrefix = base + "/movie/" + encUser + "/" + encPass + "/";
+
+    std::string categoryBody;
+    std::string itemBody;
+    if (allowParallelFetch_ && httpGet_) {
+        const std::string catUrl = apiUrl(source, {{"action", categoryAction}});
+        const std::string itmUrl = apiUrl(source, {{"action", itemAction}});
+        auto catFuture = std::async(std::launch::async, [this, catUrl]() {
+            try { return httpGet_(catUrl); }
+            catch (...) { throw CatalogError("Could not connect to the provider."); }
+        });
+        try {
+            itemBody = httpGet_(itmUrl);
+        } catch (...) {
+            try { (void)catFuture.get(); } catch (...) {}
+            throw CatalogError("Could not connect to the provider.");
+        }
+        categoryBody = catFuture.get();
+    } else {
+        categoryBody = requestRaw(httpGet_, source, {{"action", categoryAction}});
+        itemBody = requestRaw(httpGet_, source, {{"action", itemAction}});
     }
 
-    const auto sid = sourceId(source);
-    std::set<std::string> seenItems;
-    for (const auto& value : itemJson) {
-        if (!value.is_object()) continue;
-        auto providerId = kind == MediaKind::Series ? js(value, "series_id") : js(value, "stream_id");
-        if (providerId.empty()) providerId = js(value, "id");
-        if (providerId.empty()) continue;
-        const auto id = sid + ":" + kindName(kind) + ":" + providerId;
-        if (!seenItems.insert(id).second) continue;
-        MediaItem item;
-        item.id = id;
-        item.sourceId = sid;
-        item.providerId = providerId;
-        item.title = js(value, "name");
-        if (item.title.empty()) item.title = js(value, "title");
-        if (item.title.empty()) item.title = "Untitled";
-        item.kind = kind;
-        item.categoryId = js(value, "category_id");
-        if (auto category = categoryNames.find(item.categoryId); category != categoryNames.end()) item.categoryName = category->second;
-        if (kind == MediaKind::Live) item.mediaUrl = streamUrl(source, "live", providerId, preferredLiveFormat(source));
-        else if (kind == MediaKind::Movie) {
-            auto extension = js(value, "container_extension");
-            item.mediaUrl = streamUrl(source, "movie", providerId, extension.empty() ? "mp4" : extension);
-        }
-        item.logoUrl = js(value, "stream_icon");
-        if (item.logoUrl.empty()) item.logoUrl = js(value, "cover");
-        if (item.logoUrl.empty()) item.logoUrl = js(value, "cover_big");
-        item.description = js(value, "plot");
-        item.rating = js(value, "rating");
-        if (item.rating.empty()) item.rating = js(value, "rating_5based");
-        item.epgId = js(value, "epg_channel_id");
-        result.items.push_back(std::move(item));
+    std::unordered_map<std::string, std::string> categoryNames;
+    {
+        XtreamCategorySax catSax(kind, result.categories, categoryNames);
+        runXtreamSax(categoryBody, catSax, "The provider returned an invalid category response.");
+    }
+    categoryBody.clear();
+    categoryBody.shrink_to_fit();
+
+    {
+        XtreamItemSax itemSax(kind, sid, kindName(kind), livePrefix, liveFmt, moviePrefix,
+                              categoryNames, result.items);
+        runXtreamSax(itemBody, itemSax, "The provider returned an invalid catalog response.");
+    }
+    itemBody.clear();
+    itemBody.shrink_to_fit();
+
+    if (!cacheDir.empty() && cacheTtl.count() > 0) {
+        writeDiskCache(diskCachePath(cacheDir, sid, kind), fingerprint, result);
     }
     return result;
 }
@@ -875,8 +1729,10 @@ std::vector<MediaItem> CatalogClient::loadEpisodes(const Source& source, const s
     const auto& seasons = root["episodes"];
     if (seasons.size() > 1000) throw CatalogError("The provider returned too many seasons.");
     const auto sid = sourceId(source);
+    const std::string seriesPrefix = serverBase(source) + "/series/" + encode(source.username) +
+                                     "/" + encode(source.password) + "/";
     std::vector<MediaItem> result;
-    std::set<std::string> seen;
+    std::unordered_set<std::string> seen;
     for (const auto& seasonKey : objectKeys(seasons)) {
         const auto& episodes = seasons[seasonKey];
         if (!episodes.is_array()) continue;
@@ -909,7 +1765,7 @@ std::vector<MediaItem> CatalogClient::loadEpisodes(const Source& source, const s
                 title << "Series " << seriesId << " - S" << (season < 0 ? 0 : season) << "E" << (number < 0 ? 0 : number);
                 item.title = title.str();
             }
-            item.mediaUrl = streamUrl(source, "series", providerId, extension);
+            item.mediaUrl = streamUrlWithPrefix(seriesPrefix, providerId, extension);
             item.logoUrl = js(info, "movie_image");
             item.description = js(info, "plot");
             item.rating = js(info, "rating");
@@ -927,7 +1783,41 @@ std::vector<MediaItem> CatalogClient::loadEpisodes(const Source& source, const s
 }
 
 std::vector<EpgEntry> CatalogClient::loadEpg(const Source& source, const std::string& streamId) const {
-    if (source.type != SourceType::Xtream || streamId.empty() || streamId.size() > 1024) return {};
+    if (streamId.empty() || streamId.size() > 1024) return {};
+    if (source.type == SourceType::M3U) {
+        std::string tvgUrl = xmltvUrl(source);
+        if (tvgUrl.empty()) {
+            // Ensure M3U header has been parsed at least once for url-tvg.
+            try {
+                auto parsed = cache_->getOrFetchM3u(httpGet_, source);
+                tvgUrl = parsed->xmltvUrl;
+            } catch (...) {
+                return {};
+            }
+        }
+        if (tvgUrl.empty() || !httpGet_) return {};
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(cache_->mutex);
+            auto it = cache_->xmltvData.find(tvgUrl);
+            if (it != cache_->xmltvData.end() && (now - it->second.fetchedAt) < kXmltvMemoryCacheTtl) {
+                auto ch = it->second.byChannel.find(streamId);
+                return ch == it->second.byChannel.end() ? std::vector<EpgEntry>{} : ch->second;
+            }
+        }
+        std::string xml;
+        try { xml = httpGet_(tvgUrl); }
+        catch (...) { throw CatalogError("Could not fetch XMLTV guide."); }
+        auto parsed = parseXmltv(xml);
+        std::vector<EpgEntry> out;
+        if (auto ch = parsed.find(streamId); ch != parsed.end()) out = ch->second;
+        {
+            std::lock_guard<std::mutex> lock(cache_->mutex);
+            if (cache_->xmltvData.size() >= 2) cache_->xmltvData.clear();
+            cache_->xmltvData[tvgUrl] = {std::move(parsed), std::chrono::steady_clock::now()};
+        }
+        return out;
+    }
     auto root = requestJson(httpGet_, source, {{"action", "get_short_epg"}, {"stream_id", streamId}, {"limit", "24"}});
     return epgEntries(root);
 }
@@ -1007,12 +1897,19 @@ std::optional<MediaItem> mediaFromJson(const Json& value) {
     }
     return item;
 }
+bool validSourceFields(const Source& s) {
+    return s.id.size() <= 256 && s.name.size() <= 256 && s.url.size() <= 8192 &&
+           s.username.size() <= 1024 && s.password.size() <= 4096;
+}
 bool validSettings(const Settings& settings) {
     if (!std::isfinite(settings.volume) || settings.volume < 0 || settings.volume > 1 || settings.locale.size() > 32) return false;
-    if (settings.source && (settings.source->id.size() > 256 || settings.source->name.size() > 256 ||
-        settings.source->url.size() > 8192 || settings.source->username.size() > 1024 ||
-        settings.source->password.size() > 4096)) return false;
-    if (settings.favoritesBySource.size() > 100 || settings.recentsBySource.size() > 100) return false;
+    if (settings.source && !validSourceFields(*settings.source)) return false;
+    if (settings.savedSources.size() > 32) return false;
+    for (const auto& saved : settings.savedSources) {
+        if (!validSourceFields(saved)) return false;
+    }
+    if (settings.favoritesBySource.size() > 100 || settings.recentsBySource.size() > 100 ||
+        settings.resumePositionsBySource.size() > 100) return false;
     for (const auto& [sid, ids] : settings.favoritesBySource) {
         if (sid.empty() || sid.size() > 256 || ids.size() > kMaxItems) return false;
         for (const auto& id : ids) if (id.empty() || id.size() > 1024) return false;
@@ -1020,6 +1917,12 @@ bool validSettings(const Settings& settings) {
     for (const auto& [sid, items] : settings.recentsBySource) {
         if (sid.empty() || sid.size() > 256 || items.size() > 100) return false;
         for (const auto& item : items) if (item.sourceId != sid || item.id.empty()) return false;
+    }
+    for (const auto& [sid, positions] : settings.resumePositionsBySource) {
+        if (sid.empty() || sid.size() > 256 || positions.size() > 500) return false;
+        for (const auto& [itemId, seconds] : positions) {
+            if (itemId.empty() || itemId.size() > 1024 || !std::isfinite(seconds) || seconds < 0.0) return false;
+        }
     }
     return true;
 }
@@ -1030,6 +1933,15 @@ Settings settingsFromJson(const Json& value) {
         auto source = sourceFromJson(value["source"]);
         if (!source) return Settings{};
         result.source = std::move(*source);
+    }
+    if (value.contains("savedSources") && !value["savedSources"].is_null()) {
+        const auto& saved = value["savedSources"];
+        if (!saved.is_array() || saved.size() > 32) return Settings{};
+        for (const auto& entry : saved) {
+            auto source = sourceFromJson(entry);
+            if (!source) return Settings{};
+            result.savedSources.push_back(std::move(*source));
+        }
     }
     if (value.contains("volume")) {
         if (!value["volume"].is_number()) return Settings{};
@@ -1064,11 +1976,29 @@ Settings settingsFromJson(const Json& value) {
             }
         }
     }
+    if (value.contains("resumePositionsBySource") && !value["resumePositionsBySource"].is_null()) {
+        const auto& resumes = value["resumePositionsBySource"];
+        if (!resumes.is_object() || resumes.size() > 100) return Settings{};
+        for (auto it = resumes.begin(); it != resumes.end(); ++it) {
+            if (!it.value().is_object() || it.value().size() > 500) return Settings{};
+            auto& target = result.resumePositionsBySource[it.key()];
+            for (auto posIt = it.value().begin(); posIt != it.value().end(); ++posIt) {
+                if (!posIt.value().is_number()) return Settings{};
+                const double secs = posIt.value().get<double>();
+                if (!std::isfinite(secs) || secs < 0.0) return Settings{};
+                target[posIt.key()] = secs;
+            }
+        }
+    }
     return validSettings(result) ? result : Settings{};
 }
 Json settingsJson(const Settings& settings) {
     Json out{{"version", 1}, {"source", settings.source ? sourceJson(*settings.source) : Json(nullptr)},
              {"volume", settings.volume}, {"locale", settings.locale}};
+    if (!settings.savedSources.empty()) {
+        out["savedSources"] = Json::array();
+        for (const auto& saved : settings.savedSources) out["savedSources"].push_back(sourceJson(saved));
+    }
     out["favoritesBySource"] = Json::object();
     for (const auto& [sid, favorites] : settings.favoritesBySource) out["favoritesBySource"][sid] = favorites;
     out["recentsBySource"] = Json::object();
@@ -1076,17 +2006,16 @@ Json settingsJson(const Settings& settings) {
         out["recentsBySource"][sid] = Json::array();
         for (const auto& item : recents) out["recentsBySource"][sid].push_back(mediaJson(item));
     }
-    return out;
-}
-bool writeAll(int fd, const char* data, std::size_t size) {
-    std::size_t offset = 0;
-    while (offset < size) {
-        auto written = ::write(fd, data + offset, size - offset);
-        if (written < 0 && errno == EINTR) continue;
-        if (written <= 0) return false;
-        offset += static_cast<std::size_t>(written);
+    if (!settings.resumePositionsBySource.empty()) {
+        out["resumePositionsBySource"] = Json::object();
+        for (const auto& [sid, positions] : settings.resumePositionsBySource) {
+            out["resumePositionsBySource"][sid] = Json::object();
+            for (const auto& [itemId, secs] : positions) {
+                out["resumePositionsBySource"][sid][itemId] = secs;
+            }
+        }
     }
-    return true;
+    return out;
 }
 } // namespace
 

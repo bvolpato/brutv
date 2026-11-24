@@ -210,6 +210,30 @@ void binarySearchSeekEdgeCases() {
             "Seek past end did not choose latest keyframe.");
 }
 
+void hotRingAndBatchedDiskPread() {
+    // Exceed the 3 MiB hot ring and 128 KiB write batch across multiple sealed chunks so
+    // reads exercise BOTH the in-memory hot tail ring AND lock-free disk pread().
+    brutv::PacketSpool spool({600.0, 12U * 1024U * 1024U});
+    Packet source;
+    Packet output;
+    constexpr int kCount = 450;
+    constexpr int kPayload = 10240; // ~4.5 MiB total > 3 MiB hot ring
+    for (int i = 0; i < kCount; ++i) {
+        const bool kf = (i % 25 == 0);
+        source.fill(kPayload, i, kf);
+        require(spool.append(source.value, i * 0.25, kf), "Batched append failed.");
+    }
+    // Rewind to the very beginning (evicted from 3 MiB hot ring -> served via pread from sealed disk chunk).
+    auto cursor = spool.seek(0.0);
+    for (int i = 0; i < kCount; ++i) {
+        require(spool.read(cursor, output.value) == brutv::PacketSpool::ReadResult::Ready,
+                "Failed reading packet across sealed disk + hot ring boundary.");
+        require(output.value->size == kPayload && output.value->pts == i * 1000 &&
+                output.value->data[0] == (i & 0xff) && output.value->data[kPayload - 1] == (i & 0xff),
+                "Packet payload corrupted across disk pread / hot ring.");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -219,7 +243,8 @@ int main() {
         byteCapAndCleanup();
         concurrentCapture();
         binarySearchSeekEdgeCases();
-        std::cout << "Live packet retention, keyframe seeking, metadata, privacy and concurrent capture passed.\n";
+        hotRingAndBatchedDiskPread();
+        std::cout << "Live packet retention, keyframe seeking, metadata, privacy, hot ring and concurrent capture passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

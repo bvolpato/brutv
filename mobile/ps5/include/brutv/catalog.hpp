@@ -1,9 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -72,10 +74,13 @@ struct EpgEntry {
 
 struct Settings {
     std::optional<Source> source;
+    std::vector<Source> savedSources;
     // The outer key is sourceId(source); values are MediaItem::id values.
     std::map<std::string, std::set<std::string>> favoritesBySource;
     // Recent items are kept separately for each source.
     std::map<std::string, std::vector<MediaItem>> recentsBySource;
+    // VOD/Episode resume positions in seconds, keyed by sourceId -> MediaItem::id.
+    std::map<std::string, std::map<std::string, double>> resumePositionsBySource;
     float volume{1.0F};
     std::string locale{"system"};
 };
@@ -101,19 +106,30 @@ std::optional<std::string> alternateXtreamLiveUrl(const std::string& url);
 
 class CatalogClient {
 public:
-    explicit CatalogClient(HttpGet httpGet);
+    explicit CatalogClient(HttpGet httpGet, bool allowParallelFetch = false);
+    ~CatalogClient();
+    CatalogClient(const CatalogClient&) = delete;
+    CatalogClient& operator=(const CatalogClient&) = delete;
+
+    void setCacheDirectory(std::filesystem::path directory,
+                           std::chrono::seconds ttl = std::chrono::seconds(900));
+    void invalidateCache(const std::string& sourceKey = {}) const;
 
     void authenticate(const Source& source) const;
     Catalog load(const Source& source, MediaKind kind) const;
     std::vector<MediaItem> loadEpisodes(const Source& source, const std::string& seriesId) const;
     std::vector<EpgEntry> loadEpg(const Source& source, const std::string& streamId) const;
+    std::string xmltvUrl(const Source& source) const;
     std::string preferredLiveFormat(const Source& source) const;
     void setPreferredLiveFormat(const Source& source, std::string format);
 
 private:
+    struct CacheState;
     HttpGet httpGet_;
+    bool allowParallelFetch_{false};
     mutable std::mutex formatMutex_;
     mutable std::unordered_map<std::string, std::string> preferredLiveFormats_;
+    std::unique_ptr<CacheState> cache_;
 };
 
 class SettingsStore {

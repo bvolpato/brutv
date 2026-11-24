@@ -168,7 +168,7 @@ class SdlPlatform final : public Platform {
                 SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_LEFTY) < -16000;
             const bool down =
                 SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_LEFTY) > 16000;
-            const std::array<bool, 12> held = {
+            const std::array<bool, 13> held = {
                 bool(SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_DPAD_UP) || up),
                 bool(SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
                      down),
@@ -184,32 +184,28 @@ class SdlPlatform final : public Platform {
                 bool(SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)),
                 bool(SDL_GameControllerGetButton(controller_, SDL_CONTROLLER_BUTTON_START)),
                 bool(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_TRIGGERLEFT) >
+                     16000),
+                bool(SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >
                      16000)};
-            const std::array<Key, 12> keys = {Key::Up,       Key::Down,    Key::Left,
+            const std::array<Key, 13> keys = {Key::Up,       Key::Down,    Key::Left,
                                               Key::Right,    Key::Confirm, Key::Back,
                                               Key::Favorite, Key::Search,  Key::PreviousTab,
-                                              Key::NextTab,  Key::Options, Key::Rewind};
+                                              Key::NextTab,  Key::Options, Key::Rewind,
+                                              Key::Forward};
             const auto now = SDL_GetTicks64();
             for (std::size_t i = 0; i < held.size(); ++i) {
-                if (held[i] && (!held_[i] || ((i < 4 || i == 11) && now >= repeat_[i]))) {
+                const bool repeatable = i < 4 || i == 11 || i == 12;
+                if (held[i] && (!held_[i] || (repeatable && now >= repeat_[i]))) {
                     input.pressed.push_back(keys[i]);
                     repeat_[i] = now + (held_[i] ? 110 : 360);
                 }
                 held_[i] = held[i];
             }
-            const bool forward =
-                SDL_GameControllerGetAxis(controller_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-            if (forward && (!forwardHeld_ || now >= forwardRepeat_)) {
-                input.pressed.push_back(Key::Forward);
-                forwardRepeat_ = now + (forwardHeld_ ? 160 : 360);
-            }
-            forwardHeld_ = forward;
         }
         return input;
     }
     void present() override {
         SDL_GL_SwapWindow(window_);
-        SDL_Delay(1);
     }
     int width() const override {
         int w = 0;
@@ -228,10 +224,8 @@ class SdlPlatform final : public Platform {
     SDL_GLContext context_{};
     SDL_GameController *controller_{};
     std::shared_ptr<AudioSink> audio_;
-    std::array<bool, 12> held_{};
-    std::array<Uint64, 12> repeat_{};
-    bool forwardHeld_{};
-    Uint64 forwardRepeat_{};
+    std::array<bool, 13> held_{};
+    std::array<Uint64, 13> repeat_{};
 };
 } // namespace
 std::unique_ptr<Platform> makePlatform() { return std::make_unique<SdlPlatform>(); }

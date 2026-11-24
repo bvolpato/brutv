@@ -42,9 +42,13 @@ public:
             float maxWidth = 0);
   float textWidth(const std::string &value, float size) const;
   void video(const std::uint8_t *rgba, int width, int height);
+  void videoYuv(const std::uint8_t *y, const std::uint8_t *u,
+                const std::uint8_t *v, int width, int height, int displayWidth,
+                int displayHeight, int colorSpace, bool fullRange);
   void drawVideo(float x, float y, float width, float height);
   void icon(Icon value, float x, float y, float size, Color color);
   void button(Button value, float x, float y, float size, Color color);
+  bool hasImage(const std::string &key) const;
   void image(const std::string &key, const std::uint8_t *rgba, int imageWidth,
              int imageHeight, float x, float y, float width, float height,
              bool cover = false, float radius = 0);

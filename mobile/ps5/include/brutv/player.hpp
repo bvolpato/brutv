@@ -25,11 +25,25 @@ public:
 
 // AudioSink data is always interleaved, signed 16-bit, stereo PCM at 48 kHz.
 struct VideoFrame {
+    enum class Format { Rgba, Yuv420p };
+    enum class ColorSpace { Bt601, Bt709, Bt2020 };
+
+    Format format = Format::Rgba;
+    ColorSpace colorSpace = ColorSpace::Bt709;
+    bool fullRange = false;
     int width = 0;
     int height = 0;
+    int displayWidth = 0;
+    int displayHeight = 0;
     double ptsSeconds = 0.0;
     std::uint64_t serial = 0;
     std::vector<std::uint8_t> rgba;
+    std::vector<std::uint8_t> yPlane;
+    std::vector<std::uint8_t> uPlane;
+    std::vector<std::uint8_t> vPlane;
+    int yStride = 0;
+    int uStride = 0;
+    int vStride = 0;
 };
 
 struct ReconnectPolicy {
@@ -125,7 +139,8 @@ public:
     // are forwarded after rejecting forbidden hop-by-hop/Host headers, control
     // characters, duplicates, and oversized values.
     void open(const std::string& url, bool live = true,
-              const std::unordered_map<std::string, std::string>& requestHeaders = {});
+              const std::unordered_map<std::string, std::string>& requestHeaders = {},
+              double startSeconds = 0.0);
     void stop();
     void setPaused(bool paused);
     void togglePause();
@@ -134,12 +149,15 @@ public:
     void cycleAudioTrack();
     void cycleSubtitleTrack();
     void setVolume(float volume);
+    void setPreferYuv(bool preferYuv);
     void clearFormatCache();
     Status status() const;
 
-    // Call from the render loop. Returns a due RGBA frame without blocking;
-    // retain the previous texture when false. At most six frames are buffered.
+    // Call from the render loop. Returns a due frame (YUV420P or RGBA) without
+    // blocking; retain the previous texture when false. Passing back the
+    // previous VideoFrame recycles its backing buffers into the decoder pool.
     bool takeFrame(VideoFrame& frame);
+    void recycleFrame(VideoFrame&& frame);
 
 private:
     struct Impl;
