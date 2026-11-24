@@ -17,11 +17,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleOut
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,11 +48,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
@@ -61,7 +63,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Check
@@ -70,19 +74,19 @@ import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.FileOpen
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.InsertLink
 import androidx.compose.material.icons.outlined.LiveTv
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.Movie
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SwitchAccount
@@ -92,6 +96,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -103,11 +109,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -116,14 +120,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
@@ -132,22 +137,21 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.imageLoader
 import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Size
-import com.bvolpato.brutv.data.CatalogRepository
+import com.bvolpato.brutv.BuildConfig
 import com.bvolpato.brutv.data.MediaEntry
 import com.bvolpato.brutv.data.MediaKind
 import com.bvolpato.brutv.data.Programme
@@ -160,14 +164,9 @@ import com.bvolpato.brutv.signin.PairingSendScreen
 import com.bvolpato.brutv.signin.PrivateScreen
 import com.bvolpato.brutv.signin.QrScannerScreen
 import com.bvolpato.brutv.signin.TvPairingScreen
-import java.io.File
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import okhttp3.Dispatcher
-import okhttp3.OkHttpClient
 
 private val BruTvColors = darkColorScheme(
     primary = Color(0xFF41E0D0),
@@ -195,6 +194,21 @@ private enum class SignInField {
     PLAYLIST_URL,
 }
 
+@Immutable
+private data class DecodeTargets(
+    val sidebar: Size,
+    val liveCard: Size,
+    val posterCard: Size,
+    val detail: Size,
+    val crossfadeMs: Int,
+)
+
+@Immutable
+private data class SeasonEpisodeGroup(
+    val season: Int?,
+    val episodes: List<MediaEntry>,
+)
+
 /** Main app entry point. Player content replaces navigation so video owns the whole display. */
 @Composable
 fun BruTvApp(
@@ -208,11 +222,13 @@ fun BruTvApp(
     val clipboard = LocalClipboardManager.current
     var pasteLinkOpen by remember { mutableStateOf(false) }
     var playlistPickerUnavailable by remember { mutableStateOf(false) }
-    var splashDismissed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        delay(1500)
-        splashDismissed = true
+    val isPt = remember(state.language) {
+        when (state.language) {
+            "pt" -> true
+            "en" -> false
+            else -> Locale.getDefault().language.lowercase(Locale.ROOT).startsWith("pt")
+        }
     }
 
     val playlistPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -227,71 +243,76 @@ fun BruTvApp(
             getContent = { contentPicker.launch("*/*") },
         )
     }
+
     val appContext = context.applicationContext
-    val imageLoader = remember(appContext) {
+    val imageLoader = remember(appContext) { appContext.imageLoader }
+    val decodeTargets = remember(appContext, isTv) {
         val isLowRam = (appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
             ?.isLowRamDevice == true
-        val artworkDispatcher = Dispatcher().apply {
-            maxRequests = 16
-            maxRequestsPerHost = 4
-        }
-        val artworkClient = OkHttpClient.Builder()
-            .dispatcher(artworkDispatcher)
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .callTimeout(15, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .addInterceptor { chain ->
-                val request = chain.request()
-                val withUserAgent = if (request.header("User-Agent") == null) {
-                    request.newBuilder().header("User-Agent", CatalogRepository.USER_AGENT).build()
-                } else {
-                    request
-                }
-                chain.proceed(withUserAgent)
-            }
-            .build()
-        ImageLoader.Builder(appContext)
-            .okHttpClient(artworkClient)
-            .memoryCache {
-                coil.memory.MemoryCache.Builder(appContext)
-                    .maxSizePercent(if (isLowRam) 0.10 else 0.18)
-                    .build()
-            }
-            .diskCache {
-                coil.disk.DiskCache.Builder()
-                    .directory(File(appContext.cacheDir, "brutv_artwork"))
-                    .maxSizeBytes(if (isLowRam) 64L * 1024 * 1024 else 192L * 1024 * 1024)
-                    .build()
-            }
-            .crossfade(180)
-            .build()
-    }
-    DisposableEffect(imageLoader) {
-        onDispose { imageLoader.shutdown() }
+        val scale = if (isLowRam) 2 else 1
+        DecodeTargets(
+            sidebar = Size(96 / scale, 96 / scale),
+            liveCard = Size(256 / scale, 160 / scale),
+            posterCard = Size(320 / scale, 480 / scale),
+            detail = Size(480 / scale, 640 / scale),
+            crossfadeMs = if (isTv) 0 else 180,
+        )
     }
 
     MaterialTheme(colorScheme = BruTvColors) {
         Surface(Modifier.fillMaxSize(), color = Canvas) {
             val currentEntry = state.playingEntry
             if (currentEntry != null) {
+                val controller = remember(viewModel, state.bufferProfile) {
+                    viewModel.acquirePlaybackController()
+                }
+                LaunchedEffect(
+                    controller,
+                    state.maxConnections,
+                    state.liveRewind,
+                    state.preferredAudioLanguage,
+                    state.preferredSubtitleLanguage,
+                    state.subtitlesEnabled,
+                    state.autoFrameRate,
+                ) {
+                    controller.maxConnections = state.maxConnections
+                    controller.liveRewind = state.liveRewind
+                    controller.applyPreferences(
+                        preferredAudioLanguage = state.preferredAudioLanguage,
+                        preferredSubtitleLanguage = state.preferredSubtitleLanguage,
+                        subtitlesEnabled = state.subtitlesEnabled,
+                        autoFrameRate = state.autoFrameRate,
+                    )
+                }
+                val epgRevision = state.epgRevision
+                val epgLookup = remember(viewModel, epgRevision) {
+                    { channel: MediaEntry -> viewModel.cachedProgrammes(channel) }
+                }
                 PlaybackScreen(
+                    controller = controller,
                     entry = currentEntry,
                     queue = state.playQueue,
                     profile = BufferProfile.fromKey(state.bufferProfile),
                     showStats = state.showStats,
-                    resumePositionMs = state.library.resumePositions[currentEntry.id] ?: 0L,
+                    liveRewind = state.liveRewind,
+                    defaultAspectMode = state.defaultAspectMode,
                     isTv = isTv,
+                    isPt = isPt,
+                    resumePositionFor = viewModel::resumePositionFor,
+                    epgLookup = epgLookup,
+                    onRequestGuide = viewModel::requestChannelGuide,
+                    onOpenGuide = viewModel::loadXmltvInBackground,
                     onClose = viewModel::closePlayer,
                     onItemChanged = viewModel::onPlayerItemChanged,
-                    onPosition = { item, position -> viewModel.savePosition(item, position, force = false) },
-                    onCommitPosition = { item, position -> viewModel.savePosition(item, position, force = true) },
+                    onPosition = { item, pos, dur -> viewModel.savePosition(item, pos, dur, force = false) },
+                    onCommitPosition = { item, pos, dur -> viewModel.savePosition(item, pos, dur, force = true) },
+                    onEnded = viewModel::onPlaybackEnded,
+                    onAspectChanged = viewModel::setDefaultAspectMode,
+                    onTrackPreferencesChanged = viewModel::setTrackPreferences,
                     onToggleFavorite = viewModel::toggleFavorite,
                     isFavorite = viewModel::isFavorite,
                     onPlayerChanged = onPlayerChanged,
                     isInPictureInPictureMode = isInPictureInPictureMode,
-                    maxConnections = state.maxConnections,
                 )
                 return@Surface
             }
@@ -299,130 +320,140 @@ fun BruTvApp(
             Box(Modifier.fillMaxSize()) {
                 if (state.page == BruTvPage.SIGN_IN || state.page == BruTvPage.LOGIN_QR || pasteLinkOpen) PrivateScreen()
 
-            when {
-                state.page == BruTvPage.SCAN_QR -> Box(Modifier.fillMaxSize()) {
-                    QrScannerScreen(
-                        onResult = viewModel::acceptLink,
+                when {
+                    state.page == BruTvPage.SCAN_QR -> Box(Modifier.fillMaxSize()) {
+                        QrScannerScreen(
+                            onResult = viewModel::acceptLink,
+                            onCancel = viewModel::closePage,
+                            isPt = isPt,
+                        )
+                        if (!isTv) ActionButton(
+                            if (isPt) "Inserir detalhes manualmente" else "Enter details manually",
+                            { viewModel.openSignIn() },
+                            Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+                            icon = Icons.Outlined.Edit,
+                            primary = true,
+                            isTv = false,
+                        )
+                    }
+                    state.page == BruTvPage.TV_PAIRING -> TvPairingScreen(
+                        onSource = viewModel::pairingReceivedSource,
                         onCancel = viewModel::closePage,
+                        isPt = isPt,
                     )
-                    if (!isTv) ActionButton(
-                        "Enter details manually",
-                        { viewModel.openSignIn() },
-                        Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-                        icon = Icons.Outlined.Edit,
-                        primary = true,
-                        isTv = false,
+                    state.page == BruTvPage.LOGIN_QR -> state.loginQrSource?.let { source ->
+                        if (source.isShareable()) LoginQrScreen(source, viewModel::closePage, isPt = isPt)
+                        else LocalPlaylistShareMessage(viewModel::closePage, isPt = isPt)
+                    }
+                    state.pendingPairInvite != null && state.profiles.isNotEmpty() && state.page != BruTvPage.SIGN_IN -> {
+                        val shareableProfiles = state.profiles.filter { it.isShareable() }
+                        if (shareableProfiles.isEmpty()) {
+                            CenteredMessage(
+                                title = if (isPt) "Este perfil não pode ser compartilhado" else "This profile cannot be shared",
+                                body = if (isPt) "Arquivos de playlist importados ficam apenas neste dispositivo. Adicione um provedor ou URL de playlist para parear com a TV." else "Imported playlist files are stored only on this device. Add a provider login or playlist URL to pair with the TV.",
+                                action = if (isPt) "Continuar" else "Continue",
+                                actionIcon = Icons.Outlined.Check,
+                                onAction = viewModel::clearPairingInvite,
+                            )
+                        } else {
+                            PairingSendScreen(
+                                invite = checkNotNull(state.pendingPairInvite),
+                                profiles = shareableProfiles,
+                                onDone = viewModel::clearPairingInvite,
+                                onCancel = viewModel::clearPairingInvite,
+                                isPt = isPt,
+                            )
+                        }
+                    }
+                    state.page == BruTvPage.SIGN_IN -> SignInPage(
+                        state = state,
+                        viewModel = viewModel,
+                        isTv = isTv,
+                        isPt = isPt,
+                        onChoosePlaylist = choosePlaylist,
+                        onScan = viewModel::openScanner,
+                        onClose = viewModel::closePage,
+                        onPair = viewModel::openTvPairing,
+                        onPasteLink = { pasteLinkOpen = true },
+                    )
+                    state.initialized && state.activeSource == null -> WelcomePage(
+                        state = state,
+                        isTv = isTv,
+                        isPt = isPt,
+                        onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
+                        onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
+                        onChoosePlaylist = choosePlaylist,
+                        onScan = viewModel::openScanner,
+                        onPasteLink = { pasteLinkOpen = true },
+                        onPair = viewModel::openTvPairing,
+                    )
+                    state.page == BruTvPage.DETAIL && state.selectedEntry != null -> DetailPage(
+                        state = state,
+                        entry = checkNotNull(state.selectedEntry),
+                        isTv = isTv,
+                        isPt = isPt,
+                        imageLoader = imageLoader,
+                        decodeTargets = decodeTargets,
+                        onBack = viewModel::closePage,
+                        onPlay = viewModel::play,
+                        onFavorite = viewModel::toggleFavorite,
+                        isFavorite = viewModel::isFavorite,
+                    )
+                    else -> BruTvHome(
+                        state = state,
+                        viewModel = viewModel,
+                        isTv = isTv,
+                        isPt = isPt,
+                        imageLoader = imageLoader,
+                        decodeTargets = decodeTargets,
+                        onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
+                        onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
+                        onChoosePlaylist = choosePlaylist,
+                        onScan = viewModel::openScanner,
+                        onPair = viewModel::openTvPairing,
                     )
                 }
-                state.page == BruTvPage.TV_PAIRING -> TvPairingScreen(
-                    onSource = viewModel::pairingReceivedSource,
-                    onCancel = viewModel::closePage,
+
+                if (pasteLinkOpen) PasteLinkDialog(
+                    initialText = clipboard.getText()?.text.orEmpty(),
+                    isPt = isPt,
+                    onCancel = { pasteLinkOpen = false },
+                    onImport = { raw ->
+                        val accepted = viewModel.supportsLink(raw)
+                        if (accepted) {
+                            viewModel.acceptLink(raw)
+                            pasteLinkOpen = false
+                        }
+                        accepted
+                    },
                 )
-                state.page == BruTvPage.LOGIN_QR -> state.loginQrSource?.let { source ->
-                    if (source.isShareable()) LoginQrScreen(source, viewModel::closePage)
-                    else LocalPlaylistShareMessage(viewModel::closePage)
+
+                if (playlistPickerUnavailable) AlertDialog(
+                    onDismissRequest = { playlistPickerUnavailable = false },
+                    title = { Text(if (isPt) "Seletor de arquivos indisponível" else "File picker unavailable") },
+                    text = { Text(if (isPt) "Este dispositivo não conseguiu abrir o seletor de arquivos. Adicione uma URL de playlist M3U para conectar seu provedor." else "This device could not open a file picker. Add an M3U playlist URL to connect your provider.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            playlistPickerUnavailable = false
+                            viewModel.openSignIn(SourceType.M3U)
+                        }) { Text(if (isPt) "Adicionar URL da playlist" else "Add playlist URL") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { playlistPickerUnavailable = false }) { Text(if (isPt) "Cancelar" else "Cancel") }
+                    },
+                )
+
+                // Dismiss splash immediately as soon as encrypted state initialization completes.
+                AnimatedVisibility(
+                    visible = !state.initialized,
+                    enter = fadeIn(),
+                    exit = fadeOut(animationSpec = tween(220)) + scaleOut(targetScale = 1.04f, animationSpec = tween(220)),
+                ) {
+                    BruTvSplashScreen(isTv = isTv, isPt = isPt)
                 }
-                state.pendingPairInvite != null && state.profiles.isNotEmpty() && state.page != BruTvPage.SIGN_IN -> {
-                    val shareableProfiles = state.profiles.filter { it.isShareable() }
-                    if (shareableProfiles.isEmpty()) {
-                        CenteredMessage(
-                            title = "This profile cannot be shared",
-                            body = "Imported playlist files are stored only on this device. Add a provider login or playlist URL to pair with the TV.",
-                            action = "Continue",
-                            actionIcon = Icons.Outlined.Check,
-                            onAction = viewModel::clearPairingInvite,
-                        )
-                    } else {
-                        PairingSendScreen(
-                            invite = checkNotNull(state.pendingPairInvite),
-                            profiles = shareableProfiles,
-                            onDone = viewModel::clearPairingInvite,
-                            onCancel = viewModel::clearPairingInvite,
-                        )
-                    }
-                }
-                state.page == BruTvPage.SIGN_IN -> SignInPage(
-                    state = state,
-                    viewModel = viewModel,
-                    isTv = isTv,
-                    onChoosePlaylist = choosePlaylist,
-                    onScan = viewModel::openScanner,
-                    onClose = viewModel::closePage,
-                    onPair = viewModel::openTvPairing,
-                    onPasteLink = { pasteLinkOpen = true },
-                )
-                state.initialized && state.activeSource == null -> WelcomePage(
-                    state = state,
-                    isTv = isTv,
-                    onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
-                    onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
-                    onChoosePlaylist = choosePlaylist,
-                    onScan = viewModel::openScanner,
-                    onPasteLink = { pasteLinkOpen = true },
-                    onPair = viewModel::openTvPairing,
-                )
-                state.page == BruTvPage.DETAIL && state.selectedEntry != null -> DetailPage(
-                    state = state,
-                    entry = checkNotNull(state.selectedEntry),
-                    isTv = isTv,
-                    imageLoader = imageLoader,
-                    onBack = viewModel::closePage,
-                    onPlay = viewModel::play,
-                    onFavorite = viewModel::toggleFavorite,
-                    isFavorite = viewModel::isFavorite,
-                )
-                else -> BruTvHome(
-                    state = state,
-                    viewModel = viewModel,
-                    isTv = isTv,
-                    imageLoader = imageLoader,
-                    onAddXtream = { viewModel.openSignIn(SourceType.XTREAM) },
-                    onAddPlaylist = { viewModel.openSignIn(SourceType.M3U) },
-                    onChoosePlaylist = choosePlaylist,
-                    onScan = viewModel::openScanner,
-                    onPair = viewModel::openTvPairing,
-                )
-            }
-
-            if (pasteLinkOpen) PasteLinkDialog(
-                initialText = clipboard.getText()?.text.orEmpty(),
-                onCancel = { pasteLinkOpen = false },
-                onImport = { raw ->
-                    val accepted = viewModel.supportsLink(raw)
-                    if (accepted) {
-                        viewModel.acceptLink(raw)
-                        pasteLinkOpen = false
-                    }
-                    accepted
-                },
-            )
-
-            if (playlistPickerUnavailable) AlertDialog(
-                onDismissRequest = { playlistPickerUnavailable = false },
-                title = { Text("File picker unavailable") },
-                text = { Text("This device could not open a file picker. Add an M3U playlist URL to connect your provider.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        playlistPickerUnavailable = false
-                        viewModel.openSignIn(SourceType.M3U)
-                    }) { Text("Add playlist URL") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { playlistPickerUnavailable = false }) { Text("Cancel") }
-                },
-            )
-
-            val showSplash = (!splashDismissed || !state.initialized)
-            AnimatedVisibility(
-                visible = showSplash,
-                enter = fadeIn(),
-                exit = fadeOut(animationSpec = tween(400)) + scaleOut(targetScale = 1.08f, animationSpec = tween(400)),
-            ) {
-                BruTvSplashScreen(isTv = isTv)
             }
         }
     }
-}
 }
 
 @Composable
@@ -430,7 +461,9 @@ private fun BruTvHome(
     state: BruTvUiState,
     viewModel: BruTvViewModel,
     isTv: Boolean,
+    isPt: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     onAddXtream: () -> Unit,
     onAddPlaylist: () -> Unit,
     onChoosePlaylist: () -> Unit,
@@ -439,13 +472,6 @@ private fun BruTvHome(
 ) {
     val width = LocalConfiguration.current.screenWidthDp
     val tablet = width >= 760
-    val isPt = remember(state.language) {
-        when (state.language) {
-            "pt" -> true
-            "en" -> false
-            else -> java.util.Locale.getDefault().language.lowercase().startsWith("pt")
-        }
-    }
     BackHandler(enabled = state.destination != BruTvDestination.LIVE) {
         viewModel.onDestinationSelected(BruTvDestination.LIVE)
     }
@@ -470,12 +496,12 @@ private fun BruTvHome(
                     onPair = if (isTv) onPair else onScan,
                     onSettings = { viewModel.onDestinationSelected(BruTvDestination.SETTINGS) },
                 )
-                PersistenceNotice(state, viewModel, isTv)
+                PersistenceNotice(state, viewModel, isTv, isPt)
                 if (state.pageError != null) InlineError(state.pageError)
                 when (state.destination) {
-                    BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, isTv)
-                    BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, isTv, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
-                    else -> CatalogPage(state, viewModel, isTv, tablet, imageLoader, isPt, onAddXtream, onScan)
+                    BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, isTv, isPt)
+                    BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, isTv, isPt, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
+                    else -> CatalogPage(state, viewModel, isTv, tablet, imageLoader, decodeTargets, isPt, onAddXtream, onScan)
                 }
             }
         }
@@ -497,12 +523,12 @@ private fun BruTvHome(
                     onPair = if (isTv) onPair else onScan,
                     onSettings = { viewModel.onDestinationSelected(BruTvDestination.SETTINGS) },
                 )
-                PersistenceNotice(state, viewModel, false)
+                PersistenceNotice(state, viewModel, false, isPt)
                 if (state.pageError != null) InlineError(state.pageError)
                 when (state.destination) {
-                    BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, false)
-                    BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, false, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
-                    else -> CatalogPage(state, viewModel, false, false, imageLoader, isPt, onAddXtream, onScan)
+                    BruTvDestination.SETTINGS -> SettingsPage(state, viewModel, false, isPt)
+                    BruTvDestination.PROFILES -> ProfilesPage(state, viewModel, false, isPt, onAddXtream, onAddPlaylist, onChoosePlaylist, onScan)
+                    else -> CatalogPage(state, viewModel, false, false, imageLoader, decodeTargets, isPt, onAddXtream, onScan)
                 }
             }
         }
@@ -513,6 +539,7 @@ private fun BruTvHome(
 private fun WelcomePage(
     state: BruTvUiState,
     isTv: Boolean,
+    isPt: Boolean,
     onAddXtream: () -> Unit,
     onAddPlaylist: () -> Unit,
     onChoosePlaylist: () -> Unit,
@@ -521,7 +548,7 @@ private fun WelcomePage(
     onPair: () -> Unit,
 ) {
     val pairFocus = remember { FocusRequester() }
-    LaunchedEffect(isTv) { if (isTv) pairFocus.requestFocus() }
+    LaunchedEffect(isTv) { if (isTv) runCatching { pairFocus.requestFocus() } }
     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF122C35), Canvas)))) {
         val centered = maxWidth >= 760.dp
         Column(
@@ -533,20 +560,20 @@ private fun WelcomePage(
             horizontalAlignment = if (centered) Alignment.CenterHorizontally else Alignment.Start,
         ) {
             BrandMark()
-            Text("Connect your TV provider", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
-            Text("Bring your own provider or playlist. BruTV does not include channels, demos, or provider accounts.", color = Muted, style = MaterialTheme.typography.bodyLarge)
+            Text(if (isPt) "Conecte seu provedor de TV" else "Connect your TV provider", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Text(if (isPt) "Traga seu próprio provedor ou playlist. O BruTV não inclui canais, demonstrações ou contas de provedores." else "Bring your own provider or playlist. BruTV does not include channels, demos, or provider accounts.", color = Muted, style = MaterialTheme.typography.bodyLarge)
             if (state.pageError != null) InlineError(state.pageError)
             if (!state.initialized) {
                 CircularProgressIndicator(color = Aqua)
             } else {
-                if (isTv) WelcomeActionButton("Pair with phone", onPair, Modifier.focusRequester(pairFocus), icon = Icons.Outlined.Devices, primary = true, isTv = true)
-                WelcomeActionButton("Connect with Xtream", onAddXtream, icon = Icons.Outlined.InsertLink, primary = !isTv, isTv = isTv)
-                WelcomeActionButton("Add an M3U playlist URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = isTv)
-                WelcomeActionButton("Import an M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = isTv)
-                if (!isTv) WelcomeActionButton("Scan a BruTV QR code", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
-                WelcomeActionButton("Paste a sign-in link", onPasteLink, icon = Icons.Outlined.ContentPaste, isTv = isTv)
+                if (isTv) WelcomeActionButton(if (isPt) "Parear com celular" else "Pair with phone", onPair, Modifier.focusRequester(pairFocus), icon = Icons.Outlined.Devices, primary = true, isTv = true)
+                WelcomeActionButton(if (isPt) "Conectar com Xtream" else "Connect with Xtream", onAddXtream, icon = Icons.Outlined.InsertLink, primary = !isTv, isTv = isTv)
+                WelcomeActionButton(if (isPt) "Adicionar URL de playlist M3U" else "Add an M3U playlist URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = isTv)
+                WelcomeActionButton(if (isPt) "Importar arquivo M3U" else "Import an M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = isTv)
+                if (!isTv) WelcomeActionButton(if (isPt) "Escanear código QR do BruTV" else "Scan a BruTV QR code", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                WelcomeActionButton(if (isPt) "Colar link de login" else "Paste a sign-in link", onPasteLink, icon = Icons.Outlined.ContentPaste, isTv = isTv)
             }
-            Text("Your provider login stays on this device. Use links and QR codes only with people you trust.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text(if (isPt) "Seu login fica salvo apenas neste dispositivo. Use links e códigos QR somente com pessoas de confiança." else "Your provider login stays on this device. Use links and QR codes only with people you trust.", color = Muted, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -584,6 +611,7 @@ private fun SignInPage(
     state: BruTvUiState,
     viewModel: BruTvViewModel,
     isTv: Boolean,
+    isPt: Boolean,
     onChoosePlaylist: () -> Unit,
     onScan: () -> Unit,
     onClose: () -> Unit,
@@ -603,7 +631,7 @@ private fun SignInPage(
     var imeWasShownForEditing by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(Unit) { if (isTv) profileNameFocus.requestFocus() }
+    LaunchedEffect(Unit) { if (isTv) runCatching { profileNameFocus.requestFocus() } }
     LaunchedEffect(editingField, isTv) {
         val requester = when (editingField) {
             SignInField.PROFILE_NAME -> profileNameFocus
@@ -614,7 +642,7 @@ private fun SignInPage(
             null -> null
         }
         if (isTv && requester != null) {
-            requester.requestFocus()
+            runCatching { requester.requestFocus() }
             keyboardController?.show()
         }
     }
@@ -642,25 +670,25 @@ private fun SignInPage(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Add a provider", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (isTv) HeaderTextButton("Pair with phone", Icons.Outlined.Devices, onPair, true)
+                Text(if (isPt) "Adicionar provedor" else "Add a provider", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                if (isTv) HeaderTextButton(if (isPt) "Parear celular" else "Pair with phone", Icons.Outlined.Devices, onPair, true)
                 TextButton(onClick = onClose) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Cancel")
+                        Text(if (isPt) "Cancelar" else "Cancel")
                     }
                 }
             }
-            Text("Your sign-in details are encrypted and stored on this device.", color = Muted)
-            if (isTv) Text("Select a field to edit it. Press Back to return to navigation.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text(if (isPt) "Seus dados de login são criptografados e armazenados neste dispositivo." else "Your sign-in details are encrypted and stored on this device.", color = Muted)
+            if (isTv) Text(if (isPt) "Selecione um campo para editar. Pressione Voltar para retornar à navegação." else "Select a field to edit it. Press Back to return to navigation.", color = Muted, style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilterChip(
+                BruTvFilterChip(
                     selected = state.draft.type == SourceType.XTREAM,
                     onClick = { viewModel.updateDraft { it.copy(type = SourceType.XTREAM) } },
                     label = { Text("Xtream") },
                     modifier = if (isTv) Modifier.focusRequester(xtreamTypeFocus) else Modifier,
                 )
-                FilterChip(
+                BruTvFilterChip(
                     selected = state.draft.type == SourceType.M3U,
                     onClick = { viewModel.updateDraft { it.copy(type = SourceType.M3U) } },
                     label = { Text("M3U") },
@@ -670,7 +698,7 @@ private fun SignInPage(
             OutlinedTextField(
                 value = state.draft.name,
                 onValueChange = { value -> viewModel.updateDraft { it.copy(name = value) } },
-                label = { Text("Profile name") },
+                label = { Text(if (isPt) "Nome do perfil" else "Profile name") },
                 singleLine = true,
                 readOnly = isTv && editingField != SignInField.PROFILE_NAME,
                 modifier = Modifier.fillMaxWidth().then(
@@ -686,21 +714,21 @@ private fun SignInPage(
                 ),
             )
             if (state.draft.type == SourceType.XTREAM) {
-                OutlinedTextField(value = state.draft.server, onValueChange = { value -> viewModel.updateDraft { it.copy(server = value) } }, label = { Text("Server address") }, singleLine = true, readOnly = isTv && editingField != SignInField.SERVER, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.SERVER, editingField, { editingField = SignInField.SERVER }, serverFocus, profileNameFocus, usernameFocus)))
-                OutlinedTextField(value = state.draft.username, onValueChange = { value -> viewModel.updateDraft { it.copy(username = value) } }, label = { Text("Username") }, singleLine = true, readOnly = isTv && editingField != SignInField.USERNAME, modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.USERNAME, editingField, { editingField = SignInField.USERNAME }, usernameFocus, serverFocus, passwordFocus)))
-                OutlinedTextField(value = state.draft.password, onValueChange = { value -> viewModel.updateDraft { it.copy(password = value) } }, label = { Text("Password") }, singleLine = true, readOnly = isTv && editingField != SignInField.PASSWORD, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.PASSWORD, editingField, { editingField = SignInField.PASSWORD }, passwordFocus, usernameFocus, connectFocus)))
+                OutlinedTextField(value = state.draft.server, onValueChange = { value -> viewModel.updateDraft { it.copy(server = value) } }, label = { Text(if (isPt) "Endereço do servidor" else "Server address") }, singleLine = true, readOnly = isTv && editingField != SignInField.SERVER, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.SERVER, editingField, { editingField = SignInField.SERVER }, serverFocus, profileNameFocus, usernameFocus)))
+                OutlinedTextField(value = state.draft.username, onValueChange = { value -> viewModel.updateDraft { it.copy(username = value) } }, label = { Text(if (isPt) "Usuário" else "Username") }, singleLine = true, readOnly = isTv && editingField != SignInField.USERNAME, modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.USERNAME, editingField, { editingField = SignInField.USERNAME }, usernameFocus, serverFocus, passwordFocus)))
+                OutlinedTextField(value = state.draft.password, onValueChange = { value -> viewModel.updateDraft { it.copy(password = value) } }, label = { Text(if (isPt) "Senha" else "Password") }, singleLine = true, readOnly = isTv && editingField != SignInField.PASSWORD, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.PASSWORD, editingField, { editingField = SignInField.PASSWORD }, passwordFocus, usernameFocus, connectFocus)))
             } else {
-                OutlinedTextField(value = state.draft.playlistUrl, onValueChange = { value -> viewModel.updateDraft { it.copy(playlistUrl = value) } }, label = { Text("M3U playlist URL") }, singleLine = true, readOnly = isTv && editingField != SignInField.PLAYLIST_URL, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.PLAYLIST_URL, editingField, { editingField = SignInField.PLAYLIST_URL }, playlistUrlFocus, profileNameFocus, chooseFileFocus)))
-                Text("You can import an .m3u file from this device. The file is copied into private app storage.", color = Muted, style = MaterialTheme.typography.bodySmall)
-                ActionButton("Choose .m3u file", onChoosePlaylist, Modifier.then(if (isTv) Modifier.focusRequester(chooseFileFocus) else Modifier), icon = Icons.Outlined.FileOpen, isTv = isTv)
+                OutlinedTextField(value = state.draft.playlistUrl, onValueChange = { value -> viewModel.updateDraft { it.copy(playlistUrl = value) } }, label = { Text(if (isPt) "URL da playlist M3U" else "M3U playlist URL") }, singleLine = true, readOnly = isTv && editingField != SignInField.PLAYLIST_URL, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth().then(tvTextFieldFocusModifier(isTv, SignInField.PLAYLIST_URL, editingField, { editingField = SignInField.PLAYLIST_URL }, playlistUrlFocus, profileNameFocus, chooseFileFocus)))
+                Text(if (isPt) "Você pode importar um arquivo .m3u deste dispositivo. O arquivo é copiado para o armazenamento privado do app." else "You can import an .m3u file from this device. The file is copied into private app storage.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                ActionButton(if (isPt) "Escolher arquivo .m3u" else "Choose .m3u file", onChoosePlaylist, Modifier.then(if (isTv) Modifier.focusRequester(chooseFileFocus) else Modifier), icon = Icons.Outlined.FileOpen, isTv = isTv)
             }
             if (state.pageError != null) InlineError(state.pageError)
-            if (state.pendingPairInvite != null) InfoNotice("TV code saved. Connect a profile, then choose which one to send.")
-            ActionButton(if (state.busy) "Connecting…" else "Connect", viewModel::connectDraft, Modifier.then(if (isTv) Modifier.focusRequester(connectFocus) else Modifier), icon = Icons.Outlined.InsertLink, primary = true, enabled = !state.busy, isTv = isTv)
+            if (state.pendingPairInvite != null) InfoNotice(if (isPt) "Código da TV salvo. Conecte um perfil e escolha qual enviar." else "TV code saved. Connect a profile, then choose which one to send.")
+            ActionButton(if (state.busy) (if (isPt) "Conectando…" else "Connecting…") else (if (isPt) "Conectar" else "Connect"), viewModel::connectDraft, Modifier.then(if (isTv) Modifier.focusRequester(connectFocus) else Modifier), icon = Icons.Outlined.InsertLink, primary = true, enabled = !state.busy, isTv = isTv)
             if (state.busy) CircularProgressIndicator(color = Aqua, modifier = Modifier.align(Alignment.CenterHorizontally))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (!isTv) ActionButton("Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
-                ActionButton("Paste sign-in link", onPasteLink, Modifier.weight(1f), icon = Icons.Outlined.ContentPaste, isTv = isTv)
+                if (!isTv) ActionButton(if (isPt) "Escanear QR" else "Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                ActionButton(if (isPt) "Colar link de login" else "Paste sign-in link", onPasteLink, Modifier.weight(1f), icon = Icons.Outlined.ContentPaste, isTv = isTv)
             }
         }
     }
@@ -740,7 +768,8 @@ private fun tvTextFieldFocusModifier(
         }
 }
 
-private data class NavItem(val destination: BruTvDestination, val label: String, val shortLabel: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+@Immutable
+private data class NavItem(val destination: BruTvDestination, val label: String, val shortLabel: String, val icon: ImageVector)
 
 private fun getNavItems(isPt: Boolean): List<NavItem> = listOf(
     NavItem(BruTvDestination.LIVE, if (isPt) "TV ao Vivo" else "Live TV", if (isPt) "Ao Vivo" else "Live", Icons.Outlined.LiveTv),
@@ -761,7 +790,7 @@ private fun NavigationRail(
     onInitialFocus: Boolean,
 ) {
     val first = remember { FocusRequester() }
-    LaunchedEffect(onInitialFocus) { if (onInitialFocus) first.requestFocus() }
+    LaunchedEffect(onInitialFocus) { if (onInitialFocus) runCatching { first.requestFocus() } }
     val items = remember(isPt) { getNavItems(isPt) }
     Column(
         Modifier.width(if (isTv) 205.dp else 84.dp).fillMaxHeight().background(Color(0xFF0E1A20)).padding(horizontal = if (isTv) 14.dp else 8.dp, vertical = 20.dp),
@@ -899,6 +928,7 @@ private fun HeaderIdentity(source: SourceConfig?, isPt: Boolean, modifier: Modif
     }
 }
 
+@Immutable
 private data class CategorySideBarItem(
     val id: String?,
     val name: String,
@@ -913,13 +943,14 @@ private fun CategorySideBar(
     isTv: Boolean,
     isPt: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     modifier: Modifier = Modifier,
     onSelect: (String?) -> Unit,
 ) {
     Column(
         modifier = modifier
             .background(Color(0xFF0C1622))
-            .padding(vertical = 10.dp)
+            .padding(vertical = 10.dp),
     ) {
         Row(
             Modifier
@@ -950,7 +981,7 @@ private fun CategorySideBar(
                 Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF163C43))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             ) {
                 Text(
                     text = "${items.size}",
@@ -976,6 +1007,7 @@ private fun CategorySideBar(
                     selected = selectedId == item.id,
                     isTv = isTv,
                     imageLoader = imageLoader,
+                    decodeTargets = decodeTargets,
                     onClick = { onSelect(item.id) },
                 )
             }
@@ -989,10 +1021,12 @@ private fun CategorySideBarRow(
     selected: Boolean,
     isTv: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     onClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
+    val context = LocalContext.current
 
     Row(
         Modifier
@@ -1004,7 +1038,7 @@ private fun CategorySideBarRow(
                     selected -> Color(0xFF163C43)
                     focused -> Color(0xFF1E3344)
                     else -> Color.Transparent
-                }
+                },
             )
             .border(
                 width = if (focused) 2.dp else if (selected) 1.dp else 0.dp,
@@ -1025,7 +1059,7 @@ private fun CategorySideBarRow(
                 .width(if (isTv) 4.dp else 3.dp)
                 .height(if (isTv) 24.dp else 18.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(if (selected) Aqua else Color.Transparent)
+                .background(if (selected) Aqua else Color.Transparent),
         )
 
         Box(
@@ -1037,11 +1071,17 @@ private fun CategorySideBarRow(
             contentAlignment = Alignment.Center,
         ) {
             if (!item.iconUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
+                val request = remember(item.iconUrl, decodeTargets.sidebar, decodeTargets.crossfadeMs) {
+                    ImageRequest.Builder(context)
                         .data(item.iconUrl)
-                        .crossfade(true)
-                        .build(),
+                        .size(decodeTargets.sidebar)
+                        .precision(Precision.INEXACT)
+                        .allowRgb565(true)
+                        .crossfade(decodeTargets.crossfadeMs)
+                        .build()
+                }
+                AsyncImage(
+                    model = request,
                     imageLoader = imageLoader,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
@@ -1072,7 +1112,7 @@ private fun CategorySideBarRow(
                 Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .background(if (selected) Color(0xFF102D33) else Color(0xFF131F2A))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             ) {
                 Text(
                     text = "${item.count}",
@@ -1093,6 +1133,7 @@ private fun CatalogPage(
     isTv: Boolean,
     tablet: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     isPt: Boolean,
     onAdd: () -> Unit,
     onScan: () -> Unit,
@@ -1100,9 +1141,16 @@ private fun CatalogPage(
     var editingSearch by remember { mutableStateOf(false) }
     var imeWasShownForSearch by remember { mutableStateOf(false) }
     var showCategoryDrawer by remember { mutableStateOf(false) }
+    var contextMenuEntry by remember { mutableStateOf<MediaEntry?>(null) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val imeVisible = WindowInsets.isImeVisible
+    val gridState = rememberLazyGridState()
+
+    LaunchedEffect(state.destination, state.libraryKind, state.selectedCategoryId) {
+        gridState.scrollToItem(0)
+    }
+
     LaunchedEffect(editingSearch, isTv) {
         if (isTv && editingSearch) keyboardController?.show()
     }
@@ -1171,6 +1219,29 @@ private fun CatalogPage(
         }
     }
 
+    val onCardClick = remember(viewModel) {
+        { entry: MediaEntry ->
+            if (entry.kind == MediaKind.LIVE) viewModel.play(entry)
+            else viewModel.openEntry(entry)
+        }
+    }
+    val onCardFavorite = remember(viewModel) {
+        { entry: MediaEntry -> viewModel.toggleFavorite(entry) }
+    }
+    val onCardInfo = remember(viewModel) {
+        { entry: MediaEntry -> viewModel.openEntry(entry) }
+    }
+    val onCardLongClick = remember(viewModel) {
+        { entry: MediaEntry ->
+            if (entry.kind == MediaKind.LIVE) {
+                contextMenuEntry = entry
+            } else {
+                viewModel.toggleFavorite(entry)
+            }
+        }
+    }
+    val favoriteIds = state.library.favoriteIds
+
     Row(Modifier.fillMaxSize()) {
         if (hasCategories && (isTv || tablet || showCategoryDrawer)) {
             CategorySideBar(
@@ -1179,13 +1250,14 @@ private fun CatalogPage(
                 isTv = isTv,
                 isPt = isPt,
                 imageLoader = imageLoader,
+                decodeTargets = decodeTargets,
                 modifier = Modifier
                     .width(
                         when {
                             isTv -> 270.dp
                             tablet -> 220.dp
                             else -> 230.dp
-                        }
+                        },
                     )
                     .fillMaxHeight(),
                 onSelect = { catId ->
@@ -1235,14 +1307,14 @@ private fun CatalogPage(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             if (hasCategories && !isTv && !tablet) {
-                                FilterChip(
+                                BruTvFilterChip(
                                     selected = showCategoryDrawer || state.selectedCategoryId != null,
                                     onClick = { showCategoryDrawer = !showCategoryDrawer },
                                     label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                     leadingIcon = { Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(16.dp), tint = Aqua) },
                                 )
                             }
-                            if (state.destination == BruTvDestination.LIVE) FilterChip(
+                            if (state.destination == BruTvDestination.LIVE) BruTvFilterChip(
                                 selected = state.onlyFavorites,
                                 onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
                                 label = { Text(if (isPt) "Salvos" else "Saved") },
@@ -1261,7 +1333,7 @@ private fun CatalogPage(
                         }
 
                         if (hasCategories && !isTv && !tablet) {
-                            FilterChip(
+                            BruTvFilterChip(
                                 selected = showCategoryDrawer || state.selectedCategoryId != null,
                                 onClick = { showCategoryDrawer = !showCategoryDrawer },
                                 label = { Text(selectedCategoryName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -1279,7 +1351,7 @@ private fun CatalogPage(
                             focusManager = focusManager,
                             modifier = Modifier.width(if (isTv) 300.dp else 140.dp),
                         )
-                        if (state.destination == BruTvDestination.LIVE) FilterChip(
+                        if (state.destination == BruTvDestination.LIVE) BruTvFilterChip(
                             selected = state.onlyFavorites,
                             onClick = { viewModel.setOnlyFavorites(!state.onlyFavorites) },
                             label = { Text(if (isPt) "Salvos" else "Saved") },
@@ -1296,8 +1368,8 @@ private fun CatalogPage(
                         .padding(horizontal = if (isTv) 28.dp else 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FilterChip(selected = state.destination == BruTvDestination.FAVORITES, onClick = { viewModel.onDestinationSelected(BruTvDestination.FAVORITES) }, label = { Text(if (isPt) "Favoritos" else "Favorites") })
-                    FilterChip(selected = state.destination == BruTvDestination.RECENTS, onClick = { viewModel.onDestinationSelected(BruTvDestination.RECENTS) }, label = { Text(if (isPt) "Recentes" else "Recent") })
+                    BruTvFilterChip(selected = state.destination == BruTvDestination.FAVORITES, onClick = { viewModel.onDestinationSelected(BruTvDestination.FAVORITES) }, label = { Text(if (isPt) "Favoritos" else "Favorites") })
+                    BruTvFilterChip(selected = state.destination == BruTvDestination.RECENTS, onClick = { viewModel.onDestinationSelected(BruTvDestination.RECENTS) }, label = { Text(if (isPt) "Recentes" else "Recent") })
                 }
                 Row(
                     Modifier
@@ -1307,7 +1379,7 @@ private fun CatalogPage(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     listOf(MediaKind.LIVE to (if (isPt) "Ao Vivo" else "Live"), MediaKind.MOVIE to (if (isPt) "Filmes" else "Movies"), MediaKind.SERIES to (if (isPt) "Séries" else "Series")).forEach { (kind, label) ->
-                        FilterChip(selected = state.libraryKind == kind, onClick = { viewModel.selectLibraryKind(kind) }, label = { Text(label) })
+                        BruTvFilterChip(selected = state.libraryKind == kind, onClick = { viewModel.selectLibraryKind(kind) }, label = { Text(label) })
                     }
                 }
             }
@@ -1321,12 +1393,12 @@ private fun CatalogPage(
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     listOf(null, "4K", "FHD", "HD", "SD").forEach { quality ->
-                        FilterChip(selected = state.qualityFilter == quality, onClick = { viewModel.setQualityFilter(quality) }, label = { Text(quality ?: (if (isPt) "Qualquer qualidade" else "Any quality")) })
+                        BruTvFilterChip(selected = state.qualityFilter == quality, onClick = { viewModel.setQualityFilter(quality) }, label = { Text(quality ?: (if (isPt) "Qualquer qualidade" else "Any quality")) })
                     }
                 }
             }
 
-            if (state.catalogError != null) ErrorBlock(state.catalogError, viewModel::retryCatalog)
+            if (state.catalogError != null) ErrorBlock(state.catalogError, viewModel::retryCatalog, isTv = isTv, isPt = isPt)
             when {
                 state.catalogLoading && state.activeSection.entries.isEmpty() -> LoadingBlock(if (isPt) "Carregando ${title.lowercase(Locale.ROOT)}…" else "Loading your ${title.lowercase(Locale.ROOT)}…")
                 state.visibleEntries.isEmpty() -> EmptyCatalog(
@@ -1338,14 +1410,18 @@ private fun CatalogPage(
                     },
                     onAdd = onAdd,
                     isTv = isTv,
+                    isPt = isPt,
                     onScan = onScan,
                 )
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = when {
-                        isTv -> 238.dp
-                        tablet -> 190.dp
-                        else -> 144.dp
-                    }),
+                    state = gridState,
+                    columns = GridCells.Adaptive(
+                        minSize = when {
+                            isTv -> 238.dp
+                            tablet -> 190.dp
+                            else -> 144.dp
+                        },
+                    ),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = if (isTv) 28.dp else 14.dp, vertical = 18.dp),
                     horizontalArrangement = Arrangement.spacedBy(if (isTv) 20.dp else 12.dp),
@@ -1355,19 +1431,94 @@ private fun CatalogPage(
                         MediaCard(
                             entry = entry,
                             imageLoader = imageLoader,
+                            decodeTargets = decodeTargets,
                             isTv = isTv,
-                            favorite = viewModel.isFavorite(entry.id),
-                            onClick = {
-                                if (entry.kind == MediaKind.LIVE) viewModel.play(entry)
-                                else viewModel.openEntry(entry)
-                            },
-                            onFavorite = { viewModel.toggleFavorite(entry) },
+                            isPt = isPt,
+                            favorite = entry.id in favoriteIds,
+                            onClick = onCardClick,
+                            onFavorite = onCardFavorite,
+                            onInfo = onCardInfo,
+                            onLongClick = onCardLongClick,
                         )
                     }
                 }
             }
         }
     }
+
+    contextMenuEntry?.let { channel ->
+        val fav = channel.id in favoriteIds
+        AlertDialog(
+            onDismissRequest = { contextMenuEntry = null },
+            title = { Text(channel.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionButton(
+                        label = if (isPt) "Assistir agora" else "Watch now",
+                        onClick = {
+                            contextMenuEntry = null
+                            viewModel.play(channel)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        icon = Icons.Outlined.PlayArrow,
+                        primary = true,
+                        isTv = isTv,
+                    )
+                    ActionButton(
+                        label = if (isPt) "Guia de programação (EPG)" else "Program guide (EPG)",
+                        onClick = {
+                            contextMenuEntry = null
+                            viewModel.openEntry(channel)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        icon = Icons.AutoMirrored.Outlined.ViewList,
+                        isTv = isTv,
+                    )
+                    ActionButton(
+                        label = if (fav) (if (isPt) "Remover dos favoritos" else "Remove favorite") else (if (isPt) "Adicionar aos favoritos" else "Add favorite"),
+                        onClick = {
+                            contextMenuEntry = null
+                            viewModel.toggleFavorite(channel)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        icon = if (fav) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
+                        isTv = isTv,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { contextMenuEntry = null }) {
+                    Text(if (isPt) "Fechar" else "Close")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun BruTvFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: (@Composable () -> Unit)? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = label,
+        leadingIcon = leadingIcon,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = if (focused) Aqua else Color(0xFF314954),
+            selectedBorderColor = if (focused) Color.White else Aqua,
+            borderWidth = if (focused) 2.5.dp else 1.dp,
+            selectedBorderWidth = if (focused) 2.5.dp else 1.dp,
+        ),
+    )
 }
 
 @Composable
@@ -1418,45 +1569,134 @@ private fun CatalogSearchField(
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaCard(
     entry: MediaEntry,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     isTv: Boolean,
+    isPt: Boolean,
     favorite: Boolean,
-    onClick: () -> Unit,
-    onFavorite: () -> Unit,
+    onClick: (MediaEntry) -> Unit,
+    onFavorite: (MediaEntry) -> Unit,
+    onInfo: (MediaEntry) -> Unit,
+    onLongClick: (MediaEntry) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val decodeSize = if (entry.kind == MediaKind.LIVE) decodeTargets.liveCard else decodeTargets.posterCard
     Column(
-        Modifier.fillMaxWidth()
+        Modifier
+            .fillMaxWidth()
             .onFocusChanged { focused = it.isFocused }
+            .then(
+                if (isTv) {
+                    Modifier.onPreviewKeyEvent { event ->
+                        val native = event.nativeKeyEvent
+                        if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) {
+                            when (native.keyCode) {
+                                KeyEvent.KEYCODE_MENU -> {
+                                    onLongClick(entry)
+                                    true
+                                }
+                                KeyEvent.KEYCODE_BOOKMARK -> {
+                                    onFavorite(entry)
+                                    true
+                                }
+                                KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_GUIDE -> {
+                                    onInfo(entry)
+                                    true
+                                }
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                } else {
+                    Modifier
+                },
+            )
             .clip(RoundedCornerShape(17.dp))
             .background(CardSurface)
             .border(if (focused) 3.dp else 1.dp, if (focused) Aqua else Color(0xFF243740), RoundedCornerShape(17.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = { onClick(entry) },
+                onLongClick = { onLongClick(entry) },
+            )
             .padding(8.dp),
     ) {
         Box(Modifier.fillMaxWidth().height(if (entry.kind == MediaKind.LIVE) 136.dp else 192.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF1C303A))) {
-            Artwork(entry.artwork, entry.kind, imageLoader, Modifier.fillMaxSize())
+            Artwork(entry.artwork, entry.kind, imageLoader, decodeSize, decodeTargets.crossfadeMs, Modifier.fillMaxSize())
             Surface(color = Color(0xCC071116), shape = RoundedCornerShape(50), modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
                 Text(entry.quality, color = Aqua, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
             }
             Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(42.dp).background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xB9071116)))))
-            Text(if (entry.kind == MediaKind.LIVE) "LIVE" else entry.kind.displayName(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomStart).padding(9.dp))
-            Surface(
-                onClick = { onFavorite() },
-                color = Color(0xBB081318),
-                shape = CircleShape,
-                modifier = Modifier.align(Alignment.TopEnd).size(38.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        if (favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
-                        contentDescription = if (favorite) "Remove favorite" else "Add favorite",
-                        tint = if (favorite) Aqua else Color.White,
-                        modifier = Modifier.size(18.dp),
-                    )
+            Text(
+                if (entry.kind == MediaKind.LIVE) (if (isPt) "AO VIVO" else "LIVE") else entry.kind.displayName(isPt),
+                color = Color.White,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.BottomStart).padding(9.dp),
+            )
+            if (isTv) {
+                // Single focus stop on TV: non-focusable visual indicator (toggle via long-press / Menu / Bookmark).
+                if (favorite) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xBB081318))
+                            .focusProperties { canFocus = false },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Favorite,
+                            contentDescription = null,
+                            tint = Aqua,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (entry.kind == MediaKind.LIVE) {
+                        Surface(
+                            onClick = { onInfo(entry) },
+                            color = Color(0xBB081318),
+                            shape = CircleShape,
+                            modifier = Modifier.size(34.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Outlined.Info,
+                                    contentDescription = if (isPt) "Guia de programação" else "Program guide",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(17.dp),
+                                )
+                            }
+                        }
+                    }
+                    Surface(
+                        onClick = { onFavorite(entry) },
+                        color = Color(0xBB081318),
+                        shape = CircleShape,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (favorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
+                                contentDescription = if (favorite) (if (isPt) "Remover favorito" else "Remove favorite") else (if (isPt) "Favoritar" else "Add favorite"),
+                                tint = if (favorite) Aqua else Color.White,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1466,19 +1706,27 @@ private fun MediaCard(
 }
 
 @Composable
-private fun Artwork(url: String, kind: MediaKind, imageLoader: ImageLoader, modifier: Modifier = Modifier) {
+private fun Artwork(
+    url: String,
+    kind: MediaKind,
+    imageLoader: ImageLoader,
+    decodeSize: Size,
+    crossfadeMs: Int,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     if (url.isBlank()) {
         Box(modifier.background(Brush.linearGradient(listOf(Color(0xFF1E515B), Color(0xFF14262E)))), contentAlignment = Alignment.Center) {
             Icon(if (kind == MediaKind.LIVE) Icons.Outlined.LiveTv else Icons.Outlined.Movie, contentDescription = null, tint = Color(0xFF69C8CC), modifier = Modifier.size(42.dp))
         }
     } else {
-        val request = remember(url) {
+        val request = remember(url, decodeSize, crossfadeMs) {
             ImageRequest.Builder(context)
                 .data(url)
-                .size(Size(640, 640))
+                .size(decodeSize)
                 .precision(Precision.INEXACT)
-                .crossfade(180)
+                .allowRgb565(true)
+                .crossfade(crossfadeMs)
                 .build()
         }
         AsyncImage(model = request, imageLoader = imageLoader, contentDescription = entryDescription(kind), contentScale = ContentScale.Crop, modifier = modifier)
@@ -1490,24 +1738,28 @@ private fun DetailPage(
     state: BruTvUiState,
     entry: MediaEntry,
     isTv: Boolean,
+    isPt: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     onBack: () -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onFavorite: (MediaEntry) -> Unit,
     isFavorite: (String) -> Boolean,
 ) {
     BackHandler(onBack = onBack)
+    val groupedEpisodes = remember(state.episodes) { groupEpisodesBySeason(state.episodes) }
+    val artworkUrl = state.selectedMovieDetails?.artwork?.takeIf { it.isNotBlank() } ?: entry.artwork
     val width = LocalConfiguration.current.screenWidthDp
     if (!isTv && width < 780) {
-        PhoneDetailPage(state, entry, imageLoader, onBack, onPlay, onFavorite, isFavorite)
+        PhoneDetailPage(state, entry, artworkUrl, groupedEpisodes, isPt, imageLoader, decodeTargets, onBack, onPlay, onFavorite, isFavorite)
     } else {
         Row(Modifier.fillMaxSize().background(Canvas).padding(if (isTv) 38.dp else 18.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
             Box(Modifier.width(if (width > 780) 300.dp else 130.dp).fillMaxHeight().clip(RoundedCornerShape(20.dp)).background(CardSurface)) {
-                Artwork(entry.artwork, entry.kind, imageLoader, Modifier.fillMaxSize())
+                Artwork(artworkUrl, entry.kind, imageLoader, decodeTargets.detail, decodeTargets.crossfadeMs, Modifier.fillMaxSize())
             }
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                DetailOverview(entry, isTv, onBack, onPlay, onFavorite, isFavorite)
-                DetailSupplementary(state, entry, Modifier.weight(1f), onPlay)
+                DetailOverview(entry, state.selectedMovieDetails, isTv, isPt, onBack, onPlay, onFavorite, isFavorite)
+                DetailSupplementary(state, entry, groupedEpisodes, isPt, Modifier.weight(1f), onPlay)
             }
         }
     }
@@ -1517,7 +1769,11 @@ private fun DetailPage(
 private fun PhoneDetailPage(
     state: BruTvUiState,
     entry: MediaEntry,
+    artworkUrl: String,
+    groupedEpisodes: List<SeasonEpisodeGroup>,
+    isPt: Boolean,
     imageLoader: ImageLoader,
+    decodeTargets: DecodeTargets,
     onBack: () -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onFavorite: (MediaEntry) -> Unit,
@@ -1530,29 +1786,29 @@ private fun PhoneDetailPage(
     ) {
         item(key = "detail-artwork") {
             Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(17.dp)).background(CardSurface)) {
-                Artwork(entry.artwork, entry.kind, imageLoader, Modifier.fillMaxSize())
+                Artwork(artworkUrl, entry.kind, imageLoader, decodeTargets.detail, decodeTargets.crossfadeMs, Modifier.fillMaxSize())
             }
         }
         item(key = "detail-overview") {
-            DetailOverview(entry, false, onBack, onPlay, onFavorite, isFavorite, compact = true)
+            DetailOverview(entry, state.selectedMovieDetails, false, isPt, onBack, onPlay, onFavorite, isFavorite, compact = true)
         }
         when (entry.kind) {
             MediaKind.LIVE -> {
-                item(key = "programme-heading") { DetailSectionHeading("Now and next") }
+                item(key = "programme-heading") { DetailSectionHeading(if (isPt) "Agora e a seguir" else "Now and next") }
                 if (state.programmes.isEmpty()) {
-                    item(key = "programme-empty") { Text("No guide details were returned by this provider.", color = Muted) }
+                    item(key = "programme-empty") { Text(if (isPt) "O provedor não retornou detalhes do guia." else "No guide details were returned by this provider.", color = Muted) }
                 } else {
                     items(state.programmes, key = { "${it.startEpochSeconds}:${it.title}" }) { ProgrammeCard(it) }
                 }
             }
             MediaKind.SERIES -> {
-                item(key = "episode-heading") { DetailSectionHeading("Episodes") }
+                item(key = "episode-heading") { DetailSectionHeading(if (isPt) "Episódios" else "Episodes") }
                 if (state.busy) {
                     item(key = "episode-loading") { CircularProgressIndicator(color = Aqua) }
-                } else if (state.episodes.isEmpty()) {
-                    item(key = "episode-empty") { Text("No episodes were returned for this series.", color = Muted) }
+                } else if (groupedEpisodes.isEmpty()) {
+                    item(key = "episode-empty") { Text(if (isPt) "Nenhum episódio foi retornado para esta série." else "No episodes were returned for this series.", color = Muted) }
                 } else {
-                    episodeRows(state.episodes, onPlay)
+                    episodeRows(groupedEpisodes, isPt, onPlay)
                 }
             }
             else -> Unit
@@ -1563,15 +1819,19 @@ private fun PhoneDetailPage(
 @Composable
 private fun DetailOverview(
     entry: MediaEntry,
+    movieDetails: com.bvolpato.brutv.data.MovieDetails?,
     isTv: Boolean,
+    isPt: Boolean,
     onBack: () -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onFavorite: (MediaEntry) -> Unit,
     isFavorite: (String) -> Boolean,
     compact: Boolean = false,
 ) {
+    val resolvedRating = movieDetails?.rating?.takeIf { it.isNotBlank() } ?: entry.rating
+    val resolvedPlot = movieDetails?.plot?.takeIf { it.isNotBlank() } ?: entry.plot
     Column(verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp)) {
-        Text(entry.kind.displayName(), color = Aqua, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+        Text(entry.kind.displayName(isPt), color = Aqua, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
         Text(
             entry.name,
             color = Color.White,
@@ -1585,29 +1845,54 @@ private fun DetailOverview(
             overflow = TextOverflow.Ellipsis,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (entry.rating.isNotBlank()) Text("★ ${entry.rating}", color = Muted)
+            if (resolvedRating.isNotBlank()) Text("★ $resolvedRating", color = Muted)
             Text(entry.quality, color = Muted)
+            movieDetails?.duration?.takeIf { it.isNotBlank() }?.let { Text(it, color = Muted) }
+            movieDetails?.releaseDate?.takeIf { it.isNotBlank() }?.let { Text(it, color = Muted) }
         }
-        if (entry.plot.isNotBlank()) {
-            Text(entry.plot, color = Muted, style = MaterialTheme.typography.bodyLarge, maxLines = 7, overflow = TextOverflow.Ellipsis)
+        movieDetails?.genre?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = Aqua, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (resolvedPlot.isNotBlank()) {
+            Text(resolvedPlot, color = Muted, style = MaterialTheme.typography.bodyLarge, maxLines = 7, overflow = TextOverflow.Ellipsis)
+        }
+        movieDetails?.director?.takeIf { it.isNotBlank() }?.let {
+            Text("${if (isPt) "Direção" else "Director"}: $it", color = Muted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        movieDetails?.cast?.takeIf { it.isNotBlank() }?.let {
+            Text("${if (isPt) "Elenco" else "Cast"}: $it", color = Muted, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (entry.kind != MediaKind.SERIES) {
-                ActionButton("Play", { onPlay(entry) }, Modifier.weight(1f), icon = Icons.Outlined.PlayArrow, primary = true, isTv = isTv)
+                ActionButton(if (isPt) "Assistir" else "Play", { onPlay(entry) }, Modifier.weight(1f), icon = Icons.Outlined.PlayArrow, primary = true, isTv = isTv)
             }
-            ActionButton(if (isFavorite(entry.id)) "Saved" else "Save", { onFavorite(entry) }, Modifier.weight(1f), icon = if (isFavorite(entry.id)) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder, isTv = isTv)
-            ActionButton("Back", onBack, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.ArrowBack, isTv = isTv)
+            val saved = isFavorite(entry.id)
+            ActionButton(
+                if (saved) (if (isPt) "Salvo" else "Saved") else (if (isPt) "Salvar" else "Save"),
+                { onFavorite(entry) },
+                Modifier.weight(1f),
+                icon = if (saved) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                isTv = isTv,
+            )
+            ActionButton(if (isPt) "Voltar" else "Back", onBack, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.ArrowBack, isTv = isTv)
         }
     }
 }
 
 @Composable
-private fun DetailSupplementary(state: BruTvUiState, entry: MediaEntry, modifier: Modifier, onPlay: (MediaEntry) -> Unit) {
+private fun DetailSupplementary(
+    state: BruTvUiState,
+    entry: MediaEntry,
+    groupedEpisodes: List<SeasonEpisodeGroup>,
+    isPt: Boolean,
+    modifier: Modifier,
+    onPlay: (MediaEntry) -> Unit,
+) {
     when (entry.kind) {
         MediaKind.LIVE -> Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            DetailSectionHeading("Now and next")
+            DetailSectionHeading(if (isPt) "Agora e a seguir" else "Now and next")
             if (state.programmes.isEmpty()) {
-                Text("No guide details were returned by this provider.", color = Muted)
+                Text(if (isPt) "O provedor não retornou detalhes do guia." else "No guide details were returned by this provider.", color = Muted)
             } else {
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(state.programmes, key = { "${it.startEpochSeconds}:${it.title}" }) { ProgrammeCard(it) }
@@ -1615,12 +1900,12 @@ private fun DetailSupplementary(state: BruTvUiState, entry: MediaEntry, modifier
             }
         }
         MediaKind.SERIES -> Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            DetailSectionHeading("Episodes")
+            DetailSectionHeading(if (isPt) "Episódios" else "Episodes")
             when {
                 state.busy -> CircularProgressIndicator(color = Aqua)
-                state.episodes.isEmpty() -> Text("No episodes were returned for this series.", color = Muted)
+                groupedEpisodes.isEmpty() -> Text(if (isPt) "Nenhum episódio foi retornado para esta série." else "No episodes were returned for this series.", color = Muted)
                 else -> LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    episodeRows(state.episodes, onPlay)
+                    episodeRows(groupedEpisodes, isPt, onPlay)
                 }
             }
         }
@@ -1635,27 +1920,53 @@ private fun DetailSectionHeading(title: String) {
 
 @Composable
 private fun ProgrammeCard(programme: Programme) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(CardSurface).padding(13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .clip(shape)
+            .background(if (focused) Color(0xFF1A2F3A) else CardSurface)
+            .border(if (focused) 2.dp else 1.dp, if (focused) Aqua else Color.Transparent, shape)
+            .focusable()
+            .padding(13.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
         Text(programme.title, color = Color.White, fontWeight = FontWeight.SemiBold)
         if (programme.startEpochSeconds > 0 && programme.endEpochSeconds > 0) {
             val start = DateFormat.format("h:mm a", Date(programme.startEpochSeconds * 1000)).toString()
             val end = DateFormat.format("h:mm a", Date(programme.endEpochSeconds * 1000)).toString()
-            Text("$start – $end", color = Aqua, style = MaterialTheme.typography.labelSmall)
+            Text("$start - $end", color = Aqua, style = MaterialTheme.typography.labelSmall)
         }
         if (programme.description.isNotBlank()) Text(programme.description, color = Muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
-private fun LazyListScope.episodeRows(episodes: List<MediaEntry>, onPlay: (MediaEntry) -> Unit) {
-    episodes
+private fun groupEpisodesBySeason(episodes: List<MediaEntry>): List<SeasonEpisodeGroup> {
+    if (episodes.isEmpty()) return emptyList()
+    return episodes
         .sortedWith(compareBy({ it.seasonNumber ?: Int.MAX_VALUE }, { it.episodeNumber ?: Int.MAX_VALUE }, { it.name }))
         .groupBy { it.seasonNumber?.takeIf { season -> season > 0 } }
-        .forEach { (season, seasonEpisodes) ->
-            item(key = "season-${season ?: "unknown"}") {
-                Text(season?.let { "Season $it" } ?: "Episodes", color = Aqua, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 9.dp, bottom = 2.dp))
-            }
-            items(seasonEpisodes, key = { it.id }) { episode -> EpisodeCard(episode, onPlay) }
+        .map { (season, list) -> SeasonEpisodeGroup(season = season, episodes = list) }
+}
+
+private fun LazyListScope.episodeRows(
+    groups: List<SeasonEpisodeGroup>,
+    isPt: Boolean,
+    onPlay: (MediaEntry) -> Unit,
+) {
+    groups.forEach { group ->
+        item(key = "season-${group.season ?: "unknown"}") {
+            Text(
+                group.season?.let { if (isPt) "Temporada $it" else "Season $it" } ?: (if (isPt) "Episódios" else "Episodes"),
+                color = Aqua,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 9.dp, bottom = 2.dp),
+            )
         }
+        items(group.episodes, key = { it.id }) { episode -> EpisodeCard(episode, onPlay) }
+    }
 }
 
 @Composable
@@ -1684,6 +1995,7 @@ private fun ProfilesPage(
     state: BruTvUiState,
     viewModel: BruTvViewModel,
     isTv: Boolean,
+    isPt: Boolean,
     onAddXtream: () -> Unit,
     onAddPlaylist: () -> Unit,
     onChoosePlaylist: () -> Unit,
@@ -1691,57 +2003,73 @@ private fun ProfilesPage(
 ) {
     var removeProfileId by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = if (isTv) 30.dp else 18.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Profiles", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Switch between saved providers on this device.", color = Muted)
+        Text(if (isPt) "Perfis" else "Profiles", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(if (isPt) "Alterne entre os provedores salvos neste dispositivo." else "Switch between saved providers on this device.", color = Muted)
         state.profiles.forEach { profile ->
             val active = profile.id == state.activeSourceId
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(CardSurface).padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(profile.name, color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(if (active) "Currently active" else if (profile.type == SourceType.M3U) "M3U playlist" else "Xtream provider", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        when {
+                            active -> if (isPt) "Ativo no momento" else "Currently active"
+                            profile.type == SourceType.M3U -> if (isPt) "Playlist M3U" else "M3U playlist"
+                            else -> if (isPt) "Provedor Xtream" else "Xtream provider"
+                        },
+                        color = Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
-                if (!active) ActionButton("Switch", { viewModel.switchProfile(profile.id) }, icon = Icons.Outlined.SwitchAccount, isTv = isTv)
+                if (!active) ActionButton(if (isPt) "Trocar" else "Switch", { viewModel.switchProfile(profile.id) }, icon = Icons.Outlined.SwitchAccount, isTv = isTv)
                 if (profile.isShareable()) ActionButton("QR", { viewModel.showLoginQr(profile) }, icon = Icons.Outlined.QrCode2, isTv = isTv)
-                ActionButton("Remove", { removeProfileId = profile.id }, icon = Icons.Outlined.DeleteOutline, isTv = isTv)
+                ActionButton(if (isPt) "Remover" else "Remove", { removeProfileId = profile.id }, icon = Icons.Outlined.DeleteOutline, isTv = isTv)
             }
         }
-        if (state.profiles.isEmpty()) Text("No saved profiles yet.", color = Muted)
-        if (state.profiles.any { !it.isShareable() }) InfoNotice("Imported playlist files stay on this device. Use a playlist URL to share a profile with another device.")
+        if (state.profiles.isEmpty()) Text(if (isPt) "Nenhum perfil salvo ainda." else "No saved profiles yet.", color = Muted)
+        if (state.profiles.any { !it.isShareable() }) InfoNotice(if (isPt) "Arquivos de playlist importados ficam neste dispositivo. Use uma URL de playlist para compartilhar um perfil com outro dispositivo." else "Imported playlist files stay on this device. Use a playlist URL to share a profile with another device.")
         HorizontalDivider(color = Color(0xFF293A42))
-        Text("Add a provider", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold)
+        Text(if (isPt) "Adicionar provedor" else "Add a provider", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold)
         if (isTv) {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton("Xtream login", onAddXtream, icon = Icons.Outlined.InsertLink, primary = true, isTv = true)
-                    ActionButton("M3U URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = true)
+                    ActionButton(if (isPt) "Login Xtream" else "Xtream login", onAddXtream, icon = Icons.Outlined.InsertLink, primary = true, isTv = true)
+                    ActionButton(if (isPt) "URL M3U" else "M3U URL", onAddPlaylist, icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = true)
                 }
-                ActionButton("Import M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = true)
+                ActionButton(if (isPt) "Importar arquivo M3U" else "Import M3U file", onChoosePlaylist, icon = Icons.Outlined.FileOpen, isTv = true)
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionButton("Xtream login", onAddXtream, Modifier.weight(1f), icon = Icons.Outlined.InsertLink, primary = true, isTv = false)
-                    ActionButton("M3U URL", onAddPlaylist, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = false)
+                    ActionButton(if (isPt) "Login Xtream" else "Xtream login", onAddXtream, Modifier.weight(1f), icon = Icons.Outlined.InsertLink, primary = true, isTv = false)
+                    ActionButton(if (isPt) "URL M3U" else "M3U URL", onAddPlaylist, Modifier.weight(1f), icon = Icons.AutoMirrored.Outlined.PlaylistAdd, isTv = false)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ActionButton("Import M3U file", onChoosePlaylist, Modifier.weight(1f), icon = Icons.Outlined.FileOpen, isTv = false)
-                    ActionButton("Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
+                    ActionButton(if (isPt) "Importar arquivo M3U" else "Import M3U file", onChoosePlaylist, Modifier.weight(1f), icon = Icons.Outlined.FileOpen, isTv = false)
+                    ActionButton(if (isPt) "Escanear QR" else "Scan QR", onScan, Modifier.weight(1f), icon = Icons.Outlined.QrCodeScanner, isTv = false)
                 }
             }
         }
-        if (state.pendingPairInvite != null) InfoNotice("A TV code is waiting. Choose a profile from the pairing screen.")
+        if (state.pendingPairInvite != null) InfoNotice(if (isPt) "Um código da TV está aguardando. Escolha um perfil na tela de pareamento." else "A TV code is waiting. Choose a profile from the pairing screen.")
     }
     removeProfileId?.let { id ->
         val profile = state.profiles.firstOrNull { it.id == id }
         AlertDialog(
             onDismissRequest = { removeProfileId = null },
-            title = { Text("Remove profile?") },
-            text = { Text("${profile?.name ?: "This profile"} and its favorites and resume history will be removed from this device.") },
+            title = { Text(if (isPt) "Remover perfil?" else "Remove profile?") },
+            text = {
+                Text(
+                    if (isPt) {
+                        "${profile?.name ?: "Este perfil"} e seus favoritos e histórico serão removidos deste dispositivo."
+                    } else {
+                        "${profile?.name ?: "This profile"} and its favorites and resume history will be removed from this device."
+                    },
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { viewModel.removeProfile(id); removeProfileId = null }) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Remove")
+                        Text(if (isPt) "Remover" else "Remove")
                     }
                 }
             },
@@ -1749,7 +2077,7 @@ private fun ProfilesPage(
                 TextButton(onClick = { removeProfileId = null }) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Cancel")
+                        Text(if (isPt) "Cancelar" else "Cancel")
                     }
                 }
             },
@@ -1758,14 +2086,7 @@ private fun ProfilesPage(
 }
 
 @Composable
-private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: Boolean) {
-    val isPt = remember(state.language) {
-        when (state.language) {
-            "pt" -> true
-            "en" -> false
-            else -> java.util.Locale.getDefault().language.lowercase().startsWith("pt")
-        }
-    }
+private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: Boolean, isPt: Boolean) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = if (isTv) 30.dp else 18.dp, vertical = 22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(if (isPt) "Configurações" else "Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(if (isPt) "Ajuste a reprodução e preferências para sua rede e dispositivo." else "Tune playback for your network and device.", color = Muted)
@@ -1780,24 +2101,93 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
                 selected = state.language == langKey,
                 onClick = { viewModel.setLanguage(langKey) },
             ) {
-                RadioButton(selected = state.language == langKey, onClick = { viewModel.setLanguage(langKey) })
+                RadioButton(
+                    selected = state.language == langKey,
+                    onClick = null,
+                    modifier = Modifier.focusProperties { canFocus = false },
+                )
                 Text(langLabel, color = Color.White, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
             }
         }
 
         Text(if (isPt) "Perfil de buffer" else "Buffer profile", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         BufferProfile.entries.forEach { profile ->
+            val (profileTitle, profileDescription) = profileLocalizedText(profile, isPt)
             SettingsSelectableRow(
                 selected = state.bufferProfile == profile.key,
                 onClick = { viewModel.setBufferProfile(profile.key) },
             ) {
-                RadioButton(selected = state.bufferProfile == profile.key, onClick = { viewModel.setBufferProfile(profile.key) })
+                RadioButton(
+                    selected = state.bufferProfile == profile.key,
+                    onClick = null,
+                    modifier = Modifier.focusProperties { canFocus = false },
+                )
                 Column(Modifier.padding(start = 8.dp)) {
-                    Text(profile.title, color = Color.White, fontWeight = FontWeight.Medium)
-                    Text(profile.description, color = Muted, style = MaterialTheme.typography.bodySmall)
+                    Text(profileTitle, color = Color.White, fontWeight = FontWeight.Medium)
+                    Text(profileDescription, color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
+
+        Text(if (isPt) "Proporção padrão do vídeo" else "Default video aspect", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+        listOf(
+            "fit" to (if (isPt) "Ajustar (manter proporção)" else "Fit (original aspect)"),
+            "zoom" to (if (isPt) "Zoom (preencher recortando)" else "Zoom (crop to fill)"),
+            "fill" to (if (isPt) "Esticar (tela cheia)" else "Stretch (fill screen)"),
+        ).forEach { (aspectKey, aspectLabel) ->
+            SettingsSelectableRow(
+                selected = state.defaultAspectMode == aspectKey,
+                onClick = { viewModel.setDefaultAspectMode(aspectKey) },
+            ) {
+                RadioButton(
+                    selected = state.defaultAspectMode == aspectKey,
+                    onClick = null,
+                    modifier = Modifier.focusProperties { canFocus = false },
+                )
+                Text(aspectLabel, color = Color.White, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+
+        SettingsSelectableRow(
+            selected = state.liveRewind,
+            onClick = { viewModel.setLiveRewind(!state.liveRewind) },
+            paddingValues = PaddingValues(14.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(if (isPt) "Buffer de retrocesso ao vivo (Time-shift)" else "Live TV rewind buffer (Time-shift)", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (isPt) "Grava o canal HLS temporariamente para pausar e retroceder. Desative para troca de canal instantânea." else "Temporarily buffers live HLS streams to pause and rewind. Turn off for instant channel zapping.",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = state.liveRewind,
+                onCheckedChange = null,
+                modifier = Modifier.focusProperties { canFocus = false },
+            )
+        }
+
+        SettingsSelectableRow(
+            selected = state.autoFrameRate,
+            onClick = { viewModel.setAutoFrameRate(!state.autoFrameRate) },
+            paddingValues = PaddingValues(14.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(if (isPt) "Ajuste automático de taxa de quadros (AFR)" else "Auto frame rate matching (AFR)", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (isPt) "Ajusta a taxa de atualização da tela quando suportado sem piscadas." else "Matches display refresh rate seamlessly when supported by the TV.",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = state.autoFrameRate,
+                onCheckedChange = null,
+                modifier = Modifier.focusProperties { canFocus = false },
+            )
+        }
+
         SettingsSelectableRow(
             selected = state.showStats,
             onClick = { viewModel.setShowStats(!state.showStats) },
@@ -1807,11 +2197,26 @@ private fun SettingsPage(state: BruTvUiState, viewModel: BruTvViewModel, isTv: B
                 Text(if (isPt) "Diagnósticos de reprodução" else "Playback diagnostics", color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text(if (isPt) "Exibir resolução, bitrate, buffer e detalhes de rede durante a reprodução." else "Show resolution, bitrate, buffer and recovery details while playing.", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
-            Switch(checked = state.showStats, onCheckedChange = viewModel::setShowStats)
+            Switch(
+                checked = state.showStats,
+                onCheckedChange = null,
+                modifier = Modifier.focusProperties { canFocus = false },
+            )
         }
+
         Text(if (isPt) "Privacidade" else "Privacy", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
         Text(if (isPt) "O BruTV não possui servidores próprios nem canais embutidos. Suas credenciais são salvas criptografadas neste dispositivo e enviadas diretamente ao provedor configurado." else "BruTV has no account backend or bundled channels. Your provider credentials are stored encrypted on this device and sent only to the provider you add. Prefer HTTPS when available; HTTP connections do not encrypt credentials or streams in transit.", color = Muted)
-        Text("BruTV • Version 1.0.1", color = Muted, style = MaterialTheme.typography.bodySmall)
+        Text("BruTV • ${if (isPt) "Versão" else "Version"} ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun profileLocalizedText(profile: BufferProfile, isPt: Boolean): Pair<String, String> = if (!isPt) {
+    profile.title to profile.description
+} else {
+    when (profile) {
+        BufferProfile.LOW_LATENCY -> "Latência ultrabaixa" to "Menor atraso com menos margem de buffer. Recomendado para redes estáveis."
+        BufferProfile.BALANCED -> "Equilibrado" to "Início rápido com folga para variações normais de rede."
+        BufferProfile.STABILITY -> "Alta estabilidade" to "Buffer mais profundo para conexões instáveis."
     }
 }
 
@@ -1847,14 +2252,14 @@ private fun SettingsSelectableRow(
 }
 
 @Composable
-private fun EmptyCatalog(title: String, body: String, onAdd: () -> Unit, isTv: Boolean, onScan: () -> Unit) {
+private fun EmptyCatalog(title: String, body: String, onAdd: () -> Unit, isTv: Boolean, isPt: Boolean, onScan: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(Icons.Outlined.Tv, contentDescription = null, tint = Aqua, modifier = Modifier.size(42.dp))
         Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = Muted)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionButton("Add a provider", onAdd, icon = Icons.Outlined.Add, primary = true, isTv = isTv)
-            if (!isTv) ActionButton("Scan QR", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
+            ActionButton(if (isPt) "Adicionar provedor" else "Add a provider", onAdd, icon = Icons.Outlined.Add, primary = true, isTv = isTv)
+            if (!isTv) ActionButton(if (isPt) "Escanear QR" else "Scan QR", onScan, icon = Icons.Outlined.QrCodeScanner, isTv = false)
         }
     }
 }
@@ -1868,10 +2273,10 @@ private fun LoadingBlock(message: String) {
 }
 
 @Composable
-private fun ErrorBlock(message: String, onRetry: () -> Unit) {
+private fun ErrorBlock(message: String, onRetry: () -> Unit, isTv: Boolean, isPt: Boolean) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp).clip(RoundedCornerShape(15.dp)).background(Color(0xFF351C1E)).padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(message, color = Color(0xFFFFB7AB), modifier = Modifier.weight(1f))
-        ActionButton("Retry", onRetry, icon = Icons.Outlined.Refresh, isTv = false)
+        ActionButton(if (isPt) "Tentar novamente" else "Retry", onRetry, icon = Icons.Outlined.Refresh, isTv = isTv)
     }
 }
 
@@ -1881,8 +2286,8 @@ private fun InlineError(message: String) {
 }
 
 @Composable
-private fun PersistenceNotice(state: BruTvUiState, viewModel: BruTvViewModel, isTv: Boolean = false) {
-    val message = state.persistenceError ?: if (state.saving) "Saving profile changes…" else return
+private fun PersistenceNotice(state: BruTvUiState, viewModel: BruTvViewModel, isTv: Boolean = false, isPt: Boolean = false) {
+    val message = state.persistenceError ?: if (state.saving) (if (isPt) "Salvando alterações do perfil…" else "Saving profile changes…") else return
     Row(
         Modifier.fillMaxWidth()
             .background(if (state.persistenceError != null) Color(0xFF351C1E) else Color(0xFF12353A))
@@ -1897,7 +2302,7 @@ private fun PersistenceNotice(state: BruTvUiState, viewModel: BruTvViewModel, is
             style = MaterialTheme.typography.bodySmall,
         )
         if (state.persistenceRetryable) {
-            ActionButton("Retry save", viewModel::retryPersistence, icon = Icons.Outlined.Refresh, isTv = isTv)
+            ActionButton(if (isPt) "Tentar salvar" else "Retry save", viewModel::retryPersistence, icon = Icons.Outlined.Refresh, isTv = isTv)
         }
     }
 }
@@ -1908,11 +2313,11 @@ private fun InfoNotice(message: String) {
 }
 
 @Composable
-private fun LocalPlaylistShareMessage(onClose: () -> Unit) {
+private fun LocalPlaylistShareMessage(onClose: () -> Unit, isPt: Boolean) {
     CenteredMessage(
-        title = "This playlist is on this device",
-        body = "A local playlist file cannot be shared by QR or sent to a TV. Add the playlist URL on the other device, or use a provider login profile.",
-        action = "Close",
+        title = if (isPt) "Esta playlist está neste dispositivo" else "This playlist is on this device",
+        body = if (isPt) "Um arquivo local de playlist não pode ser compartilhado por QR nem enviado para a TV. Adicione a URL da playlist no outro dispositivo ou use um perfil de provedor." else "A local playlist file cannot be shared by QR or sent to a TV. Add the playlist URL on the other device, or use a provider login profile.",
+        action = if (isPt) "Fechar" else "Close",
         actionIcon = Icons.Outlined.Close,
         onAction = onClose,
     )
@@ -1921,6 +2326,7 @@ private fun LocalPlaylistShareMessage(onClose: () -> Unit) {
 @Composable
 private fun PasteLinkDialog(
     initialText: String,
+    isPt: Boolean,
     onCancel: () -> Unit,
     onImport: (String) -> Boolean,
 ) {
@@ -1929,32 +2335,36 @@ private fun PasteLinkDialog(
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("Paste a BruTV sign-in link") },
+        title = { Text(if (isPt) "Colar link de login do BruTV" else "Paste a BruTV sign-in link") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Links can contain provider sign-in details. BruTV keeps them on this device.", color = Muted)
+                Text(if (isPt) "Links podem conter credenciais do provedor. O BruTV mantém tudo neste dispositivo." else "Links can contain provider sign-in details. BruTV keeps them on this device.", color = Muted)
                 OutlinedTextField(
                     value = value,
                     onValueChange = { value = it; error = null },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Login link") },
+                    label = { Text(if (isPt) "Link de login" else "Login link") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
                 TextButton(onClick = { value = clipboard.getText()?.text.orEmpty(); error = null }) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Paste from clipboard")
+                        Text(if (isPt) "Colar da área de transferência" else "Paste from clipboard")
                     }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            TextButton(onClick = { if (value.isBlank() || !onImport(value.trim())) error = "Enter a valid BruTV login or TV pairing link." }) {
+            TextButton(onClick = {
+                if (value.isBlank() || !onImport(value.trim())) {
+                    error = if (isPt) "Informe um link válido de login ou pareamento do BruTV." else "Enter a valid BruTV login or TV pairing link."
+                }
+            }) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("Continue")
+                    Text(if (isPt) "Continuar" else "Continue")
                 }
             }
         },
@@ -1962,7 +2372,7 @@ private fun PasteLinkDialog(
             TextButton(onClick = onCancel) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Text("Cancel")
+                    Text(if (isPt) "Cancelar" else "Cancel")
                 }
             }
         },
@@ -2099,25 +2509,25 @@ private fun BrandMark(compact: Boolean = false) {
 }
 
 @Composable
-private fun BruTvSplashScreen(isTv: Boolean) {
+private fun BruTvSplashScreen(isTv: Boolean, isPt: Boolean) {
     val infiniteTransition = rememberInfiniteTransition(label = "splash")
     val pulse by infiniteTransition.animateFloat(
         initialValue = 0.88f,
         targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
             animation = tween(1600, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
+            repeatMode = RepeatMode.Reverse,
         ),
-        label = "pulse"
+        label = "pulse",
     )
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.10f,
         targetValue = 0.25f,
         animationSpec = infiniteRepeatable(
             animation = tween(1600, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
+            repeatMode = RepeatMode.Reverse,
         ),
-        label = "glowAlpha"
+        label = "glowAlpha",
     )
 
     Box(
@@ -2126,7 +2536,6 @@ private fun BruTvSplashScreen(isTv: Boolean) {
             .background(Canvas),
         contentAlignment = Alignment.Center,
     ) {
-        // Ambient breathing background glow
         Box(
             modifier = Modifier
                 .size(if (isTv) 340.dp else 260.dp)
@@ -2137,10 +2546,10 @@ private fun BruTvSplashScreen(isTv: Boolean) {
                 }
                 .clip(CircleShape)
                 .background(
-                    androidx.compose.ui.graphics.Brush.radialGradient(
-                        listOf(Aqua, Color.Transparent)
-                    )
-                )
+                    Brush.radialGradient(
+                        listOf(Aqua, Color.Transparent),
+                    ),
+                ),
         )
 
         Column(
@@ -2153,8 +2562,8 @@ private fun BruTvSplashScreen(isTv: Boolean) {
                     .clip(RoundedCornerShape(if (isTv) 24.dp else 20.dp))
                     .background(
                         Brush.linearGradient(
-                            listOf(Color(0xFF55E2D1), Color(0xFF167E74))
-                        )
+                            listOf(Color(0xFF55E2D1), Color(0xFF167E74)),
+                        ),
                     ),
                 contentAlignment = Alignment.Center,
             ) {
@@ -2175,7 +2584,7 @@ private fun BruTvSplashScreen(isTv: Boolean) {
                 color = Color.White,
             )
             Text(
-                "IPTV that just works.",
+                if (isPt) "IPTV que simplesmente funciona." else "IPTV that just works.",
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontSize = if (isTv) 18.sp else 15.sp,
                 ),
@@ -2192,11 +2601,11 @@ private fun BruTvSplashScreen(isTv: Boolean) {
     }
 }
 
-private fun MediaKind.displayName(): String = when (this) {
-    MediaKind.LIVE -> "Live channel"
-    MediaKind.MOVIE -> "Movie"
-    MediaKind.SERIES -> "Series"
-    MediaKind.EPISODE -> "Episode"
+private fun MediaKind.displayName(isPt: Boolean): String = when (this) {
+    MediaKind.LIVE -> if (isPt) "Canal ao vivo" else "Live channel"
+    MediaKind.MOVIE -> if (isPt) "Filme" else "Movie"
+    MediaKind.SERIES -> if (isPt) "Série" else "Series"
+    MediaKind.EPISODE -> if (isPt) "Episódio" else "Episode"
 }
 
 private fun entryDescription(kind: MediaKind): String = when (kind) {

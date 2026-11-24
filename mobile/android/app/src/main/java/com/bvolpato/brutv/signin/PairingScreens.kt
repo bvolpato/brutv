@@ -17,8 +17,8 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,7 +51,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
+fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit, isPt: Boolean = false) {
     PrivateScreen()
     val currentSource by rememberUpdatedState(onSource)
     val owner = LocalLifecycleOwner.current
@@ -58,8 +59,8 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
     val foreground = remember { AtomicBoolean(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
     var invite by remember { mutableStateOf<PairingInvite?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var attempt by remember { mutableStateOf(0) }
-    var seconds by remember { mutableStateOf(180) }
+    var attempt by remember { mutableIntStateOf(0) }
+    var seconds by remember { mutableIntStateOf(180) }
     val cancelFocus = remember { FocusRequester() }
     DisposableEffect(owner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -95,12 +96,20 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
             ensureActive()
             invite = null
             if (received != null) currentSource(received)
-            else error = "This pairing code has expired or closed. Create a new code to try again."
+            else error = if (isPt) {
+                "Este código de pareamento expirou ou foi encerrado. Crie um novo código para tentar novamente."
+            } else {
+                "This pairing code has expired or closed. Create a new code to try again."
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             invite = null
-            error = "Pairing could not start. Connect the TV to your home Wi-Fi or Ethernet network and try again."
+            error = if (isPt) {
+                "Não foi possível iniciar o pareamento. Conecte a TV à sua rede Wi-Fi ou Ethernet e tente novamente."
+            } else {
+                "Pairing could not start. Connect the TV to your home Wi-Fi or Ethernet network and try again."
+            }
         } finally {
             active?.close()
             receiver.compareAndSet(active, null)
@@ -120,30 +129,30 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
     LaunchedEffect(Unit) { cancelFocus.requestFocus() }
     val bitmap = remember(invite) { invite?.let { runCatching { qrBitmap(Pairing.encodeInvite(it)) }.getOrNull() } }
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Sign in from your phone", style = MaterialTheme.typography.headlineMedium)
+        Text(if (isPt) "Entrar pelo celular" else "Sign in from your phone", style = MaterialTheme.typography.headlineMedium)
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             if (maxWidth >= 700.dp && bitmap != null) {
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        PairingInstructions(seconds)
+                        PairingInstructions(seconds, isPt)
                     }
-                    Column(Modifier.weight(1f)) { QrImage(bitmap, "Temporary TV pairing QR code") }
+                    Column(Modifier.weight(1f)) { QrImage(bitmap, if (isPt) "Código QR temporário da TV" else "Temporary TV pairing QR code") }
                 }
             } else {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (bitmap != null) {
-                        PairingInstructions(seconds)
-                        QrImage(bitmap, "Temporary TV pairing QR code")
+                        PairingInstructions(seconds, isPt)
+                        QrImage(bitmap, if (isPt) "Código QR temporário da TV" else "Temporary TV pairing QR code")
                     } else if (error != null) {
                         Text(error.orEmpty())
                         Button(onClick = { attempt++ }) {
                             Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Create new code")
+                            Text(if (isPt) "Criar novo código" else "Create new code")
                         }
                     } else {
                         CircularProgressIndicator()
-                        Text("Preparing a secure local connection…")
+                        Text(if (isPt) "Preparando conexão local segura…" else "Preparing a secure local connection…")
                     }
                 }
             }
@@ -154,23 +163,33 @@ fun TvPairingScreen(onSource: (SourceConfig) -> Unit, onCancel: () -> Unit) {
         }, modifier = Modifier.focusRequester(cancelFocus)) {
             Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Cancel")
+            Text(if (isPt) "Cancelar" else "Cancel")
         }
     }
 }
 
 @Composable
-private fun PairingInstructions(seconds: Int) {
-    Text("1. Connect your phone and TV to the same Wi-Fi network.")
-    Text("2. Open BruTV on your Android phone, then open the QR scanner.")
-    Text("3. Scan this code and choose the saved profile to send.")
-    Text("The profile is encrypted directly to this TV. The code works once and expires in ${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}.")
-    Text("This pairing feature needs BruTV on Android. For an iPhone, enter your provider details on the TV.", style = MaterialTheme.typography.bodySmall)
-    Text("If pairing fails, turn off guest Wi-Fi isolation or use manual sign-in.", style = MaterialTheme.typography.bodySmall)
+private fun PairingInstructions(seconds: Int, isPt: Boolean) {
+    val time = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+    if (isPt) {
+        Text("1. Conecte o celular e a TV à mesma rede Wi-Fi.")
+        Text("2. Abra o BruTV no celular Android e toque no leitor QR.")
+        Text("3. Escaneie este código e escolha o perfil salvo para enviar.")
+        Text("O perfil é criptografado diretamente para esta TV. O código funciona uma vez e expira em $time.")
+        Text("Este pareamento requer BruTV no Android. No iPhone, insira os dados do provedor na TV.", style = MaterialTheme.typography.bodySmall)
+        Text("Se o pareamento falhar, desative o isolamento de rede de visitantes ou use o login manual.", style = MaterialTheme.typography.bodySmall)
+    } else {
+        Text("1. Connect your phone and TV to the same Wi-Fi network.")
+        Text("2. Open BruTV on your Android phone, then open the QR scanner.")
+        Text("3. Scan this code and choose the saved profile to send.")
+        Text("The profile is encrypted directly to this TV. The code works once and expires in $time.")
+        Text("This pairing feature needs BruTV on Android. For an iPhone, enter your provider details on the TV.", style = MaterialTheme.typography.bodySmall)
+        Text("If pairing fails, turn off guest Wi-Fi isolation or use manual sign-in.", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
-fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDone: () -> Unit, onCancel: () -> Unit) {
+fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDone: () -> Unit, onCancel: () -> Unit, isPt: Boolean = false) {
     PrivateScreen()
     val scope = rememberCoroutineScope()
     var sending by remember { mutableStateOf(false) }
@@ -179,12 +198,12 @@ fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDon
         profiles.filter { it.type != SourceType.M3U || it.playlistUrl.startsWith("http://", true) || it.playlistUrl.startsWith("https://", true) }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Send a profile to your TV", style = MaterialTheme.typography.headlineMedium)
-        Text("Both devices must be on the same Wi-Fi network. Check that the QR code is still visible on your TV, then choose a profile.")
-        Text("Your provider credentials are encrypted for this TV. Send them only to a TV you trust.")
+        Text(if (isPt) "Enviar perfil para a TV" else "Send a profile to your TV", style = MaterialTheme.typography.headlineMedium)
+        Text(if (isPt) "Ambos os dispositivos devem estar na mesma rede Wi-Fi. Verifique se o QR ainda está visível na TV e escolha um perfil." else "Both devices must be on the same Wi-Fi network. Check that the QR code is still visible on your TV, then choose a profile.")
+        Text(if (isPt) "Suas credenciais são criptografadas para esta TV. Envie apenas para uma TV de confiança." else "Your provider credentials are encrypted for this TV. Send them only to a TV you trust.")
         if (error != null) Text(error.orEmpty(), color = MaterialTheme.colorScheme.error)
-        if (shareable.isEmpty()) Text("Save a provider profile or a playlist URL on this phone first, then scan the TV code again.")
-        if (shareable.size != profiles.size) Text("Imported playlist files are stored on this device. Import the file on the TV or use a playlist URL to share it.")
+        if (shareable.isEmpty()) Text(if (isPt) "Salve um perfil ou URL de playlist neste celular primeiro e escaneie o código novamente." else "Save a provider profile or a playlist URL on this phone first, then scan the TV code again.")
+        if (shareable.size != profiles.size) Text(if (isPt) "Arquivos de playlist importados ficam neste dispositivo. Importe na TV ou use uma URL para compartilhar." else "Imported playlist files are stored on this device. Import the file on the TV or use a playlist URL to share it.")
         shareable.forEach { source ->
             Button(onClick = {
                 sending = true
@@ -196,7 +215,11 @@ fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDon
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
-                        error = "The TV could not accept this profile. Keep both devices on the same Wi-Fi and scan a new TV code."
+                        error = if (isPt) {
+                            "A TV não aceitou este perfil. Mantenha ambos no mesmo Wi-Fi e escaneie um novo código."
+                        } else {
+                            "The TV could not accept this profile. Keep both devices on the same Wi-Fi and scan a new TV code."
+                        }
                     } finally {
                         sending = false
                     }
@@ -209,12 +232,12 @@ fun PairingSendScreen(invite: PairingInvite, profiles: List<SourceConfig>, onDon
         }
         if (sending) {
             CircularProgressIndicator()
-            Text("Sending securely…")
+            Text(if (isPt) "Enviando com segurança…" else "Sending securely…")
         }
         TextButton(onClick = onCancel) {
             Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Cancel")
+            Text(if (isPt) "Cancelar" else "Cancel")
         }
     }
 }

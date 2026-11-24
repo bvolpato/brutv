@@ -71,4 +71,25 @@ class M3UPlaylistParserTest {
             assertEquals("Playlist is an HLS stream playlist, not an IPTV channel list.", error.message)
         }
     }
+
+    @Test
+    fun extractsUrlTvgMetadataAndHandlesNonAsciiStableIdsAndClassification() {
+        val playlist = """
+            #EXTM3U url-tvg="https://epg.example/guide.xml.gz"
+            #EXTINF:-1 tvg-id="br.news" group-title="Notícias",Canal Notícias
+            https://streams.example/canais/notícias.m3u8
+            #EXTINF:-1 group-title="Filmes",Movie MP4
+            https://streams.example:8443/vod/clip.mp4?token=1
+            #EXTINF:-1,Bad URL with spaces
+            https://streams.example/bad url.m3u8
+        """.trimIndent()
+
+        val parsed = M3UPlaylistParser.parseWithMetadata(playlist)
+        assertEquals("https://epg.example/guide.xml.gz", parsed.epgUrl)
+        assertEquals(2, parsed.items.size)
+        assertEquals(MediaKind.LIVE, parsed.items[0].kind)
+        assertEquals(MediaKind.MOVIE, parsed.items[1].kind)
+        assertTrue(parsed.items[0].id.startsWith("m3u:"))
+        assertEquals(M3UPlaylistParser.stableId("https://streams.example/canais/notícias.m3u8"), parsed.items[0].id)
+    }
 }

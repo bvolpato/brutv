@@ -2,6 +2,7 @@ package com.bvolpato.brutv.data
 
 import com.bvolpato.brutv.ui.sanitizeUserErrorMessage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import okhttp3.Interceptor
@@ -36,7 +37,7 @@ import javax.net.ssl.SSLPeerUnverifiedException
 class CatalogRepositoryTest {
     @Test
     fun authenticatesLoadsXtreamCatalogAndEncodesCredentialsInPlaybackPath() = runBlocking {
-        val seenActions = mutableListOf<String>()
+        val seenActions = java.util.Collections.synchronizedList(mutableListOf<String>())
         val client = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
             val request = chain.request()
             seenActions += request.url.queryParameter("action").orEmpty()
@@ -67,7 +68,7 @@ class CatalogRepositoryTest {
         repository.authenticate()
         val catalog = repository.load(MediaKind.LIVE)
 
-        assertEquals(listOf("get_live_categories", "get_live_streams"), seenActions.drop(1))
+        assertEquals(setOf("get_live_categories", "get_live_streams"), seenActions.drop(1).toSet())
         assertEquals("News", catalog.categories.single().name)
         val channel = catalog.entries.single()
         assertEquals("world.news", channel.epgId)
@@ -185,7 +186,7 @@ class CatalogRepositoryTest {
 
     @Test
     fun seriesEpisodesAndShortGuideUseTheMatchingXtreamActions() = runBlocking {
-        val actions = mutableListOf<String>()
+        val actions = java.util.Collections.synchronizedList(mutableListOf<String>())
         val client = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
             val request = chain.request()
             val action = request.url.queryParameter("action").orEmpty()
@@ -212,8 +213,7 @@ class CatalogRepositoryTest {
         val guideChannel = MediaEntry(id = "channel", providerId = "7", name = "News", kind = MediaKind.LIVE)
         val guide = repository.guide(guideChannel)
 
-        assertEquals("get_series_categories", actions[0])
-        assertEquals("get_series", actions[1])
+        assertEquals(setOf("get_series_categories", "get_series"), actions.take(2).toSet())
         assertEquals("get_series_info", actions[2])
         assertEquals("get_short_epg", actions[3])
         assertEquals("First episode", episodes.single().plot)
@@ -638,5 +638,74 @@ class CatalogRepositoryTest {
         assertEquals(1, CatalogRepository.parseMaxConnections(null))
         assertEquals(1, CatalogRepository.parseMaxConnections("-2"))
         assertEquals(4, CatalogRepository.parseMaxConnections(" 4 "))
+    }
+
+    @Test
+    fun forceReloadInvalidatesCacheDeduplicatesConcurrentLoadsAndFetchesVodInfo() = runBlocking {
+        val streamCalls = AtomicInteger(0)
+        val channelName = AtomicReference("Initial Channel")
+        val client = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            val action = chain.request().url.queryParameter("action")
+            val body = when (action) {
+                "get_live_categories" -> """[{"category_id":"1","category_name":"News"}]"""
+                "get_live_streams" -> {
+                    streamCalls.incrementAndGet()
+                    Thread.sleep(60)
+                    """[{"stream_id":"42","name":"${channelName.get()}","category_id":"1"}]"""
+                }
+                "get_vod_info" -> """{"info":{"plot":"A classic film.","cast":"Actor A, Actor B","director":"Director X","duration":"01:45:00","genre":"Drama","releasedate":"2024-05-01","rating":"8.4"}}"""
+                else -> "[]"
+            }
+            Response.Builder()
+                .request(chain.request())
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body(body.toResponseBody("application/json".toMediaType()))
+                .build()
+        }).build()
+
+        val cacheDir = Files.createTempDirectory("brutv-cache").toFile()
+        try {
+            val source = SourceConfig(name = "Family", server = "https://provider.example", username = "u", password = "p")
+            val repository = CatalogRepository(source, client, cacheDirectory = cacheDir)
+
+            // Concurrent loads for the same MediaKind deduplicate to 1 network request.
+            val results = listOf(
+                async(Dispatchers.IO) { repository.load(MediaKind.LIVE) },
+                async(Dispatchers.IO) { repository.load(MediaKind.LIVE) },
+            ).map { it.await() }
+            assertEquals(1, streamCalls.get())
+            assertEquals("Initial Channel", results[0].entries.single().name)
+            assertEquals("Initial Channel", results[1].entries.single().name)
+
+            // force = true invalidates cache and replaces cached section with fresh data.
+            channelName.set("Updated Channel")
+            val refreshed = repository.load(MediaKind.LIVE, force = true)
+            assertEquals(2, streamCalls.get())
+            assertEquals("Updated Channel", refreshed.entries.single().name)
+            assertEquals("Updated Channel", repository.load(MediaKind.LIVE).entries.single().name)
+            assertEquals(2, streamCalls.get())
+
+            // Disk cache round-trip works and reconstructs Xtream URLs without storing credentials on disk.
+            val diskCached = repository.readDiskCache(MediaKind.LIVE)
+            assertTrue(diskCached != null && !diskCached.isStale)
+            assertEquals("Updated Channel", diskCached!!.section.entries.single().name)
+            assertTrue(diskCached.section.entries.single().streamUrl.endsWith("/live/u/p/42.m3u8"))
+            val rawCacheBytes = cacheDir.listFiles()!!.single().readBytes().toString(Charsets.UTF_8)
+            assertFalse(rawCacheBytes.contains("/live/u/p/"))
+
+            // get_vod_info parses movie metadata.
+            val movie = MediaEntry(id = "m1", providerId = "99", name = "Film", kind = MediaKind.MOVIE)
+            val details = repository.vodInfo(movie)
+            assertTrue(details != null)
+            assertEquals("A classic film.", details!!.plot)
+            assertEquals("Actor A, Actor B", details.cast)
+            assertEquals("Director X", details.director)
+            assertEquals("01:45:00", details.duration)
+            assertEquals("Drama", details.genre)
+        } finally {
+            cacheDir.deleteRecursively()
+        }
     }
 }

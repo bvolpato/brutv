@@ -3,46 +3,54 @@ package com.bvolpato.brutv.ui
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.bvolpato.brutv.data.CatalogDiskCache
 import com.bvolpato.brutv.data.CatalogRepository
 import com.bvolpato.brutv.data.CatalogSection
 import com.bvolpato.brutv.data.LibraryState
-import com.bvolpato.brutv.data.M3UPlaylistParser
 import com.bvolpato.brutv.data.LoginLinks
+import com.bvolpato.brutv.data.M3UPlaylistParser
 import com.bvolpato.brutv.data.MediaEntry
 import com.bvolpato.brutv.data.MediaKind
-import com.bvolpato.brutv.data.Programme
+import com.bvolpato.brutv.data.MovieDetails
 import com.bvolpato.brutv.data.ProfileStore
+import com.bvolpato.brutv.data.Programme
 import com.bvolpato.brutv.data.SavedState
 import com.bvolpato.brutv.data.SourceConfig
 import com.bvolpato.brutv.data.SourceType
+import com.bvolpato.brutv.data.updateResumePositions
+import com.bvolpato.brutv.playback.BufferProfile
 import com.bvolpato.brutv.playback.LiveFormatCache
+import com.bvolpato.brutv.playback.PlaybackController
 import com.bvolpato.brutv.signin.Pairing
 import com.bvolpato.brutv.signin.PairingInvite
-import java.util.concurrent.atomic.AtomicLong
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.delay
 
 enum class BruTvDestination { LIVE, MOVIES, SERIES, FAVORITES, RECENTS, SETTINGS, PROFILES }
 enum class BruTvPage { HOME, SIGN_IN, DETAIL, SCAN_QR, TV_PAIRING, LOGIN_QR }
 
+@Immutable
 data class LoginDraft(
     val name: String = "",
     val type: SourceType = SourceType.XTREAM,
@@ -52,6 +60,7 @@ data class LoginDraft(
     val playlistUrl: String = "",
 )
 
+@Immutable
 data class BruTvUiState(
     val initialized: Boolean = false,
     val profiles: List<SourceConfig> = emptyList(),
@@ -63,8 +72,10 @@ data class BruTvUiState(
     val visibleEntries: List<MediaEntry> = emptyList(),
     val selectedCategoryId: String? = null,
     val selectedEntry: MediaEntry? = null,
+    val selectedMovieDetails: MovieDetails? = null,
     val episodes: List<MediaEntry> = emptyList(),
     val programmes: List<Programme> = emptyList(),
+    val epgRevision: Int = 0,
     val playingEntry: MediaEntry? = null,
     val playQueue: List<MediaEntry> = emptyList(),
     val searchText: String = "",
@@ -83,6 +94,12 @@ data class BruTvUiState(
     val bufferProfile: String = "balanced",
     val showStats: Boolean = false,
     val language: String = "system",
+    val liveRewind: Boolean = false,
+    val preferredAudioLanguage: String? = null,
+    val preferredSubtitleLanguage: String? = null,
+    val subtitlesEnabled: Boolean = false,
+    val defaultAspectMode: String = "fit",
+    val autoFrameRate: Boolean = false,
     val maxConnections: Int = 1,
     val library: LibraryState = LibraryState(),
 ) {
@@ -94,11 +111,13 @@ private data class PersistenceRequest(
     val revision: Long,
     val state: SavedState,
     val localPlaylistDeleteUrls: Set<String>,
+    val showSavingIndicator: Boolean,
 )
 
-/** Owns profile persistence, source switching and demand-loaded catalog state for the UI. */
+/** Owns profile persistence, hoisted playback lifecycle, source switching and demand-loaded catalog state. */
 class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ProfileStore(application)
+    private val catalogCacheDir = File(application.cacheDir, "catalog_cache")
     private val _state = MutableStateFlow(BruTvUiState())
     val state = _state.asStateFlow()
 
@@ -106,6 +125,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     private var storeReady = false
     private var persistenceRevision = 0L
     private var latestPersistenceRequest: PersistenceRequest? = null
+    private val credentialsDirty = AtomicBoolean(false)
     private val pendingLocalPlaylistDeletes = mutableSetOf<String>()
     private var connectJob: Job? = null
     private var connectingLocalSource: SourceConfig? = null
@@ -115,12 +135,14 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
     private var linkBeforeRestore: String? = null
     private var catalogJob: Job? = null
     private var detailJob: Job? = null
+    private var xmltvJob: Job? = null
     private var searchDebounceJob: Job? = null
     private var searchJob: Job? = null
     private var pageBeforeOverlay = BruTvPage.HOME
     private var sourceGeneration = 0L
     private val persistenceQueue = Channel<PersistenceRequest>(Channel.CONFLATED)
     private val filterGeneration = AtomicLong()
+    private var hoistedPlaybackController: PlaybackController? = null
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -138,6 +160,12 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                         bufferProfile = restored.bufferProfile,
                         showStats = restored.showStats,
                         language = restored.language,
+                        liveRewind = restored.liveRewind,
+                        preferredAudioLanguage = restored.preferredAudioLanguage,
+                        preferredSubtitleLanguage = restored.preferredSubtitleLanguage,
+                        subtitlesEnabled = restored.subtitlesEnabled,
+                        defaultAspectMode = restored.defaultAspectMode,
+                        autoFrameRate = restored.autoFrameRate,
                         library = activeId?.let { restored.libraries[it] }.orEmptyLibrary(),
                         pageError = readResult.exceptionOrNull()?.let { "Saved profiles could not be loaded. Existing encrypted data was left untouched." },
                         persistenceError = readResult.exceptionOrNull()?.let { "Saved profiles could not be read. BruTV has kept the encrypted file unchanged; profile changes in this session cannot be saved." },
@@ -152,7 +180,16 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             for (request in persistenceQueue) {
-                val writeFailure = runCatching { store.write(request.state) }.exceptionOrNull()
+                val writeCreds = credentialsDirty.getAndSet(false)
+                val writeFailure = runCatching {
+                    if (writeCreds) {
+                        store.writeCredentials(request.state)
+                    }
+                    store.writePreferences(request.state)
+                }.exceptionOrNull()
+                if (writeFailure != null && writeCreds) {
+                    credentialsDirty.set(true)
+                }
                 val referencedUrls = request.state.profiles
                     .filter { it.type == SourceType.M3U && it.playlistUrl.startsWith("file:") }
                     .mapTo(mutableSetOf()) { it.playlistUrl }
@@ -174,17 +211,45 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                             it.copy(
                                 saving = false,
                                 persistenceError = when {
-                                    writeFailure != null -> "Profile changes could not be saved. Your current session is still available."
+                                    writeFailure != null && writeCreds -> "Profile changes could not be saved. Your current session is still available."
+                                    writeFailure != null -> it.persistenceError
                                     failedDeletes.isNotEmpty() -> "Profile changes were saved, but an imported playlist copy could not be deleted. Retry cleanup."
                                     else -> null
                                 },
-                                persistenceRetryable = writeFailure != null || failedDeletes.isNotEmpty(),
+                                persistenceRetryable = (writeFailure != null && writeCreds) || failedDeletes.isNotEmpty(),
                             )
                         }
                     }
                 }
             }
         }
+    }
+
+    /** Returns the ViewModel-scoped PlaybackController, keeping ExoPlayer and OkHttp warm across navigation. */
+    internal fun acquirePlaybackController(): PlaybackController {
+        val current = _state.value
+        val desiredProfile = BufferProfile.fromKey(current.bufferProfile)
+        val existing = hoistedPlaybackController
+        val controller = if (existing != null && existing.profile == desiredProfile) {
+            existing
+        } else {
+            existing?.release()
+            PlaybackController(
+                context = getApplication(),
+                profile = desiredProfile,
+                maxConnections = current.maxConnections,
+                liveRewind = current.liveRewind,
+            ).also { hoistedPlaybackController = it }
+        }
+        controller.maxConnections = current.maxConnections
+        controller.liveRewind = current.liveRewind
+        controller.applyPreferences(
+            preferredAudioLanguage = current.preferredAudioLanguage,
+            preferredSubtitleLanguage = current.preferredSubtitleLanguage,
+            subtitlesEnabled = current.subtitlesEnabled,
+            autoFrameRate = current.autoFrameRate,
+        )
+        return controller
     }
 
     fun acceptLink(raw: String) {
@@ -237,7 +302,15 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         if (current.busy && current.page in setOf(BruTvPage.SIGN_IN, BruTvPage.TV_PAIRING)) cancelConnect()
         when (current.page) {
-            BruTvPage.DETAIL -> _state.update { it.copy(page = BruTvPage.HOME, selectedEntry = null, episodes = emptyList(), programmes = emptyList()) }
+            BruTvPage.DETAIL -> _state.update {
+                it.copy(
+                    page = BruTvPage.HOME,
+                    selectedEntry = null,
+                    selectedMovieDetails = null,
+                    episodes = emptyList(),
+                    programmes = emptyList(),
+                )
+            }
             BruTvPage.LOGIN_QR, BruTvPage.SCAN_QR, BruTvPage.TV_PAIRING, BruTvPage.SIGN_IN -> _state.update {
                 it.copy(
                     page = pageBeforeOverlay,
@@ -274,7 +347,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         val kind = selectedKind ?: if (destination.isLibrary()) _state.value.libraryKind else null
-        kind?.let(::loadCatalog)
+        kind?.let { loadCatalog(it) }
         recomputeVisible()
     }
 
@@ -416,14 +489,12 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         connectingLocalSource = normalized.takeIf { removeLocalFileOnFailure && it.type == SourceType.M3U && it.playlistUrl.startsWith("file:") }
         val generation = ++sourceGeneration
         catalogJob?.cancel()
+        xmltvJob?.cancel()
         _state.update { it.copy(busy = true, pageError = null, catalogError = null) }
         connectJob = viewModelScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    CatalogRepository(
-                        normalized,
-                        localPlaylistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists"),
-                    ).also { it.authenticate() }
+                    newRepository(normalized).also { it.authenticate() }
                 }
             }
             if (generation != sourceGeneration) return@launch
@@ -452,7 +523,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                         library = savedState.libraries[normalized.id].orEmptyLibrary(),
                     )
                 }
-                persist()
+                persist(writeCredentials = true)
                 loadCatalog(MediaKind.LIVE)
                 if (_state.value.pendingPairInvite != null) _state.update { it.copy(pageError = "Choose the profile to send to the TV.") }
             }.onFailure { error ->
@@ -483,10 +554,14 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             libraries = savedState.libraries - id,
         )
         _state.update { it.copy(profiles = profiles, activeSourceId = activeId, pageError = null) }
-        persist()
+        persist(writeCredentials = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            CatalogDiskCache(catalogCacheDir).clearSource(id)
+        }
         if (activeId == null) {
             sourceGeneration++
             catalogJob?.cancel()
+            xmltvJob?.cancel()
             repository = null
             LiveFormatCache.shared.clear()
             _state.update { it.copy(sections = emptyMap(), visibleEntries = emptyList(), library = LibraryState(), destination = BruTvDestination.LIVE, maxConnections = 1) }
@@ -497,25 +572,101 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openEntry(entry: MediaEntry) {
         detailJob?.cancel()
-        _state.update { it.copy(page = BruTvPage.DETAIL, selectedEntry = entry, episodes = emptyList(), programmes = emptyList(), pageError = null) }
+        val initialProgrammes = if (entry.kind == MediaKind.LIVE) cachedProgrammes(entry) else emptyList()
+        _state.update {
+            it.copy(
+                page = BruTvPage.DETAIL,
+                selectedEntry = entry,
+                selectedMovieDetails = null,
+                episodes = emptyList(),
+                programmes = initialProgrammes,
+                pageError = null,
+            )
+        }
         when (entry.kind) {
             MediaKind.SERIES -> detailJob = viewModelScope.launch {
                 val selectedRepository = repository ?: return@launch
                 val generation = sourceGeneration
                 _state.update { it.copy(busy = true) }
-                val result = runCatching { withContext(Dispatchers.IO) { selectedRepository.episodes(entry) } }
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        selectedRepository.episodes(entry).sortedWith(
+                            compareBy({ it.seasonNumber ?: Int.MAX_VALUE }, { it.episodeNumber ?: Int.MAX_VALUE }, { it.name }),
+                        )
+                    }
+                }
                 if (generation != sourceGeneration || _state.value.selectedEntry?.id != entry.id) return@launch
                 _state.update { it.copy(busy = false, episodes = result.getOrDefault(emptyList()), pageError = result.exceptionOrNull()?.let(::safeMessage)) }
+            }
+            MediaKind.MOVIE -> detailJob = viewModelScope.launch {
+                val selectedRepository = repository ?: return@launch
+                val generation = sourceGeneration
+                val result = runCatching { withContext(Dispatchers.IO) { selectedRepository.vodInfo(entry) } }
+                if (generation == sourceGeneration && _state.value.selectedEntry?.id == entry.id) {
+                    val details = result.getOrNull()
+                    if (details != null) {
+                        _state.update { it.copy(selectedMovieDetails = details) }
+                    }
+                }
             }
             MediaKind.LIVE -> detailJob = viewModelScope.launch {
                 val selectedRepository = repository ?: return@launch
                 val generation = sourceGeneration
                 val result = runCatching { withContext(Dispatchers.IO) { selectedRepository.guide(entry) } }
                 if (generation == sourceGeneration && _state.value.selectedEntry?.id == entry.id) {
-                    _state.update { it.copy(programmes = result.getOrDefault(emptyList())) }
+                    val fetched = result.getOrDefault(emptyList())
+                    if (fetched.isNotEmpty()) {
+                        _state.update { it.copy(programmes = fetched, epgRevision = it.epgRevision + 1) }
+                    } else if (initialProgrammes.isEmpty()) {
+                        // Fall back to XMLTV if short EPG returned nothing.
+                        runCatching { withContext(Dispatchers.IO) { selectedRepository.loadXmltv() } }
+                        if (generation == sourceGeneration && _state.value.selectedEntry?.id == entry.id) {
+                            _state.update {
+                                it.copy(
+                                    programmes = selectedRepository.cachedGuide(entry),
+                                    epgRevision = it.epgRevision + 1,
+                                )
+                            }
+                        }
+                    }
                 }
             }
             else -> Unit
+        }
+    }
+
+    fun cachedProgrammes(channel: MediaEntry): List<Programme> =
+        repository?.cachedGuide(channel).orEmpty()
+
+    fun requestChannelGuide(channel: MediaEntry) {
+        if (channel.kind != MediaKind.LIVE) return
+        val selectedRepository = repository ?: return
+        val generation = sourceGeneration
+        viewModelScope.launch(Dispatchers.IO) {
+            val loaded = runCatching { selectedRepository.guide(channel) }.getOrDefault(emptyList())
+            if (loaded.isNotEmpty()) {
+                withContext(Dispatchers.Main.immediate) {
+                    if (generation == sourceGeneration) {
+                        _state.update { it.copy(epgRevision = it.epgRevision + 1) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun loadXmltvInBackground() {
+        val selectedRepository = repository ?: return
+        if (xmltvJob?.isActive == true) return
+        val generation = sourceGeneration
+        xmltvJob = viewModelScope.launch(Dispatchers.IO) {
+            val guide = runCatching { selectedRepository.loadXmltv() }.getOrNull()
+            if (guide != null && !guide.isEmpty) {
+                withContext(Dispatchers.Main.immediate) {
+                    if (generation == sourceGeneration) {
+                        _state.update { it.copy(epgRevision = it.epgRevision + 1) }
+                    }
+                }
+            }
         }
     }
 
@@ -525,13 +676,23 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         recordRecent(entry)
-        val queue = if (entry.kind == MediaKind.EPISODE) _state.value.episodes.filter { it.streamUrl.isNotBlank() }
-        else _state.value.visibleEntries.filter { it.streamUrl.isNotBlank() }
-        _state.update { it.copy(playingEntry = entry, playQueue = if (entry in queue) queue else listOf(entry), pageError = null) }
+        val snapshot = _state.value
+        val queue = if (entry.kind == MediaKind.EPISODE) {
+            val playableEpisodes = snapshot.episodes.filter { it.streamUrl.isNotBlank() }
+            if (playableEpisodes.any { it.id == entry.id }) playableEpisodes else listOf(entry)
+        } else {
+            val visible = snapshot.visibleEntries
+            val inVisible = visible.isNotEmpty() &&
+                visible.first().kind == entry.kind &&
+                (snapshot.activeSection.entriesById.containsKey(entry.id) || visible.size <= 32 && visible.any { it.id == entry.id })
+            if (inVisible) visible else listOf(entry)
+        }
+        _state.update { it.copy(playingEntry = entry, playQueue = queue, pageError = null) }
     }
 
-    fun closePlayer(positionMs: Long) {
-        _state.value.playingEntry?.let { updateResumePosition(it, positionMs, force = true) }
+    fun closePlayer(entry: MediaEntry?, positionMs: Long, durationMs: Long = 0L) {
+        val target = entry ?: _state.value.playingEntry
+        target?.let { updateResumePosition(it, positionMs, durationMs, completed = false, force = true) }
         _state.update { it.copy(playingEntry = null) }
     }
 
@@ -540,8 +701,18 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(playingEntry = entry) }
     }
 
-    fun savePosition(entry: MediaEntry, positionMs: Long, force: Boolean = false) =
-        updateResumePosition(entry, positionMs, force = force)
+    fun savePosition(
+        entry: MediaEntry,
+        positionMs: Long,
+        durationMs: Long = 0L,
+        force: Boolean = false,
+    ) = updateResumePosition(entry, positionMs, durationMs, completed = false, force = force)
+
+    fun onPlaybackEnded(entry: MediaEntry) {
+        updateResumePosition(entry, positionMs = 0L, durationMs = 0L, completed = true, force = true)
+    }
+
+    fun resumePositionFor(entryId: String): Long = _state.value.library.resumePositions[entryId] ?: 0L
 
     fun isFavorite(id: String): Boolean = id in _state.value.library.favoriteIds
 
@@ -556,26 +727,75 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         if (key !in setOf("ultra_low", "balanced", "high_stability")) return
         savedState = savedState.copy(bufferProfile = key)
         _state.update { it.copy(bufferProfile = key) }
-        persist()
+        persist(writeCredentials = false)
     }
 
     fun setShowStats(enabled: Boolean) {
         savedState = savedState.copy(showStats = enabled)
         _state.update { it.copy(showStats = enabled) }
-        persist()
+        persist(writeCredentials = false)
     }
 
     fun setLanguage(lang: String) {
         if (lang !in setOf("system", "pt", "en")) return
         savedState = savedState.copy(language = lang)
         _state.update { it.copy(language = lang) }
-        persist()
+        persist(writeCredentials = false)
+    }
+
+    fun setLiveRewind(enabled: Boolean) {
+        savedState = savedState.copy(liveRewind = enabled)
+        _state.update { it.copy(liveRewind = enabled) }
+        hoistedPlaybackController?.liveRewind = enabled
+        persist(writeCredentials = false)
+    }
+
+    fun setDefaultAspectMode(mode: String) {
+        if (mode !in setOf("fit", "zoom", "fill")) return
+        savedState = savedState.copy(defaultAspectMode = mode)
+        _state.update { it.copy(defaultAspectMode = mode) }
+        persist(writeCredentials = false)
+    }
+
+    fun setAutoFrameRate(enabled: Boolean) {
+        savedState = savedState.copy(autoFrameRate = enabled)
+        _state.update { it.copy(autoFrameRate = enabled) }
+        hoistedPlaybackController?.applyPreferences(
+            preferredAudioLanguage = savedState.preferredAudioLanguage,
+            preferredSubtitleLanguage = savedState.preferredSubtitleLanguage,
+            subtitlesEnabled = savedState.subtitlesEnabled,
+            autoFrameRate = enabled,
+        )
+        persist(writeCredentials = false)
+    }
+
+    fun setTrackPreferences(
+        audioLanguage: String?,
+        subtitleLanguage: String?,
+        subtitlesEnabled: Boolean,
+    ) {
+        val cleanAudio = audioLanguage?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanSub = subtitleLanguage?.trim()?.takeIf { it.isNotEmpty() }
+        savedState = savedState.copy(
+            preferredAudioLanguage = cleanAudio,
+            preferredSubtitleLanguage = cleanSub,
+            subtitlesEnabled = subtitlesEnabled,
+        )
+        _state.update {
+            it.copy(
+                preferredAudioLanguage = cleanAudio,
+                preferredSubtitleLanguage = cleanSub,
+                subtitlesEnabled = subtitlesEnabled,
+            )
+        }
+        persist(writeCredentials = false)
     }
 
     fun retryPersistence() {
         if (!storeReady) return
         val latest = latestPersistenceRequest ?: return
-        val next = latest.copy(revision = ++persistenceRevision)
+        credentialsDirty.set(true)
+        val next = latest.copy(revision = ++persistenceRevision, showSavingIndicator = true)
         latestPersistenceRequest = next
         _state.update { it.copy(saving = true, persistenceError = null, persistenceRetryable = false) }
         persistenceQueue.trySend(next)
@@ -595,6 +815,12 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearPairingInvite() = _state.update { it.copy(pendingPairInvite = null, pageError = null) }
 
+    private fun newRepository(source: SourceConfig): CatalogRepository = CatalogRepository(
+        source = source,
+        localPlaylistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists"),
+        cacheDirectory = catalogCacheDir,
+    )
+
     private fun activate(source: SourceConfig, persist: Boolean) {
         cancelPlaylistImport()
         connectJob?.cancel()
@@ -603,11 +829,10 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         val generation = sourceGeneration
         catalogJob?.cancel()
         detailJob?.cancel()
+        xmltvJob?.cancel()
         LiveFormatCache.shared.clear()
-        repository = CatalogRepository(
-            source,
-            localPlaylistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists"),
-        )
+        val currentRepository = newRepository(source)
+        repository = currentRepository
         val library = savedState.libraries[source.id].orEmptyLibrary()
         if (persist) savedState = savedState.copy(activeSourceId = source.id)
         _state.update {
@@ -619,6 +844,7 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                 visibleEntries = emptyList(),
                 selectedCategoryId = null,
                 selectedEntry = null,
+                selectedMovieDetails = null,
                 episodes = emptyList(),
                 programmes = emptyList(),
                 maxConnections = 1,
@@ -627,13 +853,26 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                 catalogError = null,
             )
         }
-        if (persist) persist()
+        if (persist) persist(writeCredentials = true)
         catalogJob = viewModelScope.launch {
-            val currentRepository = repository ?: return@launch
+            // Stale-while-revalidate: paint cached channels immediately, then refresh in background.
+            val cached = runCatching { currentRepository.readDiskCache(MediaKind.LIVE) }.getOrNull()
+            if (generation != sourceGeneration) return@launch
+            val showedCache = cached != null && cached.section.entries.isNotEmpty()
+            if (cached != null && cached.section.entries.isNotEmpty()) {
+                _state.update {
+                    it.copy(
+                        catalogLoading = false,
+                        sections = it.sections + (MediaKind.LIVE to cached.section),
+                        catalogError = null,
+                    )
+                }
+                recomputeVisible()
+            }
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     currentRepository.authenticate()
-                    currentRepository.load(MediaKind.LIVE)
+                    currentRepository.load(MediaKind.LIVE, force = showedCache)
                 }
             }
             if (generation != sourceGeneration) return@launch
@@ -649,17 +888,19 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
                 recomputeVisible()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
-                _state.update { it.copy(catalogLoading = false, catalogError = safeMessage(error)) }
+                _state.update {
+                    it.copy(
+                        catalogLoading = false,
+                        catalogError = if (showedCache) null else safeMessage(error),
+                    )
+                }
             }
         }
     }
 
     private fun loadCatalog(kind: MediaKind, force: Boolean = false) {
         val source = _state.value.activeSource ?: return
-        val selectedRepository = repository ?: CatalogRepository(
-            source,
-            localPlaylistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists"),
-        ).also { repository = it }
+        val selectedRepository = repository ?: newRepository(source).also { repository = it }
         if (!force && kind in _state.value.sections) {
             recomputeVisible()
             return
@@ -668,14 +909,40 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         catalogJob?.cancel()
         _state.update { it.copy(catalogLoading = true, catalogError = null) }
         catalogJob = viewModelScope.launch {
-            val result = runCatching { withContext(Dispatchers.IO) { selectedRepository.load(kind) } }
+            var showedCache = false
+            if (!force) {
+                val cached = runCatching { selectedRepository.readDiskCache(kind) }.getOrNull()
+                if (generation != sourceGeneration || _state.value.destination.browseKindOrNull(_state.value.libraryKind) != kind) return@launch
+                if (cached != null && cached.section.entries.isNotEmpty()) {
+                    showedCache = true
+                    _state.update {
+                        it.copy(
+                            catalogLoading = false,
+                            sections = it.sections + (kind to cached.section),
+                            catalogError = null,
+                        )
+                    }
+                    recomputeVisible()
+                    if (!cached.isStale) return@launch
+                }
+            }
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    selectedRepository.load(kind, force = force || showedCache)
+                }
+            }
             if (generation != sourceGeneration || _state.value.destination.browseKindOrNull(_state.value.libraryKind) != kind) return@launch
             result.onSuccess { section ->
                 _state.update { it.copy(catalogLoading = false, sections = it.sections + (kind to section), catalogError = null) }
                 recomputeVisible()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
-                _state.update { it.copy(catalogLoading = false, catalogError = safeMessage(error)) }
+                _state.update {
+                    it.copy(
+                        catalogLoading = false,
+                        catalogError = if (showedCache) null else safeMessage(error),
+                    )
+                }
             }
         }
     }
@@ -688,26 +955,50 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         searchJob?.cancel()
         val snapshot = _state.value
         val destination = snapshot.destination
-        val sectionEntries = snapshot.activeSection.entries
+        val section = snapshot.activeSection
         val favoriteIds = snapshot.library.favoriteIds
         val recentIds = snapshot.library.recentIds
         val query = snapshot.searchText.trim().lowercase(Locale.ROOT)
         val categoryId = snapshot.selectedCategoryId
         val quality = snapshot.qualityFilter
         val onlyFavorites = snapshot.onlyFavorites
+
+        // Fast-path O(1) slice when no search/quality/favorites filters are active.
+        if (destination !in setOf(BruTvDestination.FAVORITES, BruTvDestination.RECENTS) &&
+            query.isBlank() &&
+            quality == null &&
+            !onlyFavorites
+        ) {
+            val direct = if (categoryId == null) section.entries else section.entriesByCategory[categoryId].orEmpty()
+            _state.update { it.copy(visibleEntries = direct) }
+            return
+        }
+
         searchJob = viewModelScope.launch(Dispatchers.Default) {
-            val baseEntries = when (destination) {
-                BruTvDestination.FAVORITES -> sectionEntries.filter { it.id in favoriteIds }
-                BruTvDestination.RECENTS -> sectionEntries.associateBy { it.id }
-                    .let { index -> recentIds.mapNotNull(index::get) }
-                else -> sectionEntries
+            val baseEntries: List<MediaEntry> = when (destination) {
+                BruTvDestination.FAVORITES -> {
+                    val sourceList = if (categoryId != null) section.entriesByCategory[categoryId].orEmpty() else section.entries
+                    sourceList.filter { it.id in favoriteIds }
+                }
+                BruTvDestination.RECENTS -> {
+                    // O(R) lookup via precomputed entriesById instead of O(N) HashMap rebuild.
+                    recentIds.mapNotNull(section.entriesById::get)
+                }
+                else -> if (categoryId != null) section.entriesByCategory[categoryId].orEmpty() else section.entries
             }
-            val result = baseEntries.asSequence()
-                .filter { categoryId == null || it.categoryId == categoryId }
-                .filter { query.isBlank() || it.searchableName.contains(query) }
-                .filter { quality == null || it.quality == quality }
-                .filter { !onlyFavorites || it.id in favoriteIds }
-                .toList()
+            val result = if (query.isBlank() && quality == null && !onlyFavorites && (destination != BruTvDestination.RECENTS || categoryId == null)) {
+                baseEntries
+            } else {
+                val filtered = ArrayList<MediaEntry>(minOf(baseEntries.size, 256))
+                for (entry in baseEntries) {
+                    if (categoryId != null && entry.categoryId != categoryId) continue
+                    if (query.isNotEmpty() && !entry.searchableName.contains(query)) continue
+                    if (quality != null && entry.quality != quality) continue
+                    if (onlyFavorites && entry.id !in favoriteIds) continue
+                    filtered.add(entry)
+                }
+                filtered
+            }
             withContext(Dispatchers.Main.immediate) {
                 if (request == filterGeneration.get()) _state.update { it.copy(visibleEntries = result) }
             }
@@ -720,44 +1011,81 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         updateLibrary(old.copy(recentIds = recent))
     }
 
-    private fun updateResumePosition(entry: MediaEntry, positionMs: Long, force: Boolean = false) {
+    private fun updateResumePosition(
+        entry: MediaEntry,
+        positionMs: Long,
+        durationMs: Long,
+        completed: Boolean,
+        force: Boolean,
+    ) {
         if (entry.kind == MediaKind.LIVE) return
+        val currentMap = _state.value.library.resumePositions
         val clamped = positionMs.coerceAtLeast(0L)
-        val previous = _state.value.library.resumePositions[entry.id]
-        if (previous == clamped) return
-        if (!force && previous != null && abs(clamped - previous) < RESUME_PERSIST_MIN_DELTA_MS) return
-        val updated = _state.value.library.copy(resumePositions = _state.value.library.resumePositions + (entry.id to clamped))
-        updateLibrary(updated)
+        val previous = currentMap[entry.id]
+        val isCompletion = completed || (durationMs > 0L && clamped * 100L >= durationMs * 95L)
+        if (!isCompletion) {
+            if (previous == clamped) return
+            if (!force && previous != null && abs(clamped - previous) < RESUME_PERSIST_MIN_DELTA_MS) return
+        } else if (previous == null) {
+            return
+        }
+        val nextPositions = updateResumePositions(
+            existing = currentMap,
+            entryId = entry.id,
+            positionMs = clamped,
+            durationMs = durationMs,
+            completed = completed,
+        )
+        if (nextPositions === currentMap) return
+        updateLibrary(_state.value.library.copy(resumePositions = nextPositions))
     }
 
     private fun updateLibrary(library: LibraryState) {
         val sourceId = _state.value.activeSourceId ?: return
         savedState = savedState.copy(libraries = savedState.libraries + (sourceId to library))
         _state.update { it.copy(library = library) }
-        persist()
+        persist(writeCredentials = false)
     }
 
-    private fun persist() {
+    private fun persist(writeCredentials: Boolean) {
         savedState = savedState.copy(
             profiles = _state.value.profiles,
             activeSourceId = _state.value.activeSourceId,
             bufferProfile = _state.value.bufferProfile,
             showStats = _state.value.showStats,
             language = _state.value.language,
+            liveRewind = _state.value.liveRewind,
+            preferredAudioLanguage = _state.value.preferredAudioLanguage,
+            preferredSubtitleLanguage = _state.value.preferredSubtitleLanguage,
+            subtitlesEnabled = _state.value.subtitlesEnabled,
+            defaultAspectMode = _state.value.defaultAspectMode,
+            autoFrameRate = _state.value.autoFrameRate,
         )
         if (!storeReady) {
-            _state.update {
-                it.copy(
-                    saving = false,
-                    persistenceError = "Saved profiles could not be read. BruTV has kept the encrypted file unchanged; profile changes in this session cannot be saved.",
-                    persistenceRetryable = false,
-                )
+            if (writeCredentials) {
+                _state.update {
+                    it.copy(
+                        saving = false,
+                        persistenceError = "Saved profiles could not be read. BruTV has kept the encrypted file unchanged; profile changes in this session cannot be saved.",
+                        persistenceRetryable = false,
+                    )
+                }
             }
             return
         }
-        val request = PersistenceRequest(++persistenceRevision, savedState, pendingLocalPlaylistDeletes.toSet())
+        if (writeCredentials) {
+            credentialsDirty.set(true)
+        }
+        val request = PersistenceRequest(
+            revision = ++persistenceRevision,
+            state = savedState,
+            localPlaylistDeleteUrls = pendingLocalPlaylistDeletes.toSet(),
+            showSavingIndicator = writeCredentials,
+        )
         latestPersistenceRequest = request
-        _state.update { it.copy(saving = true, persistenceError = null, persistenceRetryable = false) }
+        if (writeCredentials) {
+            _state.update { it.copy(saving = true, persistenceError = null, persistenceRetryable = false) }
+        }
         persistenceQueue.trySend(request)
     }
 
@@ -782,7 +1110,10 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun deleteImportedPlaylist(source: SourceConfig) {
         if (source.type == SourceType.M3U && source.playlistUrl.startsWith("file:")) {
-            deletePrivatePlaylistCopy(source.playlistUrl)
+            val url = source.playlistUrl
+            viewModelScope.launch(Dispatchers.IO) {
+                deletePrivatePlaylistCopy(url)
+            }
         }
     }
 
@@ -792,9 +1123,8 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         val playlistDirectory = File(getApplication<Application>().noBackupFilesDir, "playlists").canonicalFile
         val candidate = File(uri).canonicalFile
         val uuidName = candidate.name.removeSuffix(".m3u")
-        val uuidPattern = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
         if (candidate.parentFile != playlistDirectory || !candidate.name.endsWith(".m3u") ||
-            !uuidPattern.matches(uuidName) || runCatching { UUID.fromString(uuidName) }.isFailure
+            !UUID_PATTERN.matches(uuidName) || runCatching { UUID.fromString(uuidName) }.isFailure
         ) {
             return@runCatching false
         }
@@ -808,13 +1138,17 @@ class BruTvViewModel(application: Application) : AndroidViewModel(application) {
         playlistImportJob?.cancel()
         searchDebounceJob?.cancel()
         searchJob?.cancel()
+        xmltvJob?.cancel()
         cancelConnect()
+        hoistedPlaybackController?.release()
+        hoistedPlaybackController = null
         persistenceQueue.close()
         super.onCleared()
     }
 
     companion object {
         internal const val RESUME_PERSIST_MIN_DELTA_MS = 10_000L
+        private val UUID_PATTERN = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
     }
 }
 
@@ -846,14 +1180,12 @@ private fun SourceConfig.toDraft() = LoginDraft(
 )
 
 private fun LibraryState?.orEmptyLibrary() = this ?: LibraryState()
-private fun SavedState.librariesFor(sourceId: String?): LibraryState = sourceId?.let { libraries[it] }.orEmptyLibrary()
 private fun BruTvDestination.toMediaKindOrNull(): MediaKind? = when (this) {
     BruTvDestination.LIVE -> MediaKind.LIVE
     BruTvDestination.MOVIES -> MediaKind.MOVIE
     BruTvDestination.SERIES -> MediaKind.SERIES
     else -> null
 }
-private fun BruTvDestination.toMediaKind(): MediaKind = toMediaKindOrNull() ?: MediaKind.LIVE
 private fun BruTvDestination.isLibrary(): Boolean = this == BruTvDestination.FAVORITES || this == BruTvDestination.RECENTS
 private fun BruTvDestination.browseKind(libraryKind: MediaKind): MediaKind = toMediaKindOrNull() ?: if (isLibrary()) libraryKind else MediaKind.LIVE
 private fun BruTvDestination.browseKindOrNull(libraryKind: MediaKind): MediaKind? = toMediaKindOrNull() ?: if (isLibrary()) libraryKind else null

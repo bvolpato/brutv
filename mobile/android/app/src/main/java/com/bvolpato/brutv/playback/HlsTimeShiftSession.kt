@@ -2,6 +2,8 @@ package com.bvolpato.brutv.playback
 
 import android.os.Looper
 import com.bvolpato.brutv.data.CatalogRepository
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.File
@@ -11,6 +13,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.util.Collections
 import java.util.Locale
 import java.util.UUID
@@ -83,7 +86,9 @@ internal class HlsTimeShiftSession private constructor(
     private val retired = ArrayDeque<Retired>()
     private val maps = mutableMapOf<String, Resource>()
     private val pinnedMaps = mutableSetOf<Resource>()
+    private val resourceIndex = HashMap<String, Resource>(64)
     private val readLeases = mutableMapOf<String, Int>()
+    private var cachedPlaylistBytes: ByteArray? = null
     private val server = ServerSocket()
     private val token = UUID.randomUUID().toString()
     private var resourceNumber = 0L
@@ -159,6 +164,7 @@ internal class HlsTimeShiftSession private constructor(
         synchronized(lock) {
             nextLocalSequence = selected.first().sequence
             localDiscontinuity = selected.first().discontinuitySequence
+            cachedPlaylistBytes = null
         }
         selected.forEach { append(it, forceDiscontinuity = false) }
         lastAdvanceElapsedMs = nowElapsedMs()
@@ -168,7 +174,7 @@ internal class HlsTimeShiftSession private constructor(
     }
 
     private fun selectStartupSegments(all: List<RecordedSegmentSpec>, target: Int): List<RecordedSegmentSpec> {
-        // Keep initial download fast (1-2 segments for typical 4-10s IPTV segments, up to 3s for 1s segments).
+        // Fast single-segment startup for typical 4-10s IPTV segments, up to 3s for 1s test segments.
         val startupTargetMs = minOf(STARTUP_TARGET_DURATION_MS, target * 3_000L)
         var duration = 0L
         val start = all.indices.reversed().firstOrNull { index ->
@@ -221,7 +227,10 @@ internal class HlsTimeShiftSession private constructor(
                     throw UnsupportedTimeShift("The live segments are too long for the recording limit.")
                 }
                 synchronized(lock) {
-                    targetDuration = updatedTarget
+                    if (targetDuration != updatedTarget) {
+                        targetDuration = updatedTarget
+                        cachedPlaylistBytes = null
+                    }
                     providerTargetDuration = playlist.targetDuration
                 }
                 val previous = synchronized(lock) { lastUpstreamSequence }
@@ -229,7 +238,6 @@ internal class HlsTimeShiftSession private constructor(
                 if (previous != null && latestSeq < previous) {
                     val backwardDelta = previous - latestSeq
                     if (backwardDelta <= MAX_EDGE_SKEW_SEGMENTS) {
-                        // Minor CDN edge skew: treat as unchanged and let stuck detection handle persistent skew.
                         if (playlist.ended) {
                             stopRecording("The broadcast ended. Its saved history is still available.")
                             return
@@ -248,7 +256,6 @@ internal class HlsTimeShiftSession private constructor(
                         failures = 0
                         continue
                     }
-                    // Genuine upstream source restart: bridge cleanly with a discontinuity.
                     val restarted = selectStartupSegments(playlist.segments, updatedTarget)
                     restarted.forEachIndexed { index, spec ->
                         append(spec, forceDiscontinuity = index == 0)
@@ -287,6 +294,7 @@ internal class HlsTimeShiftSession private constructor(
                         recording = false
                         ended = true
                         notice = "The broadcast ended. Its saved history is still available."
+                        cachedPlaylistBytes = null
                     }
                     publishSnapshotLocked()
                 }
@@ -304,7 +312,6 @@ internal class HlsTimeShiftSession private constructor(
                     stopRecording("Recording stopped because the live source returned HTTP ${error.statusCode}. Go live to reconnect.")
                     return
                 }
-                // Re-resolve from the original URL so expired edge tokens or dead edges recover on retry.
                 upstream = originalUrl
                 val maxFailures = if (error is TimeShiftHttpException && error.statusCode == 403) 2 else 3
                 if (++failures >= maxFailures) {
@@ -322,6 +329,7 @@ internal class HlsTimeShiftSession private constructor(
             recording = false
             ended = true
             notice = message
+            cachedPlaylistBytes = null
             publishSnapshotLocked()
         }
     }
@@ -332,6 +340,7 @@ internal class HlsTimeShiftSession private constructor(
             synchronized(lock) { maps[uri]?.also(pinnedMaps::add) } ?: download(uri, ".mp4").also {
                 synchronized(lock) {
                     maps[uri] = it
+                    resourceIndex[it.name] = it
                     pinnedMaps.add(it)
                 }
             }
@@ -354,6 +363,9 @@ internal class HlsTimeShiftSession private constructor(
                 val assignedSeq = nextLocalSequence++
                 lastUpstreamSequence = spec.sequence
                 lastUpstreamDiscontinuity = spec.discontinuitySequence
+                if (resource != null) {
+                    resourceIndex[resource.name] = resource
+                }
                 segments.addLast(
                     Segment(
                         spec = spec,
@@ -369,6 +381,7 @@ internal class HlsTimeShiftSession private constructor(
                 windowDurationMs += spec.durationMs
                 while (segments.size > 3 && (windowDurationMs > limits.durationMs || segments.size > limits.segments)) retireFirst()
                 expireRetired()
+                cachedPlaylistBytes = null
                 publishSnapshotLocked()
             }
         } finally {
@@ -497,6 +510,7 @@ internal class HlsTimeShiftSession private constructor(
         val removed = segments.removeFirst()
         windowDurationMs = (windowDurationMs - removed.spec.durationMs).coerceAtLeast(0L)
         retired.addLast(Retired(removed, System.currentTimeMillis() + maxOf(5_000, targetDuration * 2_000L)))
+        cachedPlaylistBytes = null
     }
 
     private fun expireRetired() {
@@ -525,14 +539,16 @@ internal class HlsTimeShiftSession private constructor(
     }
 
     private fun deleteResource(resource: Resource) {
+        resourceIndex.remove(resource.name)
         if (resource.file.delete() || !resource.file.exists()) diskBytes = (diskBytes - resource.bytes).coerceAtLeast(0)
     }
 
-    private fun playlist(): ByteArray = synchronized(lock) {
-        buildString {
+    private fun playlistLocked(): ByteArray {
+        cachedPlaylistBytes?.let { return it }
+        val built = buildString {
             append("#EXTM3U\n#EXT-X-VERSION:$version\n#EXT-X-TARGETDURATION:$targetDuration\n")
             if (independentSegments) append("#EXT-X-INDEPENDENT-SEGMENTS\n")
-            val first = segments.firstOrNull() ?: return@synchronized ByteArray(0)
+            val first = segments.firstOrNull() ?: return ByteArray(0)
             append("#EXT-X-MEDIA-SEQUENCE:${first.localSequence}\n#EXT-X-DISCONTINUITY-SEQUENCE:${first.localDiscontinuity}\n")
             var discontinuity = first.localDiscontinuity
             var initialization: Resource? = null
@@ -555,6 +571,8 @@ internal class HlsTimeShiftSession private constructor(
             }
             if (ended) append("#EXT-X-ENDLIST\n")
         }.toByteArray(Charsets.UTF_8)
+        cachedPlaylistBytes = built
+        return built
     }
 
     private fun serve() {
@@ -589,110 +607,148 @@ internal class HlsTimeShiftSession private constructor(
     }
 
     private fun respond(socket: Socket) {
-        socket.soTimeout = 3_000
-        val input = socket.getInputStream().buffered()
-        val bytes = ByteArrayOutputStream()
-        var tail = 0
-        while (bytes.size() < 8_192) {
-            val next = input.read()
-            if (next < 0) return
-            bytes.write(next)
-            tail = (tail shl 8) or next
-            if (tail == 0x0d0a0d0a) break
-        }
-        if (tail != 0x0d0a0d0a) return
-        val lines = bytes.toString("US-ASCII").split("\r\n")
-        val request = lines.first().split(' ')
-        val method = request.getOrNull(0)
-        val fullPath = request.getOrNull(1)
-        val path = fullPath?.substringBefore('?')
-        if (method !in setOf("GET", "HEAD") || path?.startsWith("/$token/") != true) {
-            reply(socket, 404, "Not Found", 0)
-            return
-        }
-        val resource = path.removePrefix("/$token/")
-        if (resource == "live.m3u8") {
-            val body = synchronized(lock) {
-                val id = fullPath.orEmpty().substringAfter('?', "").split('&').firstOrNull { it.startsWith("player=") }?.substringAfter('=')
-                playerSources[id]?.let { source ->
-                    if (source.windowStartOffsetMs == null) source.windowStartOffsetMs = segments.firstOrNull()?.startOffsetMs
+        socket.tcpNoDelay = true
+        socket.soTimeout = LOOPBACK_KEEPALIVE_TIMEOUT_MS
+        val input = BufferedInputStream(socket.getInputStream(), 8 * 1024)
+        val output = BufferedOutputStream(socket.getOutputStream(), 64 * 1024)
+        val headerBuffer = ByteArrayOutputStream(512)
+        val copyBuffer = ByteArray(64 * 1024)
+        var requestsServed = 0
+
+        while (!closed.get() && requestsServed < MAX_KEEPALIVE_REQUESTS_PER_SOCKET) {
+            headerBuffer.reset()
+            var tail = 0
+            var eof = false
+            try {
+                while (headerBuffer.size() < 8_192) {
+                    val next = input.read()
+                    if (next < 0) {
+                        eof = true
+                        break
+                    }
+                    headerBuffer.write(next)
+                    tail = (tail shl 8) or next
+                    if (tail == 0x0d0a0d0a) break
                 }
-                playlist()
-            }
-            reply(socket, 200, "OK", body.size.toLong(), "application/vnd.apple.mpegurl")
-            if (method == "GET") socket.getOutputStream().write(body)
-            return
-        }
-        val stored = synchronized(lock) {
-            (segments.mapNotNull { it.resource } + maps.values + retired.mapNotNull { it.segment.resource })
-                .firstOrNull { it.name == resource }?.takeIf { it.file.isFile }?.also {
-                    readLeases[it.name] = (readLeases[it.name] ?: 0) + 1
-                }
-        }
-        if (stored == null) {
-            // Old native playlist requests can outlive the bounded grace period.
-            reply(socket, 410, "Gone", 0)
-            return
-        }
-        try {
-            val file = stored.file
-            val length = file.length()
-            val range = lines.firstOrNull { it.startsWith("Range:", true) }?.substringAfter(':')?.trim()
-            val requested = range?.let { Regex("bytes=(\\d+)-(\\d*)").matchEntire(it) }
-            val start = requested?.groupValues?.get(1)?.toLongOrNull() ?: 0
-            val end = requested?.groupValues?.get(2)?.toLongOrNull() ?: (length - 1)
-            if (range != null && (requested == null || start !in 0 until length || end < start || end >= length)) {
-                reply(socket, 416, "Range Not Satisfiable", 0)
+            } catch (_: SocketTimeoutException) {
                 return
             }
-            val count = end - start + 1
-            reply(
-                socket,
-                if (range == null) 200 else 206,
-                if (range == null) "OK" else "Partial Content",
-                count,
-                extra = if (range == null) "Accept-Ranges: bytes\r\n" else "Accept-Ranges: bytes\r\nContent-Range: bytes $start-$end/$length\r\n",
-            )
-            if (method == "GET") file.inputStream().use { source ->
-                var skipped = 0L
-                while (skipped < start) {
-                    val progress = source.skip(start - skipped)
-                    if (progress <= 0) throw IOException("The live buffer range could not be read.")
-                    skipped += progress
+            if (eof || tail != 0x0d0a0d0a) return
+            requestsServed++
+
+            val lines = headerBuffer.toString("US-ASCII").split("\r\n")
+            val request = lines.first().split(' ')
+            val method = request.getOrNull(0)
+            val fullPath = request.getOrNull(1)
+            val protocol = request.getOrNull(2).orEmpty()
+            val connectionHeader = lines.firstOrNull { it.startsWith("Connection:", ignoreCase = true) }
+                ?.substringAfter(':')?.trim()?.lowercase(Locale.ROOT)
+            val keepAlive = when {
+                connectionHeader == "close" -> false
+                connectionHeader == "keep-alive" -> true
+                protocol.equals("HTTP/1.1", ignoreCase = true) -> true
+                else -> false
+            } && !closed.get() && requestsServed < MAX_KEEPALIVE_REQUESTS_PER_SOCKET
+
+            val path = fullPath?.substringBefore('?')
+            if (method !in ALLOWED_METHODS || path?.startsWith("/$token/") != true) {
+                reply(output, 404, "Not Found", 0, keepAlive = false)
+                output.flush()
+                return
+            }
+            val resource = path.removePrefix("/$token/")
+            if (resource == "live.m3u8") {
+                val body = synchronized(lock) {
+                    val id = fullPath.orEmpty().substringAfter('?', "").split('&')
+                        .firstOrNull { it.startsWith("player=") }?.substringAfter('=')
+                    playerSources[id]?.let { source ->
+                        if (source.windowStartOffsetMs == null) source.windowStartOffsetMs = segments.firstOrNull()?.startOffsetMs
+                    }
+                    playlistLocked()
                 }
-                var remaining = count
-                val buffer = ByteArray(64 * 1024)
-                while (remaining > 0) {
-                    val read = source.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (read <= 0) break
-                    socket.getOutputStream().write(buffer, 0, read)
-                    remaining -= read
+                reply(output, 200, "OK", body.size.toLong(), "application/vnd.apple.mpegurl", keepAlive = keepAlive)
+                if (method == "GET") output.write(body)
+                output.flush()
+                if (!keepAlive) return
+                continue
+            }
+
+            val stored = synchronized(lock) {
+                resourceIndex[resource]?.takeIf { it.file.isFile }?.also {
+                    readLeases[it.name] = (readLeases[it.name] ?: 0) + 1
                 }
             }
-        } finally {
-            synchronized(lock) {
-                val remaining = (readLeases[stored.name] ?: 1) - 1
-                if (remaining <= 0) readLeases.remove(stored.name) else readLeases[stored.name] = remaining
-                expireRetired()
-                if (remaining <= 0 && maps.values.any { it.name == stored.name }) {
-                    cleanMaps()
-                }
-                publishSnapshotLocked()
+            if (stored == null) {
+                // Old native playlist requests can outlive the bounded grace period.
+                reply(output, 410, "Gone", 0, keepAlive = false)
+                output.flush()
+                return
             }
+            try {
+                val file = stored.file
+                val length = file.length()
+                val range = lines.firstOrNull { it.startsWith("Range:", true) }?.substringAfter(':')?.trim()
+                val requested = range?.let { RANGE_REGEX.matchEntire(it) }
+                val start = requested?.groupValues?.get(1)?.toLongOrNull() ?: 0
+                val end = requested?.groupValues?.get(2)?.toLongOrNull() ?: (length - 1)
+                if (range != null && (requested == null || start !in 0 until length || end < start || end >= length)) {
+                    reply(output, 416, "Range Not Satisfiable", 0, keepAlive = false)
+                    output.flush()
+                    return
+                }
+                val count = end - start + 1
+                reply(
+                    output,
+                    if (range == null) 200 else 206,
+                    if (range == null) "OK" else "Partial Content",
+                    count,
+                    extra = if (range == null) "Accept-Ranges: bytes\r\n" else "Accept-Ranges: bytes\r\nContent-Range: bytes $start-$end/$length\r\n",
+                    keepAlive = keepAlive,
+                )
+                if (method == "GET") file.inputStream().use { source ->
+                    var skipped = 0L
+                    while (skipped < start) {
+                        val progress = source.skip(start - skipped)
+                        if (progress <= 0) throw IOException("The live buffer range could not be read.")
+                        skipped += progress
+                    }
+                    var remaining = count
+                    while (remaining > 0) {
+                        val read = source.read(copyBuffer, 0, minOf(copyBuffer.size.toLong(), remaining).toInt())
+                        if (read <= 0) break
+                        output.write(copyBuffer, 0, read)
+                        remaining -= read
+                    }
+                }
+                output.flush()
+            } finally {
+                synchronized(lock) {
+                    val remaining = (readLeases[stored.name] ?: 1) - 1
+                    if (remaining <= 0) readLeases.remove(stored.name) else readLeases[stored.name] = remaining
+                    expireRetired()
+                    if (remaining <= 0 && maps.values.any { it.name == stored.name }) {
+                        cleanMaps()
+                    }
+                    publishSnapshotLocked()
+                }
+            }
+            if (!keepAlive) return
         }
     }
 
     private fun reply(
-        socket: Socket,
+        output: BufferedOutputStream,
         code: Int,
         reason: String,
         length: Long,
         type: String = "application/octet-stream",
         extra: String = "",
+        keepAlive: Boolean,
     ) {
-        socket.getOutputStream().write(
+        val conn = if (keepAlive) "Connection: keep-alive\r\nKeep-Alive: timeout=15\r\n" else "Connection: close\r\n"
+        output.write(
             ("HTTP/1.1 $code $reason\r\nContent-Length: $length\r\n" +
-                "Content-Type: $type\r\nCache-Control: no-store\r\nConnection: close\r\n$extra\r\n").toByteArray(Charsets.US_ASCII),
+                "Content-Type: $type\r\nCache-Control: no-store\r\n$conn$extra\r\n").toByteArray(Charsets.US_ASCII),
         )
     }
 
@@ -754,8 +810,10 @@ internal class HlsTimeShiftSession private constructor(
                 retired.clear()
                 maps.clear()
                 pinnedMaps.clear()
+                resourceIndex.clear()
                 readLeases.clear()
                 playerSources.clear()
+                cachedPlaylistBytes = null
                 directory.deleteRecursively()
                 diskBytes = 0
                 windowDurationMs = 0L
@@ -771,16 +829,21 @@ internal class HlsTimeShiftSession private constructor(
     private enum class HeaderSniff { VALID, INVALID, NEED_MORE }
 
     companion object {
-        private const val STARTUP_TARGET_DURATION_MS = 6_000L
+        private const val STARTUP_TARGET_DURATION_MS = 4_000L
         private const val MIN_STUCK_MANIFEST_MS = 20_000L
         private const val MAX_STUCK_RESOLUTIONS = 2
         private const val MAX_BRIDGEABLE_GAP_SEGMENTS = 2L
         private const val MAX_EDGE_SKEW_SEGMENTS = 3L
         private const val MAX_CONCURRENT_LOOPBACK_CONNECTIONS = 16
         private const val LOOPBACK_BACKLOG = 16
+        private const val LOOPBACK_KEEPALIVE_TIMEOUT_MS = 15_000
+        private const val MAX_KEEPALIVE_REQUESTS_PER_SOCKET = 256
         private const val MAX_HEADER_SNIFF_BYTES = 1024
         private const val USABLE_SPACE_CHECK_INTERVAL_BYTES = 1024L * 1024L
         private const val SNAPSHOT_PUBLISH_INTERVAL_MS = 250L
+        private val ALLOWED_METHODS = setOf("GET", "HEAD")
+        private val RANGE_REGEX = Regex("bytes=(\\d+)-(\\d*)")
+        private val SESSION_DIR_REGEX = Regex("session-[a-f0-9-]{36}")
         private val FAST_FAIL_HTTP_STATUSES = setOf(401, 404, 410)
         private val HLS_MAGIC = "#EXTM3U".toByteArray(Charsets.US_ASCII)
 
@@ -850,7 +913,7 @@ internal class HlsTimeShiftSession private constructor(
                     url.toHttpUrl()
                     synchronized(activeDirectories) {
                         root.mkdirs()
-                        root.listFiles()?.filter { it.isDirectory && it.name.matches(Regex("session-[a-f0-9-]{36}")) && it.absolutePath !in activeDirectories }
+                        root.listFiles()?.filter { it.isDirectory && SESSION_DIR_REGEX.matches(it.name) && it.absolutePath !in activeDirectories }
                             ?.forEach(File::deleteRecursively)
                         val directory = File(root, "session-${UUID.randomUUID()}")
                         if (!directory.mkdirs()) throw IOException("The temporary live buffer could not be created.")
