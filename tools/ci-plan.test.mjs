@@ -11,7 +11,7 @@ const flags = (plan) => Object.fromEntries(
   ['core', 'apple', 'android', 'vega', 'ps5', 'ps5_native', 'web', 'release_tools'].map((key) => [key, plan[key]]),
 );
 const none = { core: false, apple: false, android: false, vega: false, ps5: false, ps5_native: false, web: false, release_tools: false };
-const all = Object.fromEntries(Object.keys(none).map((key) => [key, true]));
+const all = { ...Object.fromEntries(Object.keys(none).map((key) => [key, true])), ps5_native: false };
 
 test('empty and documentation or repository metadata changes skip app jobs', () => {
   assert.deepEqual(flags(planChangedPaths([])), none);
@@ -37,7 +37,7 @@ test('platform source paths route only to their platform', () => {
   ]) assert.deepEqual(flags(planChangedPaths([file])), { ...none, [key]: true });
 
   for (const file of ['mobile/ps5/src/player.cpp', 'mobile/ps5/CMakeLists.txt', 'mobile/ps5/tools/bootstrap.sh']) {
-    assert.deepEqual(flags(planChangedPaths([file])), { ...none, ps5: true, ps5_native: true }, file);
+    assert.deepEqual(flags(planChangedPaths([file])), { ...none, ps5: true }, file);
   }
 });
 
@@ -92,7 +92,8 @@ test('manual scopes select their named platform and full selects all six Apple r
   for (const scope of ['android', 'vega', 'web']) {
     assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope })), { ...none, [scope]: true });
   }
-  assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope: 'ps5' })), { ...none, ps5: true, ps5_native: true });
+  assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope: 'ps5' })), { ...none, ps5: true });
+  assert.deepEqual(flags(planChangedPaths(['ignored.swift'], { scope: 'ps5-native' })), { ...none, ps5_native: true });
   assert.deepEqual(flags(planChangedPaths([], { scope: 'apple' })), { ...none, core: true, apple: true });
   const full = planChangedPaths([], { scope: 'full' });
   assert.deepEqual(flags(full), all);

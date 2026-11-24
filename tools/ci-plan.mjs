@@ -33,9 +33,11 @@ const appleFull = [
 ];
 
 const platforms = ['core', 'apple', 'android', 'vega', 'ps5', 'ps5_native', 'web', 'release_tools'];
-const scopes = new Set(['changed', 'apple', 'android', 'vega', 'ps5', 'web', 'full']);
+const scopes = new Set(['changed', 'apple', 'android', 'vega', 'ps5', 'ps5-native', 'web', 'full']);
 const emptyFlags = () => Object.fromEntries(platforms.map((key) => [key, false]));
-const allFlags = () => Object.fromEntries(platforms.map((key) => [key, true]));
+// Native PS5 cross-compile depends on external BlackBearReloaded archives/repos that may be
+// unavailable on hosted runners, so keep ps5_native explicit via workflow_dispatch scope.
+const allFlags = () => ({ ...Object.fromEntries(platforms.map((key) => [key, true])), ps5_native: false });
 const normalize = (file) => file.replaceAll('\\', '/').replace(/^\.\//, '');
 const isDocumentation = (file) => {
   const base = file.split('/').at(-1).toLowerCase();
@@ -56,10 +58,11 @@ export function planChangedPaths(paths, { scope = 'changed' } = {}) {
   if (scope === 'full') {
     Object.assign(flags, allFlags());
     fullAppleUI = true;
+  } else if (scope === 'ps5-native') {
+    flags.ps5_native = true;
   } else if (scope !== 'changed') {
     flags[scope] = true;
     if (scope === 'apple') flags.core = true;
-    if (scope === 'ps5') flags.ps5_native = true;
   } else {
     for (const rawPath of paths) {
       const file = normalize(String(rawPath));
@@ -78,7 +81,6 @@ export function planChangedPaths(paths, { scope = 'changed' } = {}) {
         flags.vega = true;
       } else if (file.startsWith('mobile/ps5/')) {
         flags.ps5 = true;
-        flags.ps5_native = true;
       } else if (file.startsWith('mobile/ios/')) {
         if (/\/linux-tools\//.test(`/${file}`) || /\/tests\//i.test(`/${file}`) || /\.(sh|py)$/i.test(file)) {
           flags.release_tools = true;
