@@ -529,7 +529,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      CCACHE_DIR: ${{ runner.temp }}/ccache-ps5-desktop
       CCACHE_COMPRESS: '1'
       CCACHE_MAXSIZE: '500M'
       CMAKE_C_COMPILER_LAUNCHER: ccache
@@ -557,6 +556,8 @@ jobs:
             libswscale-dev libswresample-dev libcurl4-openssl-dev \
             nlohmann-json3-dev ffmpeg xvfb
       - name: Build and test desktop player
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache-ps5-desktop
         run: |
           ccache -z
           ./mobile/ps5/test.sh
@@ -569,7 +570,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
-      BRUTV_PS5_CACHE: ${{ runner.temp }}/brutv-ps5-cache
       BUILD_JOBS: '4'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -588,6 +588,8 @@ jobs:
           path: ${{ runner.temp }}/brutv-ps5-cache
           key: ps5-native-sdk-${{ runner.os }}-${{ hashFiles('mobile/ps5/tools/bootstrap.sh', 'mobile/ps5/tools/native-tooling.patch', 'mobile/ps5/cmake/PS5Dependencies.cmake') }}
       - name: Build, audit, and package native PS5 title
+        env:
+          BRUTV_PS5_CACHE: ${{ runner.temp }}/brutv-ps5-cache
         run: |
           ./mobile/ps5/tools/build-ps5.sh
           ./mobile/ps5/tools/package-ps5.sh
