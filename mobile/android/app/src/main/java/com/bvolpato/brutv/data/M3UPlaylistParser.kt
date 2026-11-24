@@ -21,6 +21,12 @@ data class PlaylistItem(
     override fun toString(): String = "PlaylistItem(id=$id, name=$name, url=<redacted>, headers=<redacted>)"
 }
 
+/** Parsed playlist items alongside optional header metadata such as `url-tvg`. */
+data class ParsedPlaylist(
+    val items: List<PlaylistItem>,
+    val epgUrl: String? = null,
+)
+
 /**
  * Bounded parser for provider M3U files. Parsing is incremental from an Okio source, so
  * callers do not have to buffer a large playlist in memory before the first entry is built.
@@ -31,10 +37,20 @@ object M3UPlaylistParser {
     const val maxEntries: Int = 250_000
     private const val maxLineBytes = 128L * 1024
 
-    fun parse(text: String): List<PlaylistItem> = parse(Buffer().writeUtf8(text))
+    private val ATTR_REGEX = Regex("([A-Za-z0-9_-]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s,]+))")
+    private val HEADER_NAME_REGEX = Regex("[!#\$%&'*+.^_`|~0-9A-Za-z-]{1,64}")
+    private val VOD_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "webm", "m4v")
+
+    fun parse(text: String): List<PlaylistItem> = parseWithMetadata(Buffer().writeUtf8(text)).items
 
     @Throws(IOException::class)
-    fun parse(source: BufferedSource, checkCancellation: () -> Unit = {}): List<PlaylistItem> {
+    fun parse(source: BufferedSource, checkCancellation: () -> Unit = {}): List<PlaylistItem> =
+        parseWithMetadata(source, checkCancellation).items
+
+    fun parseWithMetadata(text: String): ParsedPlaylist = parseWithMetadata(Buffer().writeUtf8(text))
+
+    @Throws(IOException::class)
+    fun parseWithMetadata(source: BufferedSource, checkCancellation: () -> Unit = {}): ParsedPlaylist {
         val entries = ArrayList<PlaylistItem>()
         val seen = HashSet<String>()
         var consumed = 0L
@@ -42,38 +58,45 @@ object M3UPlaylistParser {
         var fallbackGroup: String? = null
         var headers = linkedMapOf<String, String>()
         var isHlsPlaylist = false
+        var epgUrl: String? = null
 
         while (true) {
             checkCancellation()
             val lineEnd = source.indexOf('\n'.code.toByte(), 0, maxLineBytes + 1)
             val line: String
-            val hasNewline: Boolean
+            val lineByteCount: Long
             if (lineEnd >= 0) {
                 if (lineEnd > maxLineBytes) throw IOException("Playlist contains an overlong line.")
                 line = source.readUtf8(lineEnd)
                 source.skip(1)
-                hasNewline = true
+                lineByteCount = lineEnd + 1L
             } else {
                 // indexOf can stop at its search limit while the upstream still has more bytes.
                 // Requesting the bound plus one distinguishes a final short line from a long one.
                 if (source.request(maxLineBytes + 1) || source.buffer.size > maxLineBytes) {
                     throw IOException("Playlist contains an overlong line.")
                 }
-                if (source.buffer.size == 0L) break
+                val remaining = source.buffer.size
+                if (remaining == 0L) break
                 line = source.readUtf8()
-                hasNewline = false
+                lineByteCount = remaining
             }
-            consumed += line.toByteArray(Charsets.UTF_8).size + if (hasNewline) 1 else 0
+            consumed += lineByteCount
             if (consumed > maxPlaylistBytes) throw IOException("Playlist exceeds the size limit.")
             val trimmed = line.trim()
             if (trimmed.isEmpty()) continue
             if (trimmed.startsWith("#EXT-X-", ignoreCase = true)) isHlsPlaylist = true
 
             when {
+                trimmed.startsWith("#EXTM3U", ignoreCase = true) -> {
+                    if (epgUrl == null && trimmed.length > 7) {
+                        epgUrl = extractHeaderEpgUrl(trimmed.substring(7))
+                    }
+                }
                 trimmed.startsWith("#EXTINF", ignoreCase = true) -> {
                     pendingInfo = trimmed
                     fallbackGroup = null
-                    headers = linkedMapOf()
+                    if (headers.isNotEmpty()) headers = linkedMapOf()
                 }
                 trimmed.startsWith("#EXTGRP:", ignoreCase = true) -> {
                     fallbackGroup = trimmed.substringAfter(':').trim().takeIf(String::isNotEmpty)
@@ -86,10 +109,11 @@ object M3UPlaylistParser {
                 }
                 trimmed.startsWith('#') -> Unit
                 else -> {
-                    if (!isHttpUrl(trimmed)) {
+                    val kind = validateAndClassifyHttpUrl(trimmed)
+                    if (kind == null) {
                         pendingInfo = null
                         fallbackGroup = null
-                        headers = linkedMapOf()
+                        if (headers.isNotEmpty()) headers = linkedMapOf()
                         continue
                     }
                     val info = parseInfo(pendingInfo.orEmpty())
@@ -108,27 +132,49 @@ object M3UPlaylistParser {
                             logo = info.logo.orEmpty(),
                             group = group,
                             tvgId = info.tvgId.orEmpty(),
-                            kind = classify(url),
-                            headers = headers.toMap(),
+                            kind = kind,
+                            headers = if (headers.isEmpty()) emptyMap() else headers.toMap(),
                         )
                     }
                     pendingInfo = null
                     fallbackGroup = null
-                    headers = linkedMapOf()
+                    if (headers.isNotEmpty()) headers = linkedMapOf()
                 }
             }
         }
         if (isHlsPlaylist) throw IOException("Playlist is an HLS stream playlist, not an IPTV channel list.")
-        return entries
+        return ParsedPlaylist(items = entries, epgUrl = epgUrl)
     }
 
     /** FNV-1a 64-bit ID, stable across application launches and JVM processes. */
     fun stableId(value: String): String {
         var hash = -0x340d631b7bdddcdbL // 0xcbf29ce484222325
-        value.toByteArray(Charsets.UTF_8).forEach { byte ->
-            hash = (hash xor (byte.toLong() and 0xff)) * 0x100000001b3L
+        var isAscii = true
+        for (i in 0 until value.length) {
+            val code = value[i].code
+            if (code >= 0x80) {
+                isAscii = false
+                break
+            }
+            hash = (hash xor code.toLong()) * 0x100000001b3L
+        }
+        if (!isAscii) {
+            hash = -0x340d631b7bdddcdbL
+            val bytes = value.toByteArray(Charsets.UTF_8)
+            for (byte in bytes) {
+                hash = (hash xor (byte.toLong() and 0xff)) * 0x100000001b3L
+            }
         }
         return "m3u:${java.lang.Long.toUnsignedString(hash, 16)}"
+    }
+
+    private fun extractHeaderEpgUrl(attributesText: String): String? {
+        val attrs = parseAttributes(attributesText)
+        val raw = attrs["url-tvg"] ?: attrs["x-tvg-url"] ?: return null
+        return raw.split(',')
+            .asSequence()
+            .map(String::trim)
+            .firstOrNull { candidate -> candidate.isNotEmpty() && validateAndClassifyHttpUrl(candidate) != null }
     }
 
     private data class Info(
@@ -158,7 +204,8 @@ object M3UPlaylistParser {
     private fun findUnquotedComma(line: String): Int {
         var quoted = false
         var escaped = false
-        line.forEachIndexed { index, char ->
+        for (index in 0 until line.length) {
+            val char = line[index]
             if (char == '"' && !escaped) quoted = !quoted
             if (char == ',' && !quoted) return index
             escaped = char == '\\' && !escaped
@@ -167,11 +214,12 @@ object M3UPlaylistParser {
     }
 
     private fun parseAttributes(input: String): Map<String, String> {
-        val pattern = Regex("([A-Za-z0-9_-]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s,]+))")
-        return pattern.findAll(input).associate { match ->
+        val map = HashMap<String, String>(8)
+        for (match in ATTR_REGEX.findAll(input)) {
             val value = match.groups[2]?.value ?: match.groups[3]?.value ?: match.groups[4]?.value.orEmpty()
-            match.groupValues[1].lowercase(Locale.ROOT) to value
+            map[match.groupValues[1].lowercase(Locale.ROOT)] = value
         }
+        return map
     }
 
     private fun parseVlcOption(option: String): Pair<String, String>? {
@@ -204,7 +252,7 @@ object M3UPlaylistParser {
     private fun safeHeader(name: String, value: String): Pair<String, String>? {
         val trimmedName = name.trim()
         val trimmedValue = value.trim()
-        if (!trimmedName.matches(Regex("[!#\$%&'*+.^_`|~0-9A-Za-z-]{1,64}")) || trimmedValue.isEmpty()) return null
+        if (!HEADER_NAME_REGEX.matches(trimmedName) || trimmedValue.isEmpty()) return null
         if (trimmedName.equals("host", true) || trimmedName.equals("content-length", true) ||
             trimmedName.equals("connection", true) || trimmedValue.any { it == '\r' || it == '\n' }) return null
         return trimmedName.toHeaderName() to trimmedValue
@@ -214,21 +262,131 @@ object M3UPlaylistParser {
         part.lowercase(Locale.ROOT).replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
     }
 
-    private fun primaryGroup(value: String?): String? = value?.split(';')
-        ?.asSequence()?.map(String::trim)?.firstOrNull(String::isNotEmpty)
-
-    private fun classify(url: String): MediaKind {
-        val path = runCatching { java.net.URI(url).path.orEmpty().lowercase(Locale.ROOT) }.getOrDefault(url.lowercase(Locale.ROOT))
-        return when {
-            // An M3U entry has no reliable series/season metadata. Keep provider series URLs
-            // visible as flat VOD items instead of dropping them from the catalog.
-            "/movie/" in path || "/series/" in path -> MediaKind.MOVIE
-            path.substringAfterLast('.', "") in setOf("mp4", "mkv", "avi", "mov", "webm", "m4v") -> MediaKind.MOVIE
-            else -> MediaKind.LIVE
+    private fun primaryGroup(value: String?): String? {
+        if (value.isNullOrEmpty()) return null
+        val semi = value.indexOf(';')
+        if (semi < 0) return value.trim().takeIf(String::isNotEmpty)
+        var start = 0
+        while (start <= value.length) {
+            val end = value.indexOf(';', start).let { if (it < 0) value.length else it }
+            val part = value.substring(start, end).trim()
+            if (part.isNotEmpty()) return part
+            start = end + 1
         }
+        return null
     }
 
-    private fun isHttpUrl(url: String): Boolean = runCatching {
-        url.toHttpUrlOrNull() != null
-    }.getOrDefault(false)
+    /**
+     * Single-pass HTTP/HTTPS URL validation and live/VOD classification.
+     * Avoids allocating both an OkHttp HttpUrl and a java.net.URI for every line in a 100k playlist.
+     */
+    internal fun validateAndClassifyHttpUrl(url: String): MediaKind? {
+        val authorityStart = when {
+            url.startsWith("https://", ignoreCase = true) -> 8
+            url.startsWith("http://", ignoreCase = true) -> 7
+            else -> return null
+        }
+        val length = url.length
+        if (authorityStart >= length) return null
+
+        var pathStart = length
+        var needsFallbackValidation = false
+        for (i in authorityStart until length) {
+            val c = url[i]
+            if (c <= ' ' || c == '\u007f') return null
+            if (c == '/' || c == '?' || c == '#') {
+                pathStart = i
+                break
+            }
+            if (c == '@' || c == '[' || c == ']' || c.code >= 0x80) {
+                needsFallbackValidation = true
+            }
+        }
+        if (pathStart == authorityStart) return null
+
+        if (needsFallbackValidation) {
+            if (runCatching { url.toHttpUrlOrNull() }.getOrNull() == null) return null
+        } else {
+            // Validate host[:port] in-place without substring allocations.
+            val colon = url.indexOf(':', authorityStart).takeIf { it in authorityStart until pathStart }
+            val hostEnd = colon ?: pathStart
+            if (hostEnd <= authorityStart) return null
+            for (i in authorityStart until hostEnd) {
+                val c = url[i]
+                val ok = (c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') || c == '.' || c == '-' || c == '_'
+                if (!ok) {
+                    if (runCatching { url.toHttpUrlOrNull() }.getOrNull() == null) return null
+                    break
+                }
+            }
+            if (colon != null) {
+                val portStart = colon + 1
+                if (portStart >= pathStart || pathStart - portStart > 5) return null
+                var port = 0
+                for (i in portStart until pathStart) {
+                    val d = url[i] - '0'
+                    if (d !in 0..9) return null
+                    port = port * 10 + d
+                }
+                if (port !in 1..65535) return null
+            }
+        }
+
+        if (pathStart >= length || url[pathStart] != '/') {
+            for (i in pathStart until length) {
+                val c = url[i]
+                if (c <= ' ' || c == '\u007f') return null
+            }
+            return MediaKind.LIVE
+        }
+
+        var pathEnd = length
+        for (i in pathStart until length) {
+            val c = url[i]
+            if (c <= ' ' || c == '\u007f') return null
+            if (pathEnd == length && (c == '?' || c == '#')) {
+                pathEnd = i
+            }
+        }
+        return classifyPathSlice(url, pathStart, pathEnd)
+    }
+
+    private fun classifyPathSlice(url: String, start: Int, end: Int): MediaKind {
+        // An M3U entry has no reliable series/season metadata. Keep provider series URLs
+        // visible as flat VOD items instead of dropping them from the catalog.
+        if (containsSegmentIgnoreCase(url, start, end, "/movie/") ||
+            containsSegmentIgnoreCase(url, start, end, "/series/")
+        ) {
+            return MediaKind.MOVIE
+        }
+        var lastDot = -1
+        for (i in end - 1 downTo start) {
+            val c = url[i]
+            if (c == '.') {
+                lastDot = i
+                break
+            }
+            if (c == '/') break
+        }
+        if (lastDot in start until (end - 1)) {
+            val extLen = end - (lastDot + 1)
+            if (extLen in 3..4) {
+                val ext = url.substring(lastDot + 1, end).lowercase(Locale.ROOT)
+                if (ext in VOD_EXTENSIONS) return MediaKind.MOVIE
+            }
+        }
+        return MediaKind.LIVE
+    }
+
+    private fun containsSegmentIgnoreCase(source: String, start: Int, end: Int, needle: String): Boolean {
+        val needleLen = needle.length
+        if (end - start < needleLen) return false
+        val limit = end - needleLen
+        for (i in start..limit) {
+            if (source.regionMatches(i, needle, 0, needleLen, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
+    }
 }

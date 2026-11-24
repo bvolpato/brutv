@@ -42,6 +42,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -68,7 +69,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Composable
-fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
+fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit, isPt: Boolean = false) {
     PrivateScreen()
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
@@ -76,17 +77,24 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var error by remember { mutableStateOf<String?>(null) }
     var scanHint by remember { mutableStateOf<String?>(null) }
-    var attempt by remember { mutableStateOf(0) }
+    var attempt by remember { mutableIntStateOf(0) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
         granted = allowed
         if (allowed) attempt++
-        if (!allowed) error = "Camera access was not granted. You can still enter your provider details manually."
+        if (!allowed) {
+            error = if (isPt) {
+                "O acesso à câmera não foi concedido. Você ainda pode inserir os detalhes do provedor manualmente."
+            } else {
+                "Camera access was not granted. You can still enter your provider details manually."
+            }
+        }
     }
     val previewView = remember { PreviewView(context) }
     val delivered = remember { AtomicBoolean(false) }
     DisposableEffect(granted, owner, attempt) {
         val disposed = AtomicBoolean(false)
         val executor = Executors.newSingleThreadExecutor()
+        val decoder = QrFrameDecoder()
         val main = ContextCompat.getMainExecutor(context)
         val preview = Preview.Builder().build().apply { surfaceProvider = previewView.surfaceProvider }
         val analysis = ImageAnalysis.Builder()
@@ -101,12 +109,18 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
                     val now = System.nanoTime()
                     if (!disposed.get() && !delivered.get() && now - lastScanNanos >= 250_000_000L) {
                         lastScanNanos = now
-                        val scanned = decodeQr(image)
+                        val scanned = decoder.decode(image)
                         if (scanned != null) {
                             val supported = claimSupportedQr(scanned, delivered)
                             if (supported == null) {
                                 main.execute {
-                                    if (!disposed.get() && !delivered.get()) scanHint = "This code is not a supported sign-in or has expired. Scan a BruTV sign-in code, a playlist URL, or a new TV pairing code."
+                                    if (!disposed.get() && !delivered.get()) {
+                                        scanHint = if (isPt) {
+                                            "Este código não é um login válido ou expirou. Escaneie um código BruTV, uma URL de playlist ou um novo código da TV."
+                                        } else {
+                                            "This code is not a supported sign-in or has expired. Scan a BruTV sign-in code, a playlist URL, or a new TV pairing code."
+                                        }
+                                    }
                                 }
                             } else {
                                 main.execute {
@@ -116,7 +130,11 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
                                             currentResult(supported)
                                         } else {
                                             delivered.set(false)
-                                            scanHint = "This TV pairing code has expired. Create a new code on the TV and scan it again."
+                                            scanHint = if (isPt) {
+                                                "Este código de pareamento expirou. Crie um novo código na TV e escaneie novamente."
+                                            } else {
+                                                "This TV pairing code has expired. Create a new code on the TV and scan it again."
+                                            }
                                         }
                                     }
                                 }
@@ -134,7 +152,11 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
                         provider = future.get()
                         provider?.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
                     } catch (_: Exception) {
-                        error = "The camera could not be opened. Use manual sign-in or try again."
+                        error = if (isPt) {
+                            "Não foi possível abrir a câmera. Use o login manual ou tente novamente."
+                        } else {
+                            "The camera could not be opened. Use manual sign-in or try again."
+                        }
                     }
                 }
             }, main)
@@ -147,51 +169,54 @@ fun QrScannerScreen(onResult: (String) -> Unit, onCancel: () -> Unit) {
         }
     }
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Scan sign-in QR", style = MaterialTheme.typography.headlineMedium)
-        Text("Scan a BruTV sign-in code or a TV pairing code. Keep account codes private.")
+        Text(if (isPt) "Escanear QR de login" else "Scan sign-in QR", style = MaterialTheme.typography.headlineMedium)
+        Text(if (isPt) "Escaneie um código de login do BruTV ou um código de pareamento da TV. Mantenha seus códigos privados." else "Scan a BruTV sign-in code or a TV pairing code. Keep account codes private.")
         scanHint?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (granted && error == null) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
             }
         } else {
-            Text(error ?: "Camera access is used only while this scanner is open.")
+            Text(error ?: if (isPt) "O acesso à câmera é usado apenas enquanto este leitor estiver aberto." else "Camera access is used only while this scanner is open.")
             Button(onClick = {
                 error = null
                 if (granted) attempt++ else permission.launch(Manifest.permission.CAMERA)
             }) {
                 Icon(if (granted) Icons.Outlined.Replay else Icons.Outlined.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(if (granted) "Try again" else "Allow camera")
+                Text(if (granted) (if (isPt) "Tentar novamente" else "Try again") else (if (isPt) "Permitir câmera" else "Allow camera"))
             }
         }
         TextButton(onClick = onCancel) {
             Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Cancel")
+            Text(if (isPt) "Cancelar" else "Cancel")
         }
     }
 }
 
 @Composable
-fun LoginQrScreen(source: SourceConfig, onClose: () -> Unit) {
+fun LoginQrScreen(source: SourceConfig, onClose: () -> Unit, isPt: Boolean = false) {
     PrivateScreen()
     val qr = remember(source) { runCatching { qrBitmap(LoginLinks.encode(source.normalized())) }.getOrNull() }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("Share sign-in", style = MaterialTheme.typography.headlineMedium)
-        Text("This code contains your provider credentials or private playlist address. Only show it to people you trust.")
+        Text(if (isPt) "Compartilhar login" else "Share sign-in", style = MaterialTheme.typography.headlineMedium)
+        Text(if (isPt) "Este código contém suas credenciais do provedor ou endereço privado de playlist. Mostre apenas para pessoas de confiança." else "This code contains your provider credentials or private playlist address. Only show it to people you trust.")
         Text(source.name, style = MaterialTheme.typography.titleLarge)
-        if (qr != null) QrImage(qr, "Private sign-in QR code")
-        else if (source.type == SourceType.M3U && !source.playlistUrl.startsWith("http://", true) && !source.playlistUrl.startsWith("https://", true)) Text("An imported playlist file cannot be shared as a sign-in code. Import the file on the other device or use a playlist URL.")
-        else Text("This profile is too large for a QR code. Use manual sign-in on the other device.")
-        Text("Open BruTV’s QR scanner on another phone or tablet. An iPhone can also open this code with its camera.")
+        if (qr != null) QrImage(qr, if (isPt) "Código QR de login privado" else "Private sign-in QR code")
+        else if (source.type == SourceType.M3U && !source.playlistUrl.startsWith("http://", true) && !source.playlistUrl.startsWith("https://", true)) {
+            Text(if (isPt) "Um arquivo de playlist importado não pode ser compartilhado como QR. Importe o arquivo no outro dispositivo ou use uma URL." else "An imported playlist file cannot be shared as a sign-in code. Import the file on the other device or use a playlist URL.")
+        } else {
+            Text(if (isPt) "Este perfil é grande demais para um código QR. Use o login manual no outro dispositivo." else "This profile is too large for a QR code. Use manual sign-in on the other device.")
+        }
+        Text(if (isPt) "Abra o leitor QR do BruTV em outro celular ou tablet. Um iPhone também pode abrir este código pela câmera." else "Open BruTV’s QR scanner on another phone or tablet. An iPhone can also open this code with its camera.")
         Button(onClick = onClose) {
             Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Close")
+            Text(if (isPt) "Fechar" else "Close")
         }
     }
 }
@@ -207,57 +232,105 @@ internal fun qrBitmap(value: String): Bitmap {
     return Bitmap.createBitmap(pixels, 640, 640, Bitmap.Config.ARGB_8888)
 }
 
-private fun decodeQr(image: ImageProxy): String? = runCatching {
-    val plane = image.planes[0]
-    val buffer = plane.buffer
-    val width = image.width
-    val height = image.height
-    val start = buffer.position()
-    val data = ByteArray(width * height)
-    for (y in 0 until height) {
-        for (x in 0 until width) data[y * width + x] = buffer.get(start + y * plane.rowStride + x * plane.pixelStride)
+/**
+ * Reuses YUV/rotation byte buffers and a single [MultiFormatReader] across camera frames
+ * on the single-threaded analyzer executor to avoid per-frame multi-megabyte GC churn.
+ */
+private class QrFrameDecoder {
+    private var yuvBuffer = ByteArray(0)
+    private var rotatedBuffer = ByteArray(0)
+    private val reader = MultiFormatReader().apply {
+        setHints(
+            mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                DecodeHintType.TRY_HARDER to true,
+            ),
+        )
     }
-    val rotation = image.imageInfo.rotationDegrees
-    val (rotatedData, finalWidth, finalHeight) = when (rotation) {
-        90 -> {
-            val rotated = ByteArray(width * height)
+
+    fun decode(image: ImageProxy): String? = runCatching {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val width = image.width
+        val height = image.height
+        val size = width * height
+        if (yuvBuffer.size != size) {
+            yuvBuffer = ByteArray(size)
+        }
+        val data = yuvBuffer
+        val start = buffer.position()
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        if (pixelStride == 1 && rowStride == width) {
+            buffer.get(data, 0, size)
+            buffer.position(start)
+        } else {
             for (y in 0 until height) {
+                val rowOffset = start + y * rowStride
+                val dstOffset = y * width
                 for (x in 0 until width) {
-                    rotated[x * height + (height - y - 1)] = data[y * width + x]
+                    data[dstOffset + x] = buffer.get(rowOffset + x * pixelStride)
                 }
             }
-            Triple(rotated, height, width)
         }
-        180 -> {
-            val rotated = ByteArray(width * height)
-            for (i in 0 until width * height) {
-                rotated[width * height - 1 - i] = data[i]
-            }
-            Triple(rotated, width, height)
-        }
-        270 -> {
-            val rotated = ByteArray(width * height)
-            for (y in 0 until height) {
-                for (x in 0 until width) {
-                    rotated[(width - x - 1) * height + y] = data[y * width + x]
+        val rotation = image.imageInfo.rotationDegrees
+        val targetData: ByteArray
+        val finalWidth: Int
+        val finalHeight: Int
+        when (rotation) {
+            90 -> {
+                if (rotatedBuffer.size != size) rotatedBuffer = ByteArray(size)
+                val rotated = rotatedBuffer
+                for (y in 0 until height) {
+                    val row = y * width
+                    val col = height - y - 1
+                    for (x in 0 until width) {
+                        rotated[x * height + col] = data[row + x]
+                    }
                 }
+                targetData = rotated
+                finalWidth = height
+                finalHeight = width
             }
-            Triple(rotated, height, width)
+            180 -> {
+                if (rotatedBuffer.size != size) rotatedBuffer = ByteArray(size)
+                val rotated = rotatedBuffer
+                for (i in 0 until size) {
+                    rotated[size - 1 - i] = data[i]
+                }
+                targetData = rotated
+                finalWidth = width
+                finalHeight = height
+            }
+            270 -> {
+                if (rotatedBuffer.size != size) rotatedBuffer = ByteArray(size)
+                val rotated = rotatedBuffer
+                for (y in 0 until height) {
+                    val row = y * width
+                    for (x in 0 until width) {
+                        rotated[(width - x - 1) * height + y] = data[row + x]
+                    }
+                }
+                targetData = rotated
+                finalWidth = height
+                finalHeight = width
+            }
+            else -> {
+                targetData = data
+                finalWidth = width
+                finalHeight = height
+            }
         }
-        else -> Triple(data, width, height)
-    }
-    val luminance = PlanarYUVLuminanceSource(rotatedData, finalWidth, finalHeight, 0, 0, finalWidth, finalHeight, false)
-    val reader = MultiFormatReader().apply {
-        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE), DecodeHintType.TRY_HARDER to true))
-    }
-    try {
-        val result = runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance))).text }.getOrNull()
-            ?: runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance.invert()))).text }.getOrNull()
-        result?.takeIf { it.length <= 8192 }
-    } finally {
-        reader.reset()
-    }
-}.getOrNull()
+        val luminance = PlanarYUVLuminanceSource(targetData, finalWidth, finalHeight, 0, 0, finalWidth, finalHeight, false)
+        try {
+            val result = runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance))).text }.getOrNull()
+                ?: runCatching { reader.decodeWithState(BinaryBitmap(HybridBinarizer(luminance.invert()))).text }.getOrNull()
+            result?.takeIf { it.length <= 8192 }
+        } finally {
+            reader.reset()
+        }
+    }.getOrNull()
+}
 
 @Composable
 internal fun PrivateScreen() {

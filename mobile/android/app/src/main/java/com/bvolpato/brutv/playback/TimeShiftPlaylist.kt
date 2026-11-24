@@ -12,6 +12,34 @@ internal data class TimeShiftLimits(
     val staleManifestTimeoutMs: Long? = null,
 )
 
+/**
+ * Dynamically caps live time-shift disk budget based on device RAM class and free storage so
+ * low-RAM/low-storage TV sticks never exhaust cache storage.
+ */
+internal fun computeTimeShiftLimits(
+    isLowRamDevice: Boolean,
+    usableSpaceBytes: Long,
+): TimeShiftLimits {
+    val mib = 1024L * 1024L
+    val baseBytes = if (isLowRamDevice) 64L * mib else 256L * mib
+    val baseDurationMs = if (isLowRamDevice) 300_000L else 600_000L
+    val reservedFreeBytes = 48L * mib
+    val storageBudget = if (usableSpaceBytes <= 0L) {
+        baseBytes
+    } else if (usableSpaceBytes <= reservedFreeBytes + 16L * mib) {
+        (usableSpaceBytes - 16L * mib).coerceAtLeast(8L * mib)
+    } else {
+        ((usableSpaceBytes - reservedFreeBytes) / 4L).coerceIn(32L * mib, baseBytes)
+    }
+    val effectiveBytes = minOf(baseBytes, storageBudget)
+    val effectiveSegmentBytes = minOf(32L * mib, (effectiveBytes / 3L).coerceAtLeast(4L * mib))
+    return TimeShiftLimits(
+        durationMs = baseDurationMs,
+        bytes = effectiveBytes,
+        segmentBytes = effectiveSegmentBytes,
+    )
+}
+
 internal class UnsupportedTimeShift(message: String) : Exception(message)
 
 internal data class RecordedSegmentSpec(
@@ -33,6 +61,8 @@ internal data class TimeShiftPlaylist(
 )
 
 internal object TimeShiftPlaylistParser {
+    private val ATTR_REGEX = Regex("(?:^|,)([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)")
+
     fun variant(text: String, baseUrl: String): String? {
         val lines = lines(text)
         if (lines.any { it.startsWith("#EXTINF:") }) return null
@@ -155,6 +185,6 @@ internal object TimeShiftPlaylistParser {
     }
 
     private fun attributes(value: String): Map<String, String> =
-        Regex("(?:^|,)([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)").findAll(value)
+        ATTR_REGEX.findAll(value)
             .associate { it.groupValues[1] to it.groupValues[2].removeSurrounding("\"") }
 }

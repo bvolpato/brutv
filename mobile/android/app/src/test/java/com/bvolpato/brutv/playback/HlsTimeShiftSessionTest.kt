@@ -468,6 +468,70 @@ class HlsTimeShiftSessionTest {
         }
     }
 
+    @Test fun loopbackServerSupportsHttp11KeepAliveAndDynamicLimitsCapLowRamDevices() = runBlocking {
+        val lowRamLimits = computeTimeShiftLimits(isLowRamDevice = true, usableSpaceBytes = 2L * 1024 * 1024 * 1024)
+        assertEquals(64L * 1024 * 1024, lowRamLimits.bytes)
+        assertEquals(300_000L, lowRamLimits.durationMs)
+
+        val lowStorageLimits = computeTimeShiftLimits(isLowRamDevice = false, usableSpaceBytes = 128L * 1024 * 1024)
+        assertTrue(lowStorageLimits.bytes <= 64L * 1024 * 1024)
+
+        Source(segmentSize = 16).use { source ->
+            val session = HlsTimeShiftSession.open(temporary.newFolder(), source.url, emptyMap())
+            try {
+                val url = URL(session.playbackUrl)
+                java.net.Socket("127.0.0.1", url.port).use { socket ->
+                    socket.soTimeout = 3_000
+                    val out = socket.getOutputStream()
+                    val input = socket.getInputStream().buffered()
+
+                    fun readHttpResponse(): Pair<String, ByteArray> {
+                        val headerBytes = java.io.ByteArrayOutputStream()
+                        var tail = 0
+                        while (true) {
+                            val b = input.read()
+                            if (b < 0) throw AssertionError("Unexpected EOF on keep-alive socket")
+                            headerBytes.write(b)
+                            tail = (tail shl 8) or b
+                            if (tail == 0x0d0a0d0a) break
+                        }
+                        val headerText = headerBytes.toString("US-ASCII")
+                        val contentLength = headerText.lines()
+                            .first { it.startsWith("Content-Length:", true) }
+                            .substringAfter(':').trim().toInt()
+                        val body = ByteArray(contentLength)
+                        var read = 0
+                        while (read < contentLength) {
+                            val n = input.read(body, read, contentLength - read)
+                            if (n <= 0) throw AssertionError("Short body read")
+                            read += n
+                        }
+                        return headerText to body
+                    }
+
+                    // Request 1: manifest over persistent HTTP/1.1 socket.
+                    out.write("GET ${url.path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                    out.flush()
+                    val (manifestHeaders, manifestBody) = readHttpResponse()
+                    assertTrue(manifestHeaders.contains("200 OK"))
+                    assertTrue(manifestHeaders.contains("Connection: keep-alive", ignoreCase = true))
+                    val manifestText = manifestBody.toString(Charsets.UTF_8)
+                    val segmentName = manifestText.lines().first { it.startsWith("resource-") }
+
+                    // Request 2: segment over the exact same TCP connection (tests keep-alive + HashMap resource index).
+                    val segmentPath = url.path.substringBeforeLast('/') + "/" + segmentName
+                    out.write("GET $segmentPath HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                    out.flush()
+                    val (segHeaders, segBody) = readHttpResponse()
+                    assertTrue(segHeaders.contains("200 OK"))
+                    assertEquals(16, segBody.size)
+                }
+            } finally {
+                session.close()
+            }
+        }
+    }
+
     private fun await(timeoutMs: Long = 4_000, condition: () -> Boolean) {
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
         while (!condition()) {

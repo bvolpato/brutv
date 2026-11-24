@@ -10,7 +10,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
+import android.os.storage.StorageManager
 import androidx.annotation.OptIn
+import androidx.compose.runtime.Immutable
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -31,7 +33,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -55,17 +56,33 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.CacheControl
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
+/** Low-frequency structural playback state. Steady-state 500 ms ticks never emit here. */
+@Immutable
 internal data class PlaybackSnapshot(
     val entry: MediaEntry? = null,
     val isPlaying: Boolean = false,
     val playWhenReady: Boolean = false,
     val buffering: Boolean = false,
+    val durationMs: Long = 0,
+    val recovering: Boolean = false,
+    val tracks: Tracks = Tracks.EMPTY,
+    val error: String? = null,
+    val liveSeekable: Boolean = false,
+    val timeShiftAvailable: Boolean = false,
+    val timeShiftRecording: Boolean = false,
+    val timeShiftNotice: String? = null,
+    val canGoLive: Boolean = false,
+    val endedEvent: Long = 0L,
+)
+
+/** High-frequency 500 ms telemetry consumed only by visible progress/HUD leaf composables. */
+@Immutable
+internal data class PlaybackTelemetry(
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val bufferMs: Long = 0,
@@ -79,26 +96,20 @@ internal data class PlaybackSnapshot(
     val droppedFrames: Int = 0,
     val stalls: Int = 0,
     val retries: Int = 0,
-    val recovering: Boolean = false,
-    val tracks: Tracks = Tracks.EMPTY,
-    val error: String? = null,
-    val liveSeekable: Boolean = false,
-    val timeShiftAvailable: Boolean = false,
-    val timeShiftRecording: Boolean = false,
     val timeShiftDurationMs: Long = 0,
     val timeShiftBytes: Long = 0,
-    val timeShiftNotice: String? = null,
-    val canGoLive: Boolean = false,
 )
 
 @OptIn(UnstableApi::class)
 internal class PlaybackController(
     context: Context,
-    private val profile: BufferProfile,
+    val profile: BufferProfile,
     maxConnections: Int = 1,
+    liveRewind: Boolean = false,
 ) {
     private val appContext = context.applicationContext
     var maxConnections: Int = maxConnections.coerceAtLeast(1)
+    var liveRewind: Boolean = liveRewind
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val ioCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val playbackConnectionPool = ConnectionPool(5, 30, TimeUnit.SECONDS)
@@ -141,19 +152,20 @@ internal class PlaybackController(
     private var liveAuthNotFoundRetries = 0
     private var lastAutoLiveSeekElapsedMs = 0L
     private var lastTerminalFailureKind: FailureKind? = null
+    private var droppedFramesCount = 0
+    private var stallsCount = 0
+    private var retriesCount = 0
+    private var bandwidthEstimateBps = 0L
     private val mutableState = MutableStateFlow(PlaybackSnapshot())
     val state = mutableState.asStateFlow()
+    private val mutableTelemetry = MutableStateFlow(PlaybackTelemetry())
+    val telemetry = mutableTelemetry.asStateFlow()
 
-    private val decoderSelector = MediaCodecSelector { mimeType, secure, tunneling ->
-        MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
-            .sortedBy { if (it.hardwareAccelerated) 0 else 1 }
-    }
     private val tuning = profile.tuning
     val player: ExoPlayer = ExoPlayer.Builder(
         appContext,
         DefaultRenderersFactory(appContext)
-            .setEnableDecoderFallback(true)
-            .setMediaCodecSelector(decoderSelector),
+            .setEnableDecoderFallback(true),
     )
         .setLooper(Looper.getMainLooper())
         .setTrackSelector(DefaultTrackSelector(appContext))
@@ -216,23 +228,28 @@ internal class PlaybackController(
             lastPlaybackState = playbackState
             val currentEntry = mutableState.value.entry
             if (playbackState == Player.STATE_BUFFERING && retryJob?.isActive == true) {
-                // System or native controls prepared the player before the delayed reconnect.
                 cancelRecovery()
                 generation = recovery.startEntry(isLive = currentEntry?.kind == MediaKind.LIVE)
                 lastTerminalFailureKind = null
                 mutableState.value = mutableState.value.copy(error = null)
             }
-            if (playbackState == Player.STATE_ENDED && currentEntry?.kind == MediaKind.LIVE && requestedPlay()) {
-                if (timeShift?.snapshot()?.recording == false) {
-                    closeTimeShift()
-                    timeShiftNotice = null
+            if (playbackState == Player.STATE_ENDED && currentEntry != null) {
+                if (currentEntry.kind == MediaKind.LIVE && requestedPlay()) {
+                    if (timeShift?.snapshot()?.recording == false) {
+                        closeTimeShift()
+                        timeShiftNotice = null
+                    }
+                    recover(FailureKind.NETWORK)
+                    return
+                } else if (currentEntry.kind != MediaKind.LIVE) {
+                    mutableState.value = mutableState.value.copy(
+                        endedEvent = mutableState.value.endedEvent + 1L,
+                    )
                 }
-                recover(FailureKind.NETWORK)
-                return
             }
             val buffering = playbackState == Player.STATE_BUFFERING && requestedPlay()
             if (buffering && previousState == Player.STATE_READY && hasPlayed) {
-                mutableState.value = mutableState.value.copy(stalls = mutableState.value.stalls + 1)
+                stallsCount++
             }
             if (buffering) {
                 startWatchdog()
@@ -279,7 +296,6 @@ internal class PlaybackController(
                 val play = requestedPlay()
                 cancelRecovery()
                 closeTimeShift()
-                // One native fallback can choose a different master rendition for this device.
                 timeShiftAttempted = true
                 timeShiftNotice = "The recording rendition is unsupported on this device. Using direct live playback."
                 generation = recovery.startEntry(isLive = entry.kind == MediaKind.LIVE)
@@ -295,7 +311,6 @@ internal class PlaybackController(
                 expiredRecoveryAttempts++
                 val play = requestedPlay()
                 if (manuallyBehindLive) {
-                    // A bounded ring can expire an old paused or rewound position.
                     timeShiftNotice = "Older buffered footage expired. Playback moved to the oldest saved footage."
                     player.seekTo(0)
                 } else {
@@ -310,7 +325,9 @@ internal class PlaybackController(
         }
 
         override fun onTracksChanged(tracks: Tracks) {
-            mutableState.value = mutableState.value.copy(tracks = tracks)
+            if (mutableState.value.tracks != tracks) {
+                mutableState.value = mutableState.value.copy(tracks = tracks)
+            }
             refresh()
         }
 
@@ -332,11 +349,11 @@ internal class PlaybackController(
 
     private val analytics = object : AnalyticsListener {
         override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
-            mutableState.value = mutableState.value.copy(droppedFrames = mutableState.value.droppedFrames + droppedFrames)
+            droppedFramesCount += droppedFrames
         }
 
         override fun onBandwidthEstimate(eventTime: AnalyticsListener.EventTime, totalLoadTimeMs: Int, totalBytesLoaded: Long, bitrateEstimate: Long) {
-            mutableState.value = mutableState.value.copy(bandwidthEstimate = bitrateEstimate)
+            bandwidthEstimateBps = bitrateEstimate
         }
     }
 
@@ -387,42 +404,44 @@ internal class PlaybackController(
         }
         scope.launch {
             while (isActive) {
-                refresh()
-                val now = SystemClock.elapsedRealtime()
                 val entry = mutableState.value.entry
-                val isLive = entry?.kind == MediaKind.LIVE
-                val isPlayingReady = player.playbackState == Player.STATE_READY &&
-                    player.isPlaying &&
-                    requestedPlay()
-                val progress = progressMonitor.sample(
-                    nowElapsedMs = now,
-                    positionMs = player.currentPosition,
-                    isPlayingReady = isPlayingReady,
-                    isLive = isLive,
-                )
-                if (progress.reachedHealthyThreshold) {
-                    recovery.healthy()
-                    expiredRecoveryAttempts = 0
-                    retriesOnCurrentFormat = 0
-                    liveAuthNotFoundRetries = 0
-                    if (isLive) {
-                        LiveFormatCache.shared.remember(entry.streamUrl, activeStreamUrl.ifBlank { entry.streamUrl })
+                if (entry != null) {
+                    refresh()
+                    val now = SystemClock.elapsedRealtime()
+                    val isLive = entry.kind == MediaKind.LIVE
+                    val isPlayingReady = player.playbackState == Player.STATE_READY &&
+                        player.isPlaying &&
+                        requestedPlay()
+                    val progress = progressMonitor.sample(
+                        nowElapsedMs = now,
+                        positionMs = player.currentPosition,
+                        isPlayingReady = isPlayingReady,
+                        isLive = isLive,
+                    )
+                    if (progress.reachedHealthyThreshold) {
+                        recovery.healthy()
+                        expiredRecoveryAttempts = 0
+                        retriesOnCurrentFormat = 0
+                        liveAuthNotFoundRetries = 0
+                        if (isLive) {
+                            LiveFormatCache.shared.remember(entry.streamUrl, activeStreamUrl.ifBlank { entry.streamUrl })
+                        }
                     }
-                }
-                if (progress.frozen && entry != null && retryJob?.isActive != true && prepareJob?.isActive != true) {
-                    recover(FailureKind.TIMEOUT)
-                }
-                if (isLive &&
-                    timeShift == null &&
-                    !manuallyBehindLive &&
-                    requestedPlay() &&
-                    player.playbackState == Player.STATE_READY &&
-                    now - lastAutoLiveSeekElapsedMs >= AUTO_LIVE_SEEK_COOLDOWN_MS
-                ) {
-                    val behind = behindLiveDefaultPositionMs()
-                    if (behind != null && behind > 30_000L) {
-                        lastAutoLiveSeekElapsedMs = now
-                        player.seekToDefaultPosition()
+                    if (progress.frozen && retryJob?.isActive != true && prepareJob?.isActive != true) {
+                        recover(FailureKind.TIMEOUT)
+                    }
+                    if (isLive &&
+                        timeShift == null &&
+                        !manuallyBehindLive &&
+                        requestedPlay() &&
+                        player.playbackState == Player.STATE_READY &&
+                        now - lastAutoLiveSeekElapsedMs >= AUTO_LIVE_SEEK_COOLDOWN_MS
+                    ) {
+                        val behind = behindLiveDefaultPositionMs()
+                        if (behind != null && behind > 30_000L) {
+                            lastAutoLiveSeekElapsedMs = now
+                            player.seekToDefaultPosition()
+                        }
                     }
                 }
                 delay(500)
@@ -430,10 +449,42 @@ internal class PlaybackController(
         }
     }
 
+    fun applyPreferences(
+        preferredAudioLanguage: String?,
+        preferredSubtitleLanguage: String?,
+        subtitlesEnabled: Boolean,
+        autoFrameRate: Boolean,
+    ) {
+        checkMainThread()
+        if (disposed) return
+        val builder = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesEnabled)
+        if (!preferredAudioLanguage.isNullOrBlank()) {
+            builder.setPreferredAudioLanguage(preferredAudioLanguage)
+        } else {
+            builder.setPreferredAudioLanguages()
+        }
+        if (subtitlesEnabled && !preferredSubtitleLanguage.isNullOrBlank()) {
+            builder.setPreferredTextLanguage(preferredSubtitleLanguage)
+        } else {
+            builder.setPreferredTextLanguages()
+        }
+        player.trackSelectionParameters = builder.build()
+        player.setVideoChangeFrameRateStrategy(
+            if (autoFrameRate) {
+                C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+            } else {
+                C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+            },
+        )
+    }
+
     fun select(entry: MediaEntry, resumePositionMs: Long = 0) {
         checkMainThread()
         if (disposed || (mutableState.value.entry == entry && (player.mediaItemCount > 0 || prepareJob?.isActive == true))) return
         val previousEntry = mutableState.value.entry
+        val hadActiveStream = timeShift != null ||
+            (previousEntry != null && (player.mediaItemCount > 0 || prepareJob?.isActive == true))
         if (timeShift != null ||
             (previousEntry?.kind == MediaKind.LIVE && (player.mediaItemCount > 0 || prepareJob?.isActive == true))
         ) {
@@ -442,7 +493,11 @@ internal class PlaybackController(
         inBackground = false
         cancelRecovery()
         closeTimeShift()
-        stopAndEvict(cancelActive = true)
+        // Keep ExoPlayer warm without player.stop()/clearMediaItems() so matching hardware
+        // MediaCodec decoders are reused on channel zap. Only evict sockets on single-connection panels.
+        if (hadActiveStream && maxConnections <= 1) {
+            evictPlaybackConnections(cancelActive = true)
+        }
         activeStreamUrl = if (entry.kind == MediaKind.LIVE) {
             LiveFormatCache.shared.get(entry.streamUrl) ?: entry.streamUrl
         } else {
@@ -456,12 +511,16 @@ internal class PlaybackController(
         backgroundSourceReleased = false
         expiredRecoveryAttempts = 0
         lastAutoLiveSeekElapsedMs = 0L
+        droppedFramesCount = 0
+        stallsCount = 0
+        retriesCount = 0
         progressMonitor.resetAll()
         generation = recovery.startEntry(isLive = entry.kind == MediaKind.LIVE)
         hasPlayed = false
         lastPlaybackState = Player.STATE_IDLE
         resumeAfterBackground = false
-        mutableState.value = PlaybackSnapshot(entry = entry)
+        mutableState.value = PlaybackSnapshot(entry = entry, endedEvent = mutableState.value.endedEvent)
+        mutableTelemetry.value = PlaybackTelemetry()
         prepare(entry, resumePositionMs, true)
     }
 
@@ -594,6 +653,17 @@ internal class PlaybackController(
         val duration = player.duration.takeUnless { it == C.TIME_UNSET } ?: return
         progressMonitor.onSeek()
         player.seekTo((player.currentPosition + offsetMs).coerceIn(0, duration.coerceAtLeast(0)))
+        refresh()
+    }
+
+    fun seekTo(positionMs: Long) {
+        checkMainThread()
+        if (!player.isCurrentMediaItemSeekable) return
+        expiredRecoveryAttempts = 0
+        val duration = player.duration.takeUnless { it == C.TIME_UNSET } ?: return
+        progressMonitor.onSeek()
+        player.seekTo(positionMs.coerceIn(0, duration.coerceAtLeast(0)))
+        refresh()
     }
 
     fun stop() {
@@ -609,7 +679,39 @@ internal class PlaybackController(
         refresh()
     }
 
-    fun position(): Long = if (disposed) mutableState.value.positionMs else player.currentPosition.coerceAtLeast(0)
+    /**
+     * Pauses and clears the current media item when returning to the browse grid while keeping
+     * ExoPlayer, OkHttpClient, and MediaSession alive for fast subsequent launches.
+     */
+    fun standby() {
+        checkMainThread()
+        if (disposed) return
+        inBackground = false
+        resumeAfterBackground = false
+        intendedPlay = false
+        pendingLivePlay = false
+        cancelRecovery()
+        recovery.stop()
+        closeTimeShift()
+        progressMonitor.resetAll()
+        lastTerminalFailureKind = null
+        player.pause()
+        player.stop()
+        player.clearMediaItems()
+        if (maxConnections <= 1) {
+            evictPlaybackConnections(cancelActive = true)
+        }
+        mutableState.value = PlaybackSnapshot(endedEvent = mutableState.value.endedEvent)
+        mutableTelemetry.value = PlaybackTelemetry()
+    }
+
+    fun position(): Long = if (disposed) mutableTelemetry.value.positionMs else player.currentPosition.coerceAtLeast(0)
+
+    fun durationMs(): Long = if (disposed) {
+        mutableTelemetry.value.durationMs
+    } else {
+        player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+    }
 
     fun canCommitPosition(): Boolean = !disposed && prepareJob?.isActive != true && player.mediaItemCount > 0
 
@@ -641,7 +743,9 @@ internal class PlaybackController(
     private fun stopAndEvict(cancelActive: Boolean) {
         player.stop()
         player.clearMediaItems()
-        evictPlaybackConnections(cancelActive = cancelActive)
+        if (maxConnections <= 1 || cancelActive) {
+            evictPlaybackConnections(cancelActive = cancelActive)
+        }
     }
 
     private fun evictPlaybackConnections(cancelActive: Boolean) {
@@ -649,7 +753,9 @@ internal class PlaybackController(
         pendingEvictJob = ioCleanupScope.launch {
             previous?.join()
             if (cancelActive) runCatching { playbackClient.dispatcher.cancelAll() }
-            runCatching { playbackConnectionPool.evictAll() }
+            if (maxConnections <= 1) {
+                runCatching { playbackConnectionPool.evictAll() }
+            }
         }
     }
 
@@ -683,8 +789,18 @@ internal class PlaybackController(
             maxConnections <= 1
         hadPreviousLiveConnection = false
         mutableState.value = mutableState.value.copy(buffering = play)
+
+        val needsAsyncPrep = pendingTimeShiftCloseJob != null ||
+            pendingEvictJob != null ||
+            waitForSlotRelease ||
+            (entry.kind == MediaKind.LIVE && liveRewind && !timeShiftAttempted)
+
+        if (!needsAsyncPrep) {
+            prepareResolved(entry, targetUrl, positionMs, intendedPlay, liveAnchorMs)
+            return
+        }
+
         prepareJob = scope.launch {
-            // Ensure previous channel and timeshift sockets are closed before opening a new stream.
             val closeJob = pendingTimeShiftCloseJob
             if (closeJob != null) {
                 withTimeoutOrNull(TIMESHIFT_CLOSE_TIMEOUT_MS) { closeJob.join() }
@@ -695,13 +811,10 @@ internal class PlaybackController(
                 withTimeoutOrNull(TIMESHIFT_CLOSE_TIMEOUT_MS) { evictJob.join() }
                 if (pendingEvictJob === evictJob) pendingEvictJob = null
             }
-            withContext(Dispatchers.IO) {
-                runCatching { playbackConnectionPool.evictAll() }
-            }
             if (waitForSlotRelease) {
                 delay(CHANNEL_SWITCH_RELEASE_DELAY_MS)
             }
-            if (entry.kind == MediaKind.LIVE && !timeShiftAttempted) {
+            if (entry.kind == MediaKind.LIVE && liveRewind && !timeShiftAttempted) {
                 timeShiftAttempted = true
                 val url = Uri.parse(targetUrl)
                 if (url.path?.endsWith(".ts", true) == true || url.path?.endsWith(".mpd", true) == true) {
@@ -718,11 +831,17 @@ internal class PlaybackController(
                         PREPARE_TIMESHIFT_TIMEOUT_MS
                     }
                     try {
+                        val timeshiftDir = File(appContext.cacheDir, "brutv_timeshift")
+                        val dynamicLimits = computeTimeShiftLimits(
+                            isLowRamDevice = isLowRamDevice,
+                            usableSpaceBytes = availableCacheBytes(),
+                        )
                         val opened = withTimeoutOrNull(openTimeoutMs) {
                             HlsTimeShiftSession.open(
-                                File(appContext.cacheDir, "brutv_timeshift"),
+                                timeshiftDir,
                                 targetUrl,
                                 entry.requestHeaders,
+                                limits = dynamicLimits,
                             )
                         }
                         if (opened != null) {
@@ -825,7 +944,6 @@ internal class PlaybackController(
             "ts" -> item.setMimeType(MimeTypes.VIDEO_MP2T)
         }
         val liveOffsetOverride = tuning.liveOffsetMs
-        // Conventional live streams keep their manifest/default holdback and playback speed.
         if (entry.kind == MediaKind.LIVE && liveOffsetOverride != null) {
             item.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
@@ -839,6 +957,7 @@ internal class PlaybackController(
         val mediaSource = if (extension == "m3u8") {
             HlsMediaSource.Factory(dataSourceFactory)
                 .setExtractorFactory(DefaultHlsExtractorFactory(tsFlags, true))
+                .setAllowChunklessPreparation(true)
                 .setLoadErrorHandlingPolicy(loadErrorPolicy)
                 .createMediaSource(builtItem)
         } else {
@@ -913,7 +1032,8 @@ internal class PlaybackController(
             delay(ticket.delayMs)
             if (!recovery.isCurrent(ticket.generation) || disposed) return@launch
             retryJob = null
-            mutableState.value = mutableState.value.copy(recovering = false, retries = mutableState.value.retries + 1)
+            retriesCount++
+            mutableState.value = mutableState.value.copy(recovering = false)
             prepare(
                 entry,
                 position,
@@ -937,11 +1057,11 @@ internal class PlaybackController(
         val token = generation
         mutableState.value = mutableState.value.copy(recovering = true, error = null)
         retryJob = scope.launch {
-            // Brief pause lets single-connection Xtream panels release the old slot cleanly.
             delay(FORMAT_FALLBACK_RELEASE_DELAY_MS)
             if (!recovery.isCurrent(token) || disposed) return@launch
             retryJob = null
-            mutableState.value = mutableState.value.copy(recovering = false, retries = mutableState.value.retries + 1)
+            retriesCount++
+            mutableState.value = mutableState.value.copy(recovering = false)
             prepare(entry, 0, play, liveAnchorMs = null, skipSlotReleaseDelay = true)
         }
     }
@@ -963,7 +1083,9 @@ internal class PlaybackController(
         retryJob = null
         watchdog?.cancel()
         watchdog = null
-        mutableState.value = mutableState.value.copy(recovering = false)
+        if (mutableState.value.recovering) {
+            mutableState.value = mutableState.value.copy(recovering = false)
+        }
     }
 
     private fun refresh() {
@@ -971,29 +1093,45 @@ internal class PlaybackController(
         val format = player.videoFormat
         val recording = timeShift?.snapshot()
         val wantPlay = requestedPlay()
-        mutableState.value = mutableState.value.copy(
+        val behindLive = behindLiveDefaultPositionMs()
+        val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
+        val currentSnapshot = mutableState.value
+        val nextSnapshot = currentSnapshot.copy(
             isPlaying = player.isPlaying,
             playWhenReady = wantPlay,
             buffering = if (prepareJob?.isActive == true) intendedPlay else player.playbackState == Player.STATE_BUFFERING && wantPlay,
-            positionMs = player.currentPosition.coerceAtLeast(0),
-            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0,
-            bufferMs = player.totalBufferedDuration.coerceAtLeast(0),
-            liveOffsetMs = player.currentLiveOffset.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0,
-            behindLiveDefaultPositionMs = behindLiveDefaultPositionMs() ?: 0,
-            bitrate = format?.bitrate?.coerceAtLeast(0) ?: 0,
-            width = player.videoSize.width,
-            height = player.videoSize.height,
-            frameRate = format?.frameRate?.coerceAtLeast(0f) ?: 0f,
+            durationMs = duration,
             liveSeekable = player.isCurrentMediaItemSeekable,
             timeShiftAvailable = recording != null,
             timeShiftRecording = recording?.recording == true,
-            timeShiftDurationMs = recording?.durationMs ?: 0,
-            timeShiftBytes = recording?.bytes ?: 0,
             timeShiftNotice = recording?.notice ?: timeShiftNotice,
-            canGoLive = behindLiveDefaultPositionMs() != null ||
+            canGoLive = behindLive != null ||
                 (manuallyBehindLive && (liveDistanceFromDefaultMs() ?: 0) > 1_000) ||
                 (recording != null && !recording.recording),
         )
+        if (nextSnapshot != currentSnapshot) {
+            mutableState.value = nextSnapshot
+        }
+        val nextTelemetry = PlaybackTelemetry(
+            positionMs = player.currentPosition.coerceAtLeast(0),
+            durationMs = duration,
+            bufferMs = player.totalBufferedDuration.coerceAtLeast(0),
+            liveOffsetMs = player.currentLiveOffset.takeIf { it != C.TIME_UNSET }?.coerceAtLeast(0) ?: 0,
+            behindLiveDefaultPositionMs = behindLive ?: 0,
+            bitrate = format?.bitrate?.coerceAtLeast(0) ?: 0,
+            bandwidthEstimate = bandwidthEstimateBps,
+            width = player.videoSize.width,
+            height = player.videoSize.height,
+            frameRate = format?.frameRate?.coerceAtLeast(0f) ?: 0f,
+            droppedFrames = droppedFramesCount,
+            stalls = stallsCount,
+            retries = retriesCount,
+            timeShiftDurationMs = recording?.durationMs ?: 0,
+            timeShiftBytes = recording?.bytes ?: 0,
+        )
+        if (nextTelemetry != mutableTelemetry.value) {
+            mutableTelemetry.value = nextTelemetry
+        }
     }
 
     private fun behindLiveDefaultPositionMs(): Long? {
@@ -1050,6 +1188,18 @@ internal class PlaybackController(
         pendingLiveAnchorMs = null
         player.seekTo((anchor - earliest).coerceIn(0, window.durationMs.coerceAtLeast(0)))
         player.playWhenReady = pendingLivePlay
+    }
+
+    private fun availableCacheBytes(): Long {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                val storageManager = appContext.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                if (storageManager != null) {
+                    return storageManager.getAllocatableBytes(storageManager.getUuidForPath(appContext.cacheDir))
+                }
+            }
+        }
+        return appContext.cacheDir.usableSpace
     }
 
     private fun checkMainThread() = check(Looper.myLooper() == Looper.getMainLooper())
