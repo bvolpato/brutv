@@ -356,6 +356,7 @@ class HlsTimeShiftSessionTest {
                             out.write(chunk)
                             out.flush()
                             bytesWrittenVideo.addAndGet(chunk.size.toLong())
+                            Thread.sleep(5)
                         }
                     }
                 }
@@ -371,6 +372,7 @@ class HlsTimeShiftSessionTest {
                             out.write(chunk)
                             out.flush()
                             bytesWrittenOctet.addAndGet(chunk.size.toLong())
+                            Thread.sleep(5)
                         }
                     }
                 }
