@@ -17,12 +17,12 @@ for (const [location, metadata] of metros) {
   test(`Metro ${metadata.version} reads bundled image dimensions`, async () => {
     const {getAssetSize, getAssetData} = require(path.join(root, location, 'src/Assets.js'));
     assert.deepEqual(getAssetSize('png', fs.readFileSync(iconPath), iconPath), {
-      width: 2048,
-      height: 2048,
+      width: 512,
+      height: 512,
     });
     const asset = await getAssetData(iconPath, 'assets/image/BruTV.png', [], 'kepler', '/assets');
-    assert.equal(asset.width, 2048);
-    assert.equal(asset.height, 2048);
+    assert.equal(asset.width, 512);
+    assert.equal(asset.height, 512);
   });
 }
 

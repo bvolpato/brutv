@@ -26,17 +26,17 @@ import {
 
 class W3CMediaPolyfill {
   static install() {
-    console.log('Installing W3CMedia polyfills');
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('Installing W3CMedia polyfills');
     global.window.MediaSource = global.MediaSource = MediaSource;
     global.window.TextTrackCue = global.TextTrackCue = TextTrackCue;
     global.window.VTTCue = global.VTTCue = VTTCue;
     window["TextTrackCue"] = TextTrackCue;
     if(!window.TextTrackCue) {
-        console.log("TextTrackCue not polyfilled");
+        if (typeof __DEV__ !== 'undefined' && __DEV__) console.log("TextTrackCue not polyfilled");
     }
     window["VTTCue"] = VTTCue;
     if(!window.VTTCue) {
-      console.log("VTTCue not polyfilled");
+      if (typeof __DEV__ !== 'undefined' && __DEV__) console.log("VTTCue not polyfilled");
     }
     global.navigator.requestMediaKeySystemAccess = requestMediaKeySystemAccess;
     global.navigator.mediaCapabilities = ({});

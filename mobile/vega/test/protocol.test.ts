@@ -141,8 +141,8 @@ test('Xtream live .ts URLs normalize to .m3u8 preserving query while non-Xtream 
   assert.equal(isUnsupportedPlaybackURL('https://provider.example/movie/user/pass/42.mp4'), false);
 });
 
-test('M3U handles CRLF, quoted commas, case-insensitive attributes and first group', () => {
-  const entries = parseM3U('#EXTM3U\r\n#EXTINF:-1 TVG-ID="news" tvg-logo="https://example.test/logo.png" group-title="News;Local" tvg-name="Fallback, Name",Actual, Name\r\nhttps://example.test/live/news.m3u8\r\n#EXTINF:-1 tvg-name=Movie,\n#EXTGRP: ; Films;Drama\nhttps://example.test/movie/qa/qa/12.mp4\n#EXTINF:-1,Missing URL\n');
+test('M3U handles CRLF, quoted commas, case-insensitive attributes, deduplication, and first group', () => {
+  const entries = parseM3U('#EXTM3U\r\n#EXTINF:-1 TVG-ID="news" tvg-logo="https://example.test/logo.png" group-title="News;Local" tvg-name="Fallback, Name",Actual, Name\r\nhttps://example.test/live/news.m3u8\r\n#EXTINF:-1 TVG-ID="news",Duplicate Entry\r\nhttps://example.test/live/news.m3u8\r\n#EXTINF:-1 tvg-name=Movie,\n#EXTGRP: ; Films;Drama\nhttps://example.test/movie/qa/qa/12.mp4\n#EXTINF:-1,Missing URL\n');
   assert.equal(entries.length, 2);
   assert.equal(entries[0].name, 'Actual, Name');
   assert.equal(entries[0].group, 'News');

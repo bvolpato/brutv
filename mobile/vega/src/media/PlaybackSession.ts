@@ -8,22 +8,50 @@ export interface MediaElement {
   paused: boolean;
   setSurfaceHandle(handle: string): void;
   clearSurfaceHandle(handle: string): void;
+  setCaptionViewHandle?(handle: string): void;
+  clearCaptionViewHandle?(handle: string): void;
   addEventListener(event: string, listener: () => void): void;
   removeEventListener(event: string, listener: () => void): void;
 }
+
+export interface MediaTrackInfo {
+  id: string;
+  language: string;
+  label: string;
+  active: boolean;
+  role?: string;
+}
+
+export interface TrackSnapshot {
+  audio: MediaTrackInfo[];
+  text: MediaTrackInfo[];
+  textVisible: boolean;
+}
+
 export interface PlaybackTimeline {
   start: number; end: number; live: boolean; liveTarget?: number;
   recording?: boolean; message?: string; recordedBytes?: number; recordedSeconds?: number;
   recordingOrigin?: number;
 }
 export interface PlaybackPosition extends PlaybackTimeline {position: number; paused: boolean; expired: boolean}
+
 export interface MediaAdapter {
   load(url: string): Promise<void>;
   unload?(): Promise<void>;
   destroy(): Promise<void>;
   timeline?(): PlaybackTimeline | undefined;
   recordingMessage?(): string | undefined;
+  setLive?(live: boolean): void;
+  startTimeshift?(): void;
+  hasActiveRecording?(): boolean;
+  switchToRecorded?(): Promise<boolean>;
+  handleMemoryWarning?(): Promise<void>;
+  getTracks?(): TrackSnapshot;
+  selectAudioTrack?(id: string): void;
+  selectTextTrack?(id: string | null): void;
+  onTracksChanged?(listener: (tracks: TrackSnapshot) => void): () => void;
 }
+
 export type PlaybackStatus = 'loading' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error';
 
 interface ReloadSnapshot {
@@ -34,6 +62,7 @@ interface ReloadSnapshot {
 
 export interface PlaybackSessionOptions {
   live?: boolean;
+  startPosition?: number;
   bufferingTimeoutMs?: number;
   liveStallTimeoutMs?: number;
   vodStallTimeoutMs?: number;
@@ -41,6 +70,7 @@ export interface PlaybackSessionOptions {
   retryDelaysMs?: readonly number[];
   watchdogIntervalMs?: number;
   now?: () => number;
+  onTracksChanged?: (tracks: TrackSnapshot) => void;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000] as const;
@@ -49,6 +79,7 @@ const DEFAULT_LIVE_STALL_TIMEOUT_MS = 10_000;
 const DEFAULT_VOD_STALL_TIMEOUT_MS = 15_000;
 const DEFAULT_HEALTHY_PLAYBACK_MS = 30_000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 1000;
+const EMPTY_TRACKS: TrackSnapshot = {audio: [], text: [], textVisible: false};
 
 export class PlaybackSession {
   private closed = false;
@@ -63,9 +94,12 @@ export class PlaybackSession {
   private pendingReload?: ReloadSnapshot;
   private surface?: string;
   private surfaceAttached?: string;
+  private captionView?: string;
+  private captionViewAttached?: string;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private retries = 0;
   private listeners: [string, () => void][] = [];
+  private unsubscribeAdapterTracks?: () => void;
   private adapter?: MediaAdapter;
   private wantsPlayback = true;
   private positionTimer?: ReturnType<typeof setInterval>;
@@ -79,8 +113,9 @@ export class PlaybackSession {
   private lastHealthySampleAt?: number;
   private lastObservedTime?: number;
   private lastTimeAdvanceAt?: number;
+  private liveHint: boolean;
+  private pendingStartPosition?: number;
 
-  private readonly liveHint: boolean;
   private readonly bufferingTimeoutMs: number;
   private readonly liveStallTimeoutMs: number;
   private readonly vodStallTimeoutMs: number;
@@ -88,12 +123,14 @@ export class PlaybackSession {
   private readonly retryDelaysMs: readonly number[];
   private readonly watchdogIntervalMs: number;
   private readonly now: () => number;
+  private readonly reportTracks?: (tracks: TrackSnapshot) => void;
 
   constructor(private media: MediaElement, private createAdapter: (onError: () => void) => MediaAdapter,
     private report: (status: PlaybackStatus) => void,
     private reportPosition: (position: PlaybackPosition | undefined, message?: string) => void = () => {},
     options: PlaybackSessionOptions = {}) {
     this.liveHint = options.live ?? false;
+    this.pendingStartPosition = options.startPosition;
     this.bufferingTimeoutMs = options.bufferingTimeoutMs ?? DEFAULT_BUFFERING_TIMEOUT_MS;
     this.liveStallTimeoutMs = options.liveStallTimeoutMs ?? DEFAULT_LIVE_STALL_TIMEOUT_MS;
     this.vodStallTimeoutMs = options.vodStallTimeoutMs ?? DEFAULT_VOD_STALL_TIMEOUT_MS;
@@ -101,6 +138,7 @@ export class PlaybackSession {
     this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.watchdogIntervalMs = options.watchdogIntervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
     this.now = options.now ?? Date.now;
+    this.reportTracks = options.onTracksChanged;
   }
 
   private setStatus(next: PlaybackStatus): void {
@@ -147,6 +185,30 @@ export class PlaybackSession {
       this.media.setSurfaceHandle(this.surface);
       this.surfaceAttached = this.surface;
     }
+  }
+
+  private attachCaptionView(): void {
+    if (this.captionView && this.captionViewAttached !== this.captionView && this.media.setCaptionViewHandle) {
+      this.media.setCaptionViewHandle(this.captionView);
+      this.captionViewAttached = this.captionView;
+    }
+  }
+
+  private applyStartPositionIfNeeded(): void {
+    const startPos = this.pendingStartPosition;
+    this.pendingStartPosition = undefined;
+    if (startPos === undefined || !Number.isFinite(startPos) || startPos <= 0 || this.isLive()) return;
+    const range = this.adapter?.timeline?.();
+    if (range && range.end > range.start) {
+      this.media.currentTime = Math.max(range.start, Math.min(range.end - 1, startPos));
+    } else if (Number.isFinite(this.media.duration) && this.media.duration > startPos + 1) {
+      this.media.currentTime = startPos;
+    }
+  }
+
+  private emitTracks(): void {
+    if (!this.reportTracks || this.closed) return;
+    this.reportTracks(this.adapter?.getTracks?.() ?? EMPTY_TRACKS);
   }
 
   private async deinitializeOnce(): Promise<void> {
@@ -196,27 +258,38 @@ export class PlaybackSession {
       this.setStatus('paused');
     });
     this.bind('ended', () => {
-      if (this.isLive() && this.wantsPlayback) {
-        this.retry(url);
+      if (this.isLive() && this.wantsPlayback && this.url) {
+        this.retry(this.url);
       } else {
         this.setStatus('ended');
       }
     });
-    this.bind('error', () => this.retry(url));
+    this.bind('error', () => { if (this.url) this.retry(this.url); });
     this.bind('timeupdate', () => {
       this.checkPlayheadAdvance();
       this.updatePosition();
     });
 
-    this.adapter = this.createAdapter(() => this.retry(url));
+    this.adapter = this.createAdapter(() => { if (this.url) this.retry(this.url); });
+    this.unsubscribeAdapterTracks = this.adapter.onTracksChanged?.(tracks => {
+      if (!this.closed) this.reportTracks?.(tracks);
+    });
     this.ensurePositionTimer();
 
+    await this.loadActiveSource(url);
+  }
+
+  private async loadActiveSource(url: string): Promise<void> {
+    if (this.closed || !this.adapter) return;
     const gen = ++this.loadGen;
     try {
       await this.adapter.load(url);
       if (this.closed || gen !== this.loadGen) return;
       this.ready = true;
+      this.applyStartPositionIfNeeded();
+      this.emitTracks();
       this.updatePosition();
+      this.attachCaptionView();
       if (this.surface) {
         this.attachSurface();
         if (this.wantsPlayback) await this.media.play();
@@ -225,6 +298,44 @@ export class PlaybackSession {
     } catch {
       if (!this.closed && gen === this.loadGen) this.retry(url);
     }
+  }
+
+  // Reuses the existing VideoPlayer + Shaka Player across channel zaps without remounting or reinitializing.
+  async switchSource(url: string, options: {live?: boolean; startPosition?: number} = {}): Promise<void> {
+    if (this.closed) return;
+    if (!this.initialized || !this.adapter) {
+      this.liveHint = options.live ?? this.liveHint;
+      this.pendingStartPosition = options.startPosition;
+      await this.start(url);
+      return;
+    }
+    const gen = ++this.loadGen;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
+    this.retries = 0;
+    this.needsReload = false;
+    this.reloading = false;
+    this.activeReloadGen = undefined;
+    this.pendingReload = undefined;
+    this.ready = false;
+    this.heldPosition = undefined;
+    this.expired = false;
+    this.wantsPlayback = true;
+    this.cumulativeHealthyMs = 0;
+    this.lastHealthySampleAt = undefined;
+    this.lastObservedTime = undefined;
+    this.lastTimeAdvanceAt = undefined;
+    this.url = url;
+    this.liveHint = options.live ?? false;
+    this.pendingStartPosition = options.startPosition;
+    this.setStatus('loading');
+    this.reportPosition(undefined, undefined);
+    this.reportTracks?.(EMPTY_TRACKS);
+
+    this.media.pause();
+    await this.adapter.unload?.().catch(() => {});
+    if (this.closed || gen !== this.loadGen) return;
+    this.adapter.setLive?.(this.liveHint);
+    await this.loadActiveSource(url);
   }
 
   private bind(event: string, listener: () => void): void {
@@ -332,6 +443,8 @@ export class PlaybackSession {
       this.ready = true;
       this.ensurePositionTimer();
       this.attachSurface();
+      this.attachCaptionView();
+      this.emitTracks();
       const range = this.adapter?.timeline?.();
       if (snapshot.wasReady) {
         if (range && Number.isFinite(snapshot.position)) {
@@ -391,6 +504,20 @@ export class PlaybackSession {
     if (this.surfaceAttached === handle) this.surfaceAttached = undefined;
   }
 
+  captionViewCreated(handle: string): void {
+    this.captionView = handle;
+    if (this.closed || !this.initialized) return;
+    this.attachCaptionView();
+  }
+
+  captionViewDestroyed(handle: string): void {
+    if (!this.closed && this.initialized && this.media.clearCaptionViewHandle) {
+      this.media.clearCaptionViewHandle(handle);
+    }
+    if (this.captionView === handle) this.captionView = undefined;
+    if (this.captionViewAttached === handle) this.captionViewAttached = undefined;
+  }
+
   async toggle(): Promise<void> {
     await this.setPlaying(!this.wantsPlayback);
   }
@@ -423,6 +550,20 @@ export class PlaybackSession {
         await this.reload(this.url, snapshot);
         return;
       }
+      if (this.isLive() && this.adapter?.hasActiveRecording?.()) {
+        const switched = await this.adapter.switchToRecorded?.().catch(() => false);
+        if (this.closed) return;
+        if (switched) {
+          this.heldPosition = undefined;
+          const now = this.now();
+          this.lastObservedTime = this.media.currentTime;
+          this.lastTimeAdvanceAt = now;
+          this.lastHealthySampleAt = now;
+          if (this.surface) await this.media.play();
+          this.updatePosition();
+          return;
+        }
+      }
       if (this.heldPosition !== undefined) {
         const range = this.adapter?.timeline?.();
         if (range) {
@@ -444,6 +585,9 @@ export class PlaybackSession {
         this.media.pause();
         if (this.ready) this.heldPosition = this.media.currentTime;
         else if (this.heldPosition === undefined && this.pendingReload) this.heldPosition = this.pendingReload.position;
+        if (this.isLive()) {
+          this.adapter?.startTimeshift?.();
+        }
       }
       this.setStatus('paused');
     }
@@ -452,6 +596,9 @@ export class PlaybackSession {
 
   seek(delta: number): void {
     if (this.closed || !Number.isFinite(delta)) return;
+    if (this.isLive() && delta < 0) {
+      this.adapter?.startTimeshift?.();
+    }
     this.seekTo(this.media.currentTime + delta);
   }
 
@@ -486,6 +633,28 @@ export class PlaybackSession {
     await this.media.play(); this.updatePosition();
   }
 
+  getTracks(): TrackSnapshot {
+    return this.adapter?.getTracks?.() ?? EMPTY_TRACKS;
+  }
+
+  selectAudioTrack(id: string): void {
+    if (this.closed) return;
+    this.adapter?.selectAudioTrack?.(id);
+    this.emitTracks();
+  }
+
+  selectTextTrack(id: string | null): void {
+    if (this.closed) return;
+    this.adapter?.selectTextTrack?.(id);
+    this.emitTracks();
+  }
+
+  async handleMemoryWarning(): Promise<void> {
+    if (this.closed) return;
+    await this.adapter?.handleMemoryWarning?.();
+    this.updatePosition();
+  }
+
   private updatePosition(): void {
     if (this.closed || !this.ready) return;
     const range = this.adapter?.timeline?.();
@@ -504,11 +673,19 @@ export class PlaybackSession {
     this.loadGen++;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined; }
     if (this.positionTimer) { clearInterval(this.positionTimer); this.positionTimer = undefined; }
+    this.unsubscribeAdapterTracks?.();
+    this.unsubscribeAdapterTracks = undefined;
     for (const [event, listener] of this.listeners) this.media.removeEventListener(event, listener);
     this.listeners = [];
     this.closePromise = (async () => {
       if (this.initialized) {
         this.media.pause();
+        if (this.captionViewAttached && this.media.clearCaptionViewHandle) {
+          this.media.clearCaptionViewHandle(this.captionViewAttached);
+          this.captionViewAttached = undefined;
+        } else if (this.captionView && this.media.clearCaptionViewHandle) {
+          this.media.clearCaptionViewHandle(this.captionView);
+        }
         if (this.surfaceAttached) {
           this.media.clearSurfaceHandle(this.surfaceAttached);
           this.surfaceAttached = undefined;

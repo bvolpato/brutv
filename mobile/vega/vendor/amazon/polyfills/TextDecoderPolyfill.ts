@@ -16,7 +16,7 @@ import { TextDecoder } from "@amazon-devices/react-native-w3cmedia/dist/headless
 
 class TextDecoderPolyfill {
   static install() {
-    console.log("Installing TextDecoder polyfill");
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log("Installing TextDecoder polyfill");
     global.window.TextDecoder = TextDecoder;
   }
 }

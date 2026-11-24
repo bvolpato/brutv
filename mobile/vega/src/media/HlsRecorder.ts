@@ -1,21 +1,47 @@
 import {resilientFetch} from '../domain/http';
 import {httpURL, resolveURL} from '../domain/login';
 
-export const DVR_LIMITS = {seconds: 600, bytes: 256 * 1024 * 1024, segmentBytes: 8 * 1024 * 1024, manifestBytes: 1024 * 1024};
+export const DVR_LIMITS = {
+  seconds: 600,
+  bytes: 256 * 1024 * 1024,
+  segmentBytes: 8 * 1024 * 1024,
+  manifestBytes: 1024 * 1024,
+  memorySegments: 8,
+  memoryBytes: 16 * 1024 * 1024,
+};
+
 const FILE_PREFIX = 'brutv-timeshift-';
+const SESSION_DIR_PREFIX = 'brutv-ts-';
 
 export interface TempStore {
   entries(): Promise<string[]>;
   write(name: string, value: string): Promise<void>;
   read(name: string): Promise<string>;
   remove(name: string): Promise<void>;
+  removeDir?(name: string): Promise<void>;
 }
+
 export class RecordingUnavailable extends Error {}
 export interface RecordedInfo {recording: boolean; seconds: number; bytes: number; message?: string}
+
 type Segment = {sequence: number; duration: number; url: string; discontinuity: number; gap: boolean};
 type Playlist = {target: number; segments: Segment[]; init?: string; independent: boolean};
-type StoredSegment = Omit<Segment, 'url'> & {file?: string; bytes: number; start: number};
-type Limits = typeof DVR_LIMITS;
+type StoredSegment = Omit<Segment, 'url'> & {
+  file?: string;
+  bytes: number;
+  start: number;
+  pdtLine: string;
+  extinfLine: string;
+  uriLine: string;
+};
+type Limits = {
+  seconds: number;
+  bytes: number;
+  segmentBytes: number;
+  manifestBytes: number;
+  memorySegments?: number;
+  memoryBytes?: number;
+};
 
 function attributes(value: string): Map<string, string> {
   const result = new Map<string, string>();
@@ -182,20 +208,40 @@ export function decodeBytes(value: string): Uint8Array {
   return bytes;
 }
 
+function encodeAsciiBytes(text: string): Uint8Array {
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    out[i] = text.charCodeAt(i) & 0xff;
+  }
+  return out;
+}
+
 export async function cleanStaleRecordings(store: TempStore): Promise<void> {
-  for (const name of await store.entries()) if (/^brutv-timeshift-[a-z0-9]+-[a-z0-9]+\.b64$/.test(name)) await store.remove(name);
+  for (const name of await store.entries()) {
+    if (/^brutv-ts-[a-z0-9]+$/.test(name) && store.removeDir) {
+      await store.removeDir(name);
+    } else if (/^brutv-timeshift-[a-z0-9]+-[a-z0-9]+\.b64$/.test(name)) {
+      await store.remove(name);
+    }
+  }
 }
 
 export class HlsRecorder {
   readonly manifestURL: string;
   private readonly originalURL: string;
+  private readonly sessionDir?: string;
+  private readonly maxMemorySegments: number;
+  private readonly maxMemoryBytes: number;
   private segments: StoredSegment[] = [];
   private target = 0;
   private pollInterval = 1000;
   private independent = false;
   private initURL?: string;
   private initFile?: string;
+  private initBytes?: Uint8Array;
   private files = new Set<string>();
+  private memoryCache = new Map<string, Uint8Array>();
+  private memoryBytes = 0;
   private bytes = 0;
   private closed = false;
   private started = false;
@@ -223,6 +269,9 @@ export class HlsRecorder {
     this.originalURL = httpURL(url).href;
     this.mediaURL = this.originalURL;
     this.manifestURL = `brutv-timeshift://${token}/live.m3u8`;
+    this.sessionDir = store.removeDir ? `${SESSION_DIR_PREFIX}${token}` : undefined;
+    this.maxMemorySegments = limits.memorySegments ?? DVR_LIMITS.memorySegments;
+    this.maxMemoryBytes = limits.memoryBytes ?? DVR_LIMITS.memoryBytes;
     this.epoch = this.now() / 1000;
     this.lastAdvanceAt = this.now();
   }
@@ -312,11 +361,39 @@ export class HlsRecorder {
     } finally {clearTimeout(timeout); this.transfers.delete(controller);}
   }
 
-  private async persist(bytes: Uint8Array): Promise<{file: string; bytes: number}> {
+  private cacheSegmentInMemory(file: string, bytes: Uint8Array): void {
+    if (this.maxMemorySegments <= 0 || this.maxMemoryBytes <= 0 || bytes.byteLength > this.maxMemoryBytes) {
+      return;
+    }
+    this.memoryCache.set(file, bytes);
+    this.memoryBytes += bytes.byteLength;
+    while (this.memoryCache.size > this.maxMemorySegments || this.memoryBytes > this.maxMemoryBytes) {
+      const oldest = this.memoryCache.keys().next();
+      if (oldest.done) break;
+      const evicted = this.memoryCache.get(oldest.value);
+      this.memoryCache.delete(oldest.value);
+      if (evicted) this.memoryBytes -= evicted.byteLength;
+    }
+  }
+
+  private evictFromMemory(file: string): void {
+    const cached = this.memoryCache.get(file);
+    if (cached) {
+      this.memoryCache.delete(file);
+      this.memoryBytes -= cached.byteLength;
+    }
+  }
+
+  private allocateFileName(): string {
+    const index = (this.nextFile++).toString(36);
+    return this.sessionDir ? `${this.sessionDir}/${index}.b64` : `${FILE_PREFIX}${this.token}-${index}.b64`;
+  }
+
+  private async persist(bytes: Uint8Array, isInit = false): Promise<{file: string; bytes: number}> {
     const size = 4 * Math.ceil(bytes.length / 3);
     if (size > this.limits.bytes) throw new RecordingUnavailable('This stream exceeds the temporary live-buffer size limit.');
     await this.trim(size, 0);
-    const file = `${FILE_PREFIX}${this.token}-${(this.nextFile++).toString(36)}.b64`;
+    const file = this.allocateFileName();
     this.files.add(file);
     try {await this.store.write(file, encodeBytes(bytes));} catch {
       await this.removeFile(file).catch(() => {});
@@ -324,9 +401,20 @@ export class HlsRecorder {
     }
     if (this.closed) {await this.removeFile(file); throw new Error('Live buffer closed.');}
     this.bytes += size;
+    if (isInit) {
+      this.initBytes = bytes;
+    } else {
+      this.cacheSegmentInMemory(file, bytes);
+    }
     return {file, bytes: size};
   }
-  private async removeFile(file: string): Promise<void> {await this.store.remove(file); this.files.delete(file);}
+
+  private async removeFile(file: string): Promise<void> {
+    this.evictFromMemory(file);
+    await this.store.remove(file);
+    this.files.delete(file);
+  }
+
   private async trim(incomingBytes: number, incomingSeconds: number): Promise<void> {
     let seconds = this.segments.reduce((sum, segment) => sum + segment.duration, 0);
     while (this.segments.length && (this.bytes + incomingBytes > this.limits.bytes || seconds + incomingSeconds > this.limits.seconds ||
@@ -340,6 +428,30 @@ export class HlsRecorder {
     if (this.bytes + incomingBytes > this.limits.bytes) throw new RecordingUnavailable('The temporary live buffer reached its storage limit.');
   }
 
+  private buildSegmentEntry(
+    sequence: number,
+    duration: number,
+    discontinuity: number,
+    gap: boolean,
+    start: number,
+    bytes: number,
+    file?: string,
+  ): StoredSegment {
+    const ext = this.initFile ? 'm4s' : 'ts';
+    return {
+      sequence,
+      duration,
+      discontinuity,
+      gap,
+      start,
+      bytes,
+      file,
+      pdtLine: `#EXT-X-PROGRAM-DATE-TIME:${new Date((this.epoch + start) * 1000).toISOString()}`,
+      extinfLine: `#EXTINF:${duration},`,
+      uriLine: `brutv-timeshift://${this.token}/${file || `gap-${sequence}`}.${ext}`,
+    };
+  }
+
   private async ingest(playlist: Playlist): Promise<boolean> {
     if (this.closed) return false;
     const longestSegment = playlist.segments.reduce((longest, segment) => Math.max(longest, Math.ceil(segment.duration)), 0);
@@ -349,7 +461,7 @@ export class HlsRecorder {
     if (playlist.init !== this.initURL && this.lastSequence !== undefined) throw new RecordingUnavailable('Changing HLS initialization is not supported for live rewind.');
     if (playlist.init && !this.initFile) {
       const init = await this.download(playlist.init, this.limits.segmentBytes);
-      const stored = await this.persist(init.bytes);
+      const stored = await this.persist(init.bytes, true);
       this.initURL = playlist.init; this.initFile = stored.file;
     }
     const last = playlist.segments[playlist.segments.length - 1];
@@ -366,14 +478,23 @@ export class HlsRecorder {
       if (missing > 64) throw new RecordingUnavailable('The provider skipped too much live content to maintain a rewind buffer.');
       for (let offset = 0; offset < missing; offset++) {
         await this.trim(0, this.target);
-        this.segments.push({sequence: this.lastSequence! + 1, duration: this.target, discontinuity: this.lastDiscontinuity, gap: true, bytes: 0, start: this.nextStart});
+        const gapSeq = this.lastSequence! + 1;
+        this.segments.push(this.buildSegmentEntry(gapSeq, this.target, this.lastDiscontinuity, true, this.nextStart, 0));
         this.nextStart += this.target;
-        this.lastSequence = this.lastSequence! + 1;
+        this.lastSequence = gapSeq;
       }
       await this.trim(0, segment.duration);
-      const stored = segment.gap ? {bytes: 0} : await this.persist((await this.download(segment.url, this.limits.segmentBytes)).bytes);
+      const stored = segment.gap ? {bytes: 0, file: undefined} : await this.persist((await this.download(segment.url, this.limits.segmentBytes)).bytes);
       if (this.closed) return advanced;
-      this.segments.push({sequence: segment.sequence, duration: segment.duration, discontinuity: segment.discontinuity, gap: segment.gap, start: this.nextStart, ...stored});
+      this.segments.push(this.buildSegmentEntry(
+        segment.sequence,
+        segment.duration,
+        segment.discontinuity,
+        segment.gap,
+        this.nextStart,
+        stored.bytes,
+        stored.file,
+      ));
       this.nextStart += segment.duration;
       this.lastSequence = segment.sequence; this.lastDiscontinuity = segment.discontinuity;
       advanced = true;
@@ -387,6 +508,7 @@ export class HlsRecorder {
     const delay = this.failures > 0 ? Math.min(8000, this.pollInterval * (this.failures + 1)) : this.pollInterval;
     this.timer = setTimeout(() => {void this.refresh().finally(() => this.schedule());}, delay);
   }
+
   async refresh(): Promise<void> {
     if (this.closed || !this.recording) return;
     if (this.active) return this.active;
@@ -416,6 +538,7 @@ export class HlsRecorder {
     })();
     try {await this.active;} finally {this.active = undefined;}
   }
+
   get info(): RecordedInfo {
     return {recording: this.recording, seconds: this.segments.reduce((sum, segment) => sum + (segment.gap ? 0 : segment.duration), 0), bytes: this.bytes, message: this.message};
   }
@@ -425,27 +548,40 @@ export class HlsRecorder {
   manifest(): string {
     if (this.closed || !this.segments.length) throw new Error('Live buffer unavailable.');
     const first = this.segments[0];
-    const lines = ['#EXTM3U', '#EXT-X-VERSION:7', `#EXT-X-TARGETDURATION:${this.target}`, `#EXT-X-MEDIA-SEQUENCE:${first.sequence}`,
-      `#EXT-X-DISCONTINUITY-SEQUENCE:${first.discontinuity}`];
+    const lines = [
+      '#EXTM3U',
+      '#EXT-X-VERSION:7',
+      `#EXT-X-TARGETDURATION:${this.target}`,
+      `#EXT-X-MEDIA-SEQUENCE:${first.sequence}`,
+      `#EXT-X-DISCONTINUITY-SEQUENCE:${first.discontinuity}`,
+    ];
     if (this.independent) lines.push('#EXT-X-INDEPENDENT-SEGMENTS');
     if (this.initFile) lines.push(`#EXT-X-MAP:URI="brutv-timeshift://${this.token}/${this.initFile}.mp4"`);
     let discontinuity = first.discontinuity;
-    for (const segment of this.segments) {
+    for (let index = 0; index < this.segments.length; index++) {
+      const segment = this.segments[index];
       for (; discontinuity < segment.discontinuity; discontinuity++) lines.push('#EXT-X-DISCONTINUITY');
       if (segment.gap) lines.push('#EXT-X-GAP');
-      lines.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date((this.epoch + segment.start) * 1000).toISOString()}`);
-      lines.push(`#EXTINF:${segment.duration},`, `brutv-timeshift://${this.token}/${segment.file || `gap-${segment.sequence}`}.${this.initFile ? 'm4s' : 'ts'}`);
+      lines.push(segment.pdtLine, segment.extinfLine, segment.uriLine);
     }
     return lines.join('\n') + '\n';
   }
+
   async response(uri: string, cancelled: () => boolean = () => false): Promise<{data: Uint8Array; mime: string; origin?: number}> {
     if (this.closed || !uri.startsWith(`brutv-timeshift://${this.token}/`)) throw new Error('Live buffer unavailable.');
     if (uri === this.manifestURL) {
       const manifest = this.manifest();
-      return {data: Uint8Array.from(manifest, character => character.charCodeAt(0)), mime: 'application/x-mpegurl', origin: this.timelineOrigin};
+      return {data: encodeAsciiBytes(manifest), mime: 'application/x-mpegurl', origin: this.timelineOrigin};
     }
     const name = uri.slice(`brutv-timeshift://${this.token}/`.length).replace(/\.(?:ts|m4s|mp4)$/, '');
     if (!this.files.has(name)) throw new Error('This part of the live buffer has expired.');
+    if (this.initFile && name === this.initFile && this.initBytes) {
+      return {data: this.initBytes, mime: 'video/mp4'};
+    }
+    const cached = this.memoryCache.get(name);
+    if (cached) {
+      return {data: cached, mime: this.initFile ? 'video/mp4' : 'video/mp2t'};
+    }
     if (this.queuedReads >= 8) throw new Error('Too many pending live-buffer reads.');
     const previous = this.readTail;
     let release!: () => void;
@@ -461,6 +597,7 @@ export class HlsRecorder {
       return {data: decodeBytes(contents), mime: this.initFile ? 'video/mp4' : 'video/mp2t'};
     } finally {this.queuedReads--; release();}
   }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true; this.recording = false;
@@ -469,7 +606,19 @@ export class HlsRecorder {
     await this.active?.catch(() => {});
     await this.readTail;
     let failure: unknown;
-    for (const file of this.files) try {await this.removeFile(file);} catch (error) {failure = error;}
+    this.memoryCache.clear();
+    this.memoryBytes = 0;
+    this.initBytes = undefined;
+    if (this.sessionDir && this.store.removeDir) {
+      try {
+        await this.store.removeDir(this.sessionDir);
+        this.files.clear();
+      } catch (error) {
+        failure = error;
+      }
+    } else {
+      for (const file of this.files) try {await this.removeFile(file);} catch (error) {failure = error;}
+    }
     this.segments = []; this.bytes = 0;
     if (failure) throw failure;
   }

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {localizePlayerMessage, playerText} from '../src/media/playerCopy';
+import {formatPlaybackTime, localizePlayerMessage, playerText} from '../src/media/playerCopy';
+
+test('formatPlaybackTime formats MM:SS and H:MM:SS cleanly', () => {
+  assert.equal(formatPlaybackTime(0), '0:00');
+  assert.equal(formatPlaybackTime(65), '1:05');
+  assert.equal(formatPlaybackTime(3661), '1:01:01');
+  assert.equal(formatPlaybackTime(-5), '0:00');
+});
 
 test('Portuguese player copy covers all playback states and controls', () => {
   const text = playerText('pt');

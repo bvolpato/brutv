@@ -284,16 +284,41 @@ export function loginLink(source: LoginSource): string {
   return 'brutv://login?' + fields.map(([key, value]) => `${key}=${escapeLoginValue(value)}`).join('&');
 }
 
-export function apiURL(source: Extract<LoginSource, {kind: 'xtream'}>, action?: string, id?: string): string {
+export function apiURL(
+  source: Extract<LoginSource, {kind: 'xtream'}>,
+  action?: string,
+  id?: string,
+  extraParams?: Record<string, string>,
+): string {
   const base = httpURL(source.server.replace(/\/+$/, '') + '/player_api.php');
   let query = `username=${encodeURIComponent(source.username)}&password=${encodeURIComponent(source.password)}`;
   if (action) query += `&action=${encodeURIComponent(action)}`;
   if (id) query += `&series_id=${encodeURIComponent(id)}`;
+  if (extraParams) {
+    for (const [key, value] of Object.entries(extraParams)) {
+      query += `&${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    }
+  }
   return `${base.origin}${base.pathname}?${query}`;
 }
 
-export function streamURL(source: Extract<LoginSource, {kind: 'xtream'}>, section: 'live' | 'movie' | 'series', id: string, extension: string): string {
+export function streamURLPrefix(
+  source: Extract<LoginSource, {kind: 'xtream'}>,
+  section: 'live' | 'movie' | 'series',
+): string {
   const base = httpURL(source.server.replace(/\/+$/, ''));
   const basePath = base.pathname === '/' ? '' : base.pathname.replace(/\/+$/, '');
-  return `${base.origin}${basePath}/${section}/${encodeURIComponent(source.username)}/${encodeURIComponent(source.password)}/${encodeURIComponent(id)}.${encodeURIComponent(extension)}`;
+  return `${base.origin}${basePath}/${section}/${encodeURIComponent(source.username)}/${encodeURIComponent(source.password)}/`;
+}
+
+const SAFE_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+export function streamURLFromPrefix(prefix: string, id: string, extension: string): string {
+  const encodedID = SAFE_SEGMENT.test(id) ? id : encodeURIComponent(id);
+  const encodedExt = SAFE_SEGMENT.test(extension) ? extension : encodeURIComponent(extension);
+  return `${prefix}${encodedID}.${encodedExt}`;
+}
+
+export function streamURL(source: Extract<LoginSource, {kind: 'xtream'}>, section: 'live' | 'movie' | 'series', id: string, extension: string): string {
+  return streamURLFromPrefix(streamURLPrefix(source, section), id, extension);
 }
