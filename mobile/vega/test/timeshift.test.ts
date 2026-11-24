@@ -40,8 +40,8 @@ function fixture(limits = DVR_LIMITS) {
   return {store, recorder, requests, setManifest(value: string) {manifest = value;}};
 }
 
-test('recording advances without a playback consumer and serves the latest segment from disk', async () => {
-  const {store, recorder, setManifest} = fixture();
+test('recording advances without a playback consumer, serves live-edge from memory ring and older segments from disk', async () => {
+  const {store, recorder, setManifest} = fixture({...DVR_LIMITS, memorySegments: 2});
   try {
     await recorder.start();
     setManifest(playlist(11));
@@ -52,9 +52,14 @@ test('recording advances without a playback consumer and serves the latest segme
     assert.match(manifest, /#EXT-X-MEDIA-SEQUENCE:10/);
     assert.equal(manifest.includes('provider.test'), false);
     assert.equal(manifest.includes('private'), false);
-    const uri = manifest.trim().split('\n').pop()!;
-    const read = await recorder.response(uri);
-    assert.deepEqual([...read.data], [1, 2, 3, 4, 5]);
+    const segmentURIs = manifest.trim().split('\n').filter(line => line.startsWith('brutv-timeshift:'));
+    // Latest segment hits in-memory Uint8Array tail ring with 0 disk reads.
+    const latest = await recorder.response(segmentURIs[segmentURIs.length - 1]);
+    assert.deepEqual([...latest.data], [1, 2, 3, 4, 5]);
+    assert.equal(store.reads, 0);
+    // Older segment evicted from the 2-segment RAM ring falls back to disk read.
+    const oldest = await recorder.response(segmentURIs[0]);
+    assert.deepEqual([...oldest.data], [1, 2, 3, 4, 5]);
     assert.equal(store.reads, 1);
     assert.ok(store.files.size > 0);
     assert.ok([...store.files.values()].every(value => !value.includes('provider.test')));
@@ -425,4 +430,41 @@ test('recorder tolerates small CDN edge sequence skew, sends no-cache header, an
     assert.equal(recorder.info.recording, false);
     assert.match(recorder.info.message!, /restarted its live timeline/);
   } finally {await recorder.close();}
+});
+
+test('session directory mode stores under brutv-ts-<token>/ and cleans up in a single removeDir call', async () => {
+  const dirsRemoved: string[] = [];
+  const filesRemoved: string[] = [];
+  const files = new Map<string, string>();
+  const dirStore: TempStore = {
+    entries: async () => ['brutv-ts-stale99', 'brutv-timeshift-old-0.b64', 'other-file'],
+    write: async (name, value) => { files.set(name, value); },
+    read: async name => { const v = files.get(name); if (v === undefined) throw new Error('missing'); return v; },
+    remove: async name => { filesRemoved.push(name); files.delete(name); },
+    removeDir: async name => {
+      dirsRemoved.push(name);
+      for (const key of [...files.keys()]) {
+        if (key.startsWith(`${name}/`)) files.delete(key);
+      }
+    },
+  };
+
+  await cleanStaleRecordings(dirStore);
+  assert.deepEqual(dirsRemoved, ['brutv-ts-stale99']);
+  assert.deepEqual(filesRemoved, ['brutv-timeshift-old-0.b64']);
+
+  dirsRemoved.length = 0;
+  filesRemoved.length = 0;
+  const recorder = new HlsRecorder(dirStore, 'https://provider.test/live.m3u8', 'sess42', async input => {
+    const url = String(input);
+    return response(url.includes('.m3u8') ? playlist(10, 3) : new Uint8Array([7, 8, 9]), url);
+  });
+  await recorder.start();
+  assert.ok([...files.keys()].every(key => key.startsWith('brutv-ts-sess42/')));
+  // Manifest lines are cached stably across repeated polls.
+  assert.equal(recorder.manifest(), recorder.manifest());
+  await recorder.close();
+  assert.deepEqual(dirsRemoved, ['brutv-ts-sess42']);
+  assert.equal(filesRemoved.length, 0);
+  assert.equal(files.size, 0);
 });

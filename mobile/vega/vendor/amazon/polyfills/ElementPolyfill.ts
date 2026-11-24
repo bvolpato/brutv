@@ -25,7 +25,7 @@ class Element {
     this.tagName = tagName;
   }
   static install() {
-    console.log('Installing Element Polyfill');
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('Installing Element Polyfill');
     global.Element = Element;
   }
 }

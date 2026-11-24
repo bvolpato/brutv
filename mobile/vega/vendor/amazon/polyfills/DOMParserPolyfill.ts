@@ -13,43 +13,49 @@
  */
 
 // @ts-nocheck
-import {DOMParser} from '@xmldom/xmldom';
 
-// CustomDOMParser will try to use native xml parser
-// provided by native-player-utils (sets property
-// global.nativeParseFromString if available), if not found
-// it will fallback to use xmldom's DOMParser
-class CustomDOMParser extends DOMParser {
+// CustomDOMParser tries native xml parser provided by native-player-utils
+// (global.nativeParseFromString) and lazy-loads @xmldom/xmldom only on fallback.
+class CustomDOMParser {
+  private fallbackParser: any;
+
   constructor() {
-    console.log(`CustomDOMParser created`);
-    super();
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log(`CustomDOMParser created`);
   }
 
   parseFromString(str: string, mimeType: string) {
-    console.log(`CustomDOMParser::parseFromString`);
-    console.log(`shaka: global.nativeParseFromString = ${!!global.nativeParseFromString}`);
+    if (typeof __DEV__ !== 'undefined' && __DEV__) {
+      console.log(`CustomDOMParser::parseFromString`);
+      console.log(`shaka: global.nativeParseFromString = ${!!global.nativeParseFromString}`);
+    }
     if (global.nativeParseFromString) {
-      // native xml parser available, can use native parsing
-      console.log(`nativeParseFromString available`);
-      console.log(`calling XmlUtils.nativeParseFromString, mime:`, mimeType);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log(`nativeParseFromString available`);
+        console.log(`calling XmlUtils.nativeParseFromString, mime:`, mimeType);
+      }
       return global.nativeParseFromString(str);
     } else {
-      // native xml parser not available, fallback and use xmldom
-      console.log(`nativeParseFromString not available`);
-      console.log(`calling DomParser's parseFromString`);
-      return super.parseFromString(str, mimeType);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log(`nativeParseFromString not available`);
+        console.log(`calling DomParser's parseFromString`);
+      }
+      if (!this.fallbackParser) {
+        const {DOMParser} = require('@xmldom/xmldom');
+        this.fallbackParser = new DOMParser();
+      }
+      return this.fallbackParser.parseFromString(str, mimeType);
     }
   }
 }
 
 class DOMParserPolyfill {
   static install() {
-    console.log('Installing dom parser polyfills');
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('Installing dom parser polyfills');
     if (typeof window !== 'undefined') {
       try {
         global.window.DOMParser = CustomDOMParser;
         global.DOMParser = CustomDOMParser;
-        console.log('Installed dom parser polyfills');
+        if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('Installed dom parser polyfills');
       } catch (e) {
         console.warn('Failed to install DOMParser polyfill:', e);
       }

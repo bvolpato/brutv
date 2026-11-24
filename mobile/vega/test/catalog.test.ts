@@ -1,37 +1,171 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {loadCatalog, loadEpisodes} from '../src/domain/catalog';
+import {
+  hydrateCachedItems,
+  loadCatalog,
+  loadCatalogSection,
+  loadEpisodes,
+  loadShortEPG,
+  selectLiveOutputFormat,
+} from '../src/domain/catalog';
 import {IPTV_USER_AGENT, resilientFetch} from '../src/domain/http';
 
-test('Xtream catalog and episode adapters use provider IDs and explicit container extensions', async () => {
+test('Xtream catalog loads Live first, loads Movie and Series lazily in parallel with deduplication, and respects allowed_output_formats', async () => {
   const previousFetch = global.fetch;
   const actions: string[] = [];
   global.fetch = async input => {
     const action = new URL(String(input)).searchParams.get('action') || 'auth';
     actions.push(action);
     const payload: Record<string, unknown> = {
-      auth: {user_info: {auth: '1'}},
-      get_live_categories: [{category_id: 7, category_name: 'News'}],
-      get_live_streams: [{stream_id: 42, category_id: '7', name: 'Channel'}],
+      auth: {user_info: {auth: '1', allowed_output_formats: ['ts', 'm3u8']}},
+      get_live_categories: [{category_id: 7, category_name: 'News'}, {category_id: 2, category_name: 'Sports'}],
+      get_live_streams: [
+        {stream_id: 42, category_id: '7', name: 'Channel', epg_channel_id: 'news.hd'},
+        {stream_id: 42, category_id: '7', name: 'Duplicate Channel'},
+        {stream_id: 49, category_id: '2', name: 'Sports One'},
+      ],
       get_vod_categories: [{category_id: '8', category_name: 'Films'}],
       get_vod_streams: [{stream_id: 43, category_id: 8, name: 'Movie', container_extension: 'mp4'}],
       get_series_categories: [{category_id: 9, category_name: 'Shows'}],
       get_series: [{series_id: 44, category_id: '9', name: 'Series'}],
-      get_series_info: {episodes: {'1': [{id: '45', title: 'Episode one', container_extension: 'mp4'}]}},
+      get_series_info: {
+        episodes: {
+          '10': [{id: '46', episode_num: '1', title: 'Season 10 Ep 1', container_extension: 'mp4'}],
+          '2': [
+            {id: '', episode_num: '9', title: 'Missing ID should be skipped'},
+            {id: '45b', episode_num: '10', title: 'Episode ten', container_extension: 'mp4', info: {movie_image: 'https://img.example/ep10.jpg'}},
+            {id: '45a', episode_num: '2', title: 'Episode two', container_extension: 'mp4', info: {movie_image: 'https://img.example/ep2.jpg'}},
+          ],
+        },
+      },
     };
     return new Response(JSON.stringify(payload[action]), {status: 200});
   };
   try {
     const source = {kind: 'xtream' as const, server: 'https://provider.example/panel', username: 'qa', password: 'qa'};
-    const catalog = await loadCatalog(source);
-    assert.equal(catalog.items[0].url, 'https://provider.example/panel/live/qa/qa/42.m3u8');
-    assert.equal(catalog.items[1].url, 'https://provider.example/panel/movie/qa/qa/43.mp4');
-    assert.equal(catalog.items[2].url, undefined);
-    assert.equal(catalog.items[2].group, 'Shows');
+    const initial = await loadCatalog(source);
+    assert.equal(initial.loadedSections.live, true);
+    assert.equal(initial.loadedSections.movie, false);
+    assert.equal(initial.loadedSections.series, false);
+    assert.equal(initial.sections.live.length, 2);
+    assert.equal(initial.sections.live[0].url, 'https://provider.example/panel/live/qa/qa/42.m3u8');
+    assert.equal(initial.sections.live[0].tvgID, 'news.hd');
+    assert.deepEqual(initial.categories.live, ['News', 'Sports']);
+    // Only auth + live fetched on initial sign-in.
+    assert.equal(actions[0], 'auth');
+    assert.deepEqual(actions.slice(1).sort(), ['get_live_categories', 'get_live_streams']);
+
+    // Deduplicated concurrent Movie load triggers only one network pair.
+    const [withMovieA, withMovieB] = await Promise.all([
+      loadCatalogSection(initial, 'movie'),
+      loadCatalogSection(initial, 'movie'),
+    ]);
+    assert.equal(withMovieA.loadedSections.movie, true);
+    assert.equal(withMovieB.loadedSections.movie, true);
+    assert.equal(withMovieA.sections.movie[0].url, 'https://provider.example/panel/movie/qa/qa/43.mp4');
+    assert.equal(actions.filter(a => a === 'get_vod_streams').length, 1);
+
+    const withSeries = await loadCatalogSection(withMovieA, 'series');
+    assert.equal(withSeries.sections.series[0].url, undefined);
+    assert.equal(withSeries.sections.series[0].group, 'Shows');
+
+    // Numeric season and episode sorting, episode logo preservation, and missing episode.id guard.
     const episodes = await loadEpisodes(source, '44');
-    assert.equal(episodes[0].url, 'https://provider.example/panel/series/qa/qa/45.mp4');
-    assert.equal(episodes[0].group, 'Season 1');
-    assert.deepEqual(actions, ['auth', 'get_live_categories', 'get_live_streams', 'get_vod_categories', 'get_vod_streams', 'get_series_categories', 'get_series', 'get_series_info']);
+    assert.equal(episodes.length, 3);
+    assert.deepEqual(episodes.map(ep => [ep.group, ep.id, ep.logo]), [
+      ['Season 2', 'episode:45a', 'https://img.example/ep2.jpg'],
+      ['Season 2', 'episode:45b', 'https://img.example/ep10.jpg'],
+      ['Season 10', 'episode:46', undefined],
+    ]);
+    assert.equal(episodes[0].url, 'https://provider.example/panel/series/qa/qa/45a.mp4');
+  } finally { global.fetch = previousFetch; }
+});
+
+test('selectLiveOutputFormat respects allowed_output_formats without hardcoding m3u8', () => {
+  assert.equal(selectLiveOutputFormat(undefined), 'm3u8');
+  assert.equal(selectLiveOutputFormat([]), 'm3u8');
+  assert.equal(selectLiveOutputFormat(['ts', 'm3u8']), 'm3u8');
+  assert.equal(selectLiveOutputFormat(['hls']), 'm3u8');
+  assert.equal(selectLiveOutputFormat(['mpd', 'ts']), 'mpd');
+  assert.equal(selectLiveOutputFormat(['mp4']), 'mp4');
+  assert.equal(selectLiveOutputFormat(['ts']), 'ts');
+  assert.equal(selectLiveOutputFormat('.mpd, .ts'), 'mpd');
+});
+
+test('large catalog (75,000 items) loads without call-stack overflow and hydrates cached sections cleanly', async () => {
+  const previousFetch = global.fetch;
+  const count = 75_000;
+  const liveStreams = Array.from({length: count}, (_, i) => ({
+    stream_id: i + 1,
+    category_id: '1',
+    name: `Channel ${i + 1}`,
+  }));
+  const livePayload = JSON.stringify(liveStreams);
+  global.fetch = async input => {
+    const action = new URL(String(input)).searchParams.get('action') || 'auth';
+    if (action === 'auth') return new Response(JSON.stringify({user_info: {auth: 1, allowed_output_formats: ['m3u8']}}));
+    if (action === 'get_live_categories') return new Response(JSON.stringify([{category_id: '1', category_name: 'All'}]));
+    if (action === 'get_live_streams') return new Response(livePayload);
+    return new Response('[]');
+  };
+  try {
+    const source = {kind: 'xtream' as const, server: 'https://provider.example', username: 'qa', password: 'qa'};
+    const catalog = await loadCatalog(source);
+    assert.equal(catalog.sections.live.length, count);
+    assert.equal(catalog.items.length, count);
+    assert.equal(catalog.sections.live[count - 1].url, `https://provider.example/live/qa/qa/${count}.m3u8`);
+
+    const hydrated = hydrateCachedItems(source, 'live', [{id: 'live:99', kind: 'live', name: 'Cached', group: 'News', streamID: '99'}], 'm3u8');
+    assert.equal(hydrated[0].url, 'https://provider.example/live/qa/qa/99.m3u8');
+  } finally { global.fetch = previousFetch; }
+});
+
+test('catalog loader enforces response byte cap before parsing oversized Content-Length or chunked payloads', async () => {
+  const previousFetch = global.fetch;
+  let bodyRead = false;
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({'content-length': '2048'}),
+    text: async () => { bodyRead = true; return 'x'.repeat(2048); },
+  } as unknown as Response);
+  try {
+    await assert.rejects(
+      loadCatalog({kind: 'm3u', url: 'https://provider.example/huge.m3u'}, undefined, {maxBytes: 1024}),
+      /exceeds the supported size limit/,
+    );
+    assert.equal(bodyRead, false);
+
+    // Chunked streaming response without Content-Length is aborted once bytes exceed cap.
+    global.fetch = async () => new Response('#EXTM3U\n' + 'A'.repeat(2048), {status: 200});
+    await assert.rejects(
+      loadCatalog({kind: 'm3u', url: 'https://provider.example/chunked-huge.m3u'}, undefined, {maxBytes: 512}),
+      /exceeds the supported size limit/,
+    );
+  } finally { global.fetch = previousFetch; }
+});
+
+test('loadShortEPG decodes base64 UTF-8 Now and Next program entries', async () => {
+  const previousFetch = global.fetch;
+  const toB64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  global.fetch = async input => {
+    const parsed = new URL(String(input));
+    assert.equal(parsed.searchParams.get('action'), 'get_short_epg');
+    assert.equal(parsed.searchParams.get('stream_id'), '42');
+    return new Response(JSON.stringify({
+      epg_listings: [
+        {id: '1', title: toB64('Jornal da Noite'), description: toB64('Edição especial'), start_timestamp: '1000', stop_timestamp: '2000'},
+        {id: '2', title: toB64('Filme: Ação'), description: toB64('Sinopse'), start_timestamp: '2000', stop_timestamp: '3000'},
+      ],
+    }));
+  };
+  try {
+    const source = {kind: 'xtream' as const, server: 'https://provider.example', username: 'qa', password: 'qa'};
+    const epg = await loadShortEPG(source, '42', undefined, 1500);
+    assert.equal(epg.now?.title, 'Jornal da Noite');
+    assert.equal(epg.now?.description, 'Edição especial');
+    assert.equal(epg.next?.title, 'Filme: Ação');
+    assert.equal(epg.entries.length, 2);
   } finally { global.fetch = previousFetch; }
 });
 
@@ -51,30 +185,22 @@ test('provider rejections do not echo account credentials or URLs into errors', 
   } finally { global.fetch = previousFetch; }
 });
 
-test('Xtream catalog loads Live first and tolerates failing or non-array VOD and Series endpoints', async () => {
+test('Xtream catalog tolerates non-array categories while loading live streams', async () => {
   const previousFetch = global.fetch;
-  const actions: string[] = [];
   global.fetch = async input => {
     const action = new URL(String(input)).searchParams.get('action') || 'auth';
-    actions.push(action);
     if (action === 'auth') return new Response(JSON.stringify({user_info: {auth: '1'}}), {status: 200});
-    if (action === 'get_live_categories') return new Response(JSON.stringify({}), {status: 200});
+    if (action === 'get_live_categories') return new Response('', {status: 404});
     if (action === 'get_live_streams') return new Response(JSON.stringify([{stream_id: 7, name: 'Live One'}]), {status: 200});
-    if (action === 'get_vod_categories') return new Response('', {status: 404});
-    if (action === 'get_series_categories') return new Response(JSON.stringify([{category_id: 1, category_name: 'Shows'}]), {status: 200});
-    if (action === 'get_series') return new Response(JSON.stringify({error: 'disabled'}), {status: 200});
     return new Response('[]', {status: 200});
   };
   try {
     const source = {kind: 'xtream' as const, server: 'https://provider.example', username: 'qa', password: 'qa'};
     const catalog = await loadCatalog(source);
-    assert.equal(catalog.items.length, 1);
-    assert.equal(catalog.items[0].kind, 'live');
-    assert.equal(catalog.items[0].name, 'Live One');
-    assert.equal(catalog.items[0].group, 'Uncategorized');
-    assert.equal(actions[0], 'auth');
-    assert.equal(actions[1], 'get_live_categories');
-    assert.equal(actions[2], 'get_live_streams');
+    assert.equal(catalog.sections.live.length, 1);
+    assert.equal(catalog.sections.live[0].kind, 'live');
+    assert.equal(catalog.sections.live[0].name, 'Live One');
+    assert.equal(catalog.sections.live[0].group, 'Uncategorized');
   } finally { global.fetch = previousFetch; }
 });
 
@@ -226,7 +352,8 @@ test('Xtream auth accepts boolean true, rejects expired or disabled status, and 
   try {
     const source = {kind: 'xtream' as const, server: 'https://provider.example', username: 'qa', password: 'qa'};
     const catalog = await loadCatalog(source);
-    assert.equal(catalog.items.find(item => item.id === 'movie:2')?.url, 'https://provider.example/movie/qa/qa/2.mp4');
+    const withMovie = await loadCatalogSection(catalog, 'movie');
+    assert.equal(withMovie.sections.movie.find(item => item.id === 'movie:2')?.url, 'https://provider.example/movie/qa/qa/2.mp4');
     const episodes = await loadEpisodes(source, '3');
     assert.equal(episodes[0].url, 'https://provider.example/series/qa/qa/4.m4v');
 

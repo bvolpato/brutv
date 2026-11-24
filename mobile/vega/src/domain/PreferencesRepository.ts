@@ -1,4 +1,4 @@
-import {emptyPreferences, Preferences, readPreferences} from './preferences';
+import {emptyPreferences, Preferences, sanitizePreferences, utf8ByteLength} from './preferences';
 
 export interface PreferenceFiles {
   read(name: string): Promise<string | undefined>;
@@ -20,7 +20,7 @@ export class PreferencesRepository {
       if (text === undefined) return undefined;
       const value = JSON.parse(text);
       if (!Number.isSafeInteger(value?.generation) || value.generation < 1) throw new Error('Invalid saved-library generation.');
-      return {slot, generation: value.generation as number, preferences: readPreferences(JSON.stringify(value.preferences))};
+      return {slot, generation: value.generation as number, preferences: sanitizePreferences(value.preferences)};
     }).map(promise => promise.then(value => ({value}), () => ({error: true as const}))));
     const valid = records.flatMap(record => 'value' in record && record.value ? [record.value] : []);
     valid.sort((a, b) => b.generation - a.generation);
@@ -35,14 +35,14 @@ export class PreferencesRepository {
 
   save(preferences: Preferences): Promise<void> {
     // Whitelist the snapshot before queueing it; sources and catalog URLs are never serialized.
-    const snapshot = readPreferences(JSON.stringify(preferences));
+    const snapshot = sanitizePreferences(preferences);
     this.writes = this.writes.catch(() => {}).then(async () => {
       const slot = 1 - this.activeSlot;
       const generation = this.generation + 1;
       if (!Number.isSafeInteger(generation)) throw new Error('Saved-library generation exceeds its limit.');
       const text = JSON.stringify({generation, preferences: snapshot});
       const written = await this.files.write(slots[slot], text);
-      if (written !== text.length) throw new Error('Incomplete saved-library write.');
+      if (written !== utf8ByteLength(text)) throw new Error('Incomplete saved-library write.');
       this.activeSlot = slot;
       this.generation = generation;
     });

@@ -2,24 +2,44 @@ import {PlaybackStatus} from './PlaybackSession';
 
 export type PlayerLanguage = 'en' | 'pt';
 
+export function formatPlaybackTime(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '0:00';
+  const whole = Math.floor(totalSeconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const secs = whole % 60;
+  const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return hours > 0 ? `${hours}:${pad2(minutes)}:${pad2(secs)}` : `${minutes}:${pad2(secs)}`;
+}
+
 const copy = {
   en: {
     status: {
       loading: 'Loading', buffering: 'Buffering', playing: 'Playing', paused: 'Paused', ended: 'Ended', error: 'Playback failed. Check the provider and source format, then retry.',
     } satisfies Record<PlaybackStatus, string>,
     back: 'Back to library', play: 'Play', pause: 'Pause', retry: 'Retry', back10: 'Back 10 seconds', forward10: 'Forward 10 seconds', goLive: 'Go live',
+    prevChannel: 'Prev channel', nextChannel: 'Next channel',
+    audio: 'Audio', subtitles: 'Subtitles', off: 'Off',
+    addFavorite: 'Favorite', removeFavorite: 'Favorited',
+    liveBadge: 'LIVE', directLive: 'Direct live stream',
+    nowPlaying: 'Now', upNext: 'Next',
     expired: 'Your pause exceeded the saved window. Playback moved to the earliest saved point.',
     recording: (seconds: number, megabytes: number) => `Saving live TV in temporary storage · ${seconds} seconds saved · ${megabytes} MB`,
-    checking: 'Checking live rewind support…', behind: (seconds: number) => `· ${seconds} seconds behind live`,
+    checking: 'Live rewind starts on pause', behind: (seconds: number) => `· ${seconds} seconds behind live`,
   },
   pt: {
     status: {
       loading: 'Carregando', buffering: 'Carregando o vídeo', playing: 'Reproduzindo', paused: 'Pausado', ended: 'Encerrado', error: 'Falha na reprodução. Confira o provedor e o formato da fonte e tente novamente.',
     } satisfies Record<PlaybackStatus, string>,
     back: 'Voltar ao catálogo', play: 'Reproduzir', pause: 'Pausar', retry: 'Tentar novamente', back10: 'Voltar 10 segundos', forward10: 'Avançar 10 segundos', goLive: 'Voltar ao vivo',
+    prevChannel: 'Canal anterior', nextChannel: 'Próximo canal',
+    audio: 'Áudio', subtitles: 'Legendas', off: 'Desligadas',
+    addFavorite: 'Favoritar', removeFavorite: 'Favorito',
+    liveBadge: 'AO VIVO', directLive: 'Transmissão ao vivo direta',
+    nowPlaying: 'Agora', upNext: 'A seguir',
     expired: 'A pausa ultrapassou o limite salvo. A reprodução voltou ao ponto salvo mais antigo.',
     recording: (seconds: number, megabytes: number) => `Salvando TV ao vivo no armazenamento temporário · ${seconds} segundos salvos · ${megabytes} MB`,
-    checking: 'Verificando o suporte a voltar na transmissão…', behind: (seconds: number) => `· ${seconds} segundos atrás da transmissão`,
+    checking: 'Voltar na transmissão inicia ao pausar', behind: (seconds: number) => `· ${seconds} segundos atrás da transmissão`,
   },
 } as const;
 
@@ -52,8 +72,9 @@ const recorderMessages: Record<string, string> = {
   'Reconnecting the live buffer. Saved content is still available.': 'Reconectando o buffer temporário. O conteúdo salvo ainda está disponível.',
   'Local live rewind is unavailable. Playing the provider directly.': 'Não é possível voltar nesta transmissão. Reproduzindo diretamente do provedor.',
   'The temporary live buffer could not be played on this device.': 'Não foi possível reproduzir o buffer temporário da transmissão neste dispositivo.',
-  'Use HLS, DASH or an MP4 source on this Vega starter.': 'Este app Vega reproduz fontes HLS, DASH ou MP4.',
+  'Use an HLS, DASH, or MP4 source on Vega.': 'O BruTV no Vega reproduz fontes HLS, DASH ou MP4.',
   'Local live recording stopped.': 'A gravação temporária da transmissão parou.',
+  'Live rewind buffer cleared to free memory.': 'Buffer temporário limpo para liberar memória.',
 };
 
 const providerFallbackSuffix = ' Playing the provider directly without local rewind.';

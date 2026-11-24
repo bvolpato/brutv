@@ -22,15 +22,15 @@ declare global {
 
 class Document {
   createElement = (name: string) => {
-    console.log(`document.createElement ${name}`);
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log(`document.createElement ${name}`);
     return global.gmedia;
   };
   getElementsByTagName = (name: string) => {
-    console.log(`document.getElementsByTagName ${name}`);
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log(`document.getElementsByTagName ${name}`);
     return global.gmedia;
   };
   static install() {
-    console.log('Installing Document polyfill');
+    if (typeof __DEV__ !== 'undefined' && __DEV__) console.log('Installing Document polyfill');
     global.document = new Document();
   }
 }

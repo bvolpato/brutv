@@ -16,6 +16,8 @@ class FakeMedia implements MediaElement {
   pause() { this.paused = true; }
   setSurfaceHandle(handle: string) { this.handles.push(handle); }
   clearSurfaceHandle(handle: string) { this.handles = this.handles.filter(value => value !== handle); }
+  setCaptionViewHandle?: (handle: string) => void;
+  clearCaptionViewHandle?: (handle: string) => void;
   addEventListener(event: string, listener: () => void) { const set = this.listeners.get(event) || new Set(); set.add(listener); this.listeners.set(event, set); }
   removeEventListener(event: string, listener: () => void) { this.listeners.get(event)?.delete(listener); }
   emit(event: string) { for (const listener of this.listeners.get(event) || []) listener(); }
@@ -640,5 +642,123 @@ test('retry does not resume playback while surface is destroyed and resumes when
   assert.deepEqual(media.handles, ['screen2']);
   assert.equal(media.plays, 2);
   assert.equal(media.paused, false);
+  await session.close();
+});
+
+test('switchSource reuses VideoPlayer and adapter without deinitializing and applies VOD startPosition', async () => {
+  const media = new FakeMedia();
+  const captionHandles: string[] = [];
+  media.setCaptionViewHandle = handle => captionHandles.push(`set:${handle}`);
+  media.clearCaptionViewHandle = handle => captionHandles.push(`clear:${handle}`);
+  const events: string[] = [];
+  const adapter: MediaAdapter = {
+    load: async url => { events.push(`load:${url}`); },
+    unload: async () => { events.push('unload'); },
+    destroy: async () => { events.push('destroy'); },
+    setLive: live => { events.push(`live:${live}`); },
+    timeline: () => ({start: 0, end: 100, live: false}),
+  };
+  const session = new PlaybackSession(media, () => adapter, () => {}, () => {}, {live: true});
+  session.surfaceCreated('screen');
+  session.captionViewCreated('captions1');
+  await session.start('https://example.test/ch1.m3u8');
+  assert.equal(media.initializes, 1);
+  assert.equal(media.releases, 0);
+
+  await session.switchSource('https://example.test/movie.mp4', {live: false, startPosition: 45});
+  assert.equal(media.initializes, 1);
+  assert.equal(media.releases, 0);
+  assert.equal(media.currentTime, 45);
+  assert.deepEqual(events, [
+    'load:https://example.test/ch1.m3u8',
+    'unload',
+    'live:false',
+    'load:https://example.test/movie.mp4',
+  ]);
+  await session.close();
+  assert.equal(media.releases, 1);
+  assert.deepEqual(captionHandles, ['set:captions1', 'clear:captions1']);
+});
+
+test('SystemMediaSession exposes audio/text tracks and channel next/previous actions when configured', async () => {
+  const media = new FakeMedia();
+  let selectedAudio: string | undefined;
+  let selectedText: string | null | undefined;
+  const session = new PlaybackSession(media, () => ({
+    load: async () => {},
+    destroy: async () => {},
+    selectAudioTrack: id => { selectedAudio = id; },
+    selectTextTrack: id => { selectedText = id; },
+  }), () => {});
+  await session.start('https://example.test/live.m3u8');
+
+  let zaps = 0;
+  const controls = new SystemMediaSession(
+    session,
+    {id: 'live:1', kind: 'live', name: 'Channel 1', group: 'News'},
+    () => {},
+    {updateMediaSessionStates: () => {}},
+    Date.now,
+    {onNext: () => { zaps += 1; }, onPrevious: () => { zaps -= 1; }},
+  );
+  controls.updateTracks({
+    audio: [
+      {id: 'aid:1', language: 'en', label: 'English', active: true},
+      {id: 'aid:2', language: 'pt', label: 'Português', active: false},
+    ],
+    text: [{id: 'txt:1', language: 'pt', label: 'PT Sub', active: false}],
+    textVisible: false,
+  });
+
+  const [state] = await controls.handler.handleGetSessionState();
+  assert.equal(state.mediaInfo?.availableAudioTracks.length, 2);
+  assert.equal(state.mediaInfo?.availableTextTracks.length, 1);
+  assert.equal(state.mediaInfo?.activeAudioTrack?.id, 'aid:1');
+  assert.equal(state.mediaInfo?.activeTextTrack, undefined);
+  assert.ok(state.capabilities.actions.some(a => a.name === 'SET_AUDIO_TRACK'));
+  assert.ok(state.capabilities.actions.some(a => a.name === 'ENABLE_TEXT_TRACK'));
+  assert.ok(state.capabilities.actions.some(a => a.name === 'NEXT'));
+
+  await controls.handler.handleSetAudioTrack({id: 'aid:2', language: {identifier: 'pt'}});
+  assert.equal(selectedAudio, 'aid:2');
+  await controls.handler.handleEnableTextTrack({id: 'txt:1', language: {identifier: 'pt'}});
+  assert.equal(selectedText, 'txt:1');
+  await controls.handler.handleDisableTextTrack();
+  assert.equal(selectedText, null);
+  await controls.handler.handleNext();
+  await controls.handler.handlePrevious();
+  assert.equal(zaps, 0);
+
+  controls.close();
+  await session.close();
+});
+
+test('live pause triggers lazy timeshift start and memory warning delegates to adapter', async () => {
+  const media = new FakeMedia();
+  media.duration = Infinity;
+  let timeshiftStarts = 0;
+  let switchedToRecorded = 0;
+  let memoryWarnings = 0;
+  const session = new PlaybackSession(media, () => ({
+    load: async () => {},
+    destroy: async () => {},
+    timeline: () => ({start: 0, end: 60, live: true, liveTarget: 58}),
+    startTimeshift: () => { timeshiftStarts++; },
+    hasActiveRecording: () => timeshiftStarts > 0,
+    switchToRecorded: async () => { switchedToRecorded++; return true; },
+    handleMemoryWarning: async () => { memoryWarnings++; },
+  }), () => {}, () => {}, {live: true});
+  session.surfaceCreated('screen');
+  await session.start('https://example.test/live.m3u8');
+  assert.equal(timeshiftStarts, 0);
+
+  await session.pause();
+  assert.equal(timeshiftStarts, 1);
+
+  await session.play();
+  assert.equal(switchedToRecorded, 1);
+
+  await session.handleMemoryWarning();
+  assert.equal(memoryWarnings, 1);
   await session.close();
 });

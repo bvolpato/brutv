@@ -18,18 +18,18 @@ import {decode/*, encode*/} from 'base-64';
 
 class MiscPolyfill {
     static install() {
-        console.log("Installing misc polyfills");
+        if (typeof __DEV__ !== 'undefined' && __DEV__) console.log("Installing misc polyfills");
         global.navigator.userAgent = "AFTCA001";
         global.window.fetch = fetch;
         global.window.addEventListener = (type: any, listener: any, options?: any) => {
-            console.log(`adding window listener ${type}`);
+            if (typeof __DEV__ !== 'undefined' && __DEV__) console.log(`adding window listener ${type}`);
         }
         global.window.removeEventListener = (
           type: any,
           listener: any,
           options?: any
         ) => {
-          console.log(`removing window listener ${type}`);
+          if (typeof __DEV__ !== 'undefined' && __DEV__) console.log(`removing window listener ${type}`);
         };
         global.window.console = console;
         global.window.crypto = WebCrypto;
